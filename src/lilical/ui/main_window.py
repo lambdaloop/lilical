@@ -3,6 +3,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMainWindow, QStackedWidget, QStatusBar, QToolBar, QVBoxLayout, QWidget
 
+from lilical.ui.views.month import MonthView
+from lilical.ui.views.week import WeekView
+
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -26,6 +29,11 @@ class MainWindow(QMainWindow):
         self._toolbar.addWidget(QLabel("lilical"))
 
         self._stack = QStackedWidget()
+        self._month_view = MonthView(event_store)
+        self._week_view = WeekView(event_store)
+        self._stack.addWidget(self._month_view)
+        self._stack.addWidget(self._week_view)
+        self._stack.setCurrentWidget(self._month_view)
         layout.addWidget(self._stack)
 
         self._status = QStatusBar()
