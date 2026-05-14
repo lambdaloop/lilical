@@ -554,7 +554,7 @@ async def test_full_resync_runs_discovery_and_emits_progress() -> None:
 
     await engine._full_resync(SimpleNamespace(id="acc-1"), backend, "")
 
-    assert backend.list_calendars_call_count == 1
+    assert backend.list_calendars_call_count == 0  # _full_resync reads from store, not backend
     counts_per_cal = {(label, count) for _, label, count in progress}
     assert ("cal-1", 1) in counts_per_cal
     assert ("cal-2", 1) in counts_per_cal

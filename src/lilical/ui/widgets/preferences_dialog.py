@@ -12,6 +12,15 @@ from PySide6.QtWidgets import (
 )
 
 
+_SNAP_OPTIONS: list[tuple[str, int]] = [
+    ("5 min", 5),
+    ("10 min", 10),
+    ("15 min", 15),
+    ("30 min", 30),
+    ("60 min", 60),
+]
+
+
 class PreferencesDialog(QDialog):
     def __init__(
         self,
@@ -20,6 +29,7 @@ class PreferencesDialog(QDialog):
         current_theme: str = "dark",
         current_week_start: str = "monday",
         current_default_view: str = "Month",
+        current_snap_minutes: int = 15,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -43,6 +53,15 @@ class PreferencesDialog(QDialog):
         self._default_view_combo.setCurrentText(current_default_view)
         form.addRow("Default view:", self._default_view_combo)
 
+        self._snap_combo = QComboBox()
+        for label, _ in _SNAP_OPTIONS:
+            self._snap_combo.addItem(label)
+        snap_idx = next(
+            (i for i, (_, v) in enumerate(_SNAP_OPTIONS) if v == current_snap_minutes), 2
+        )
+        self._snap_combo.setCurrentIndex(snap_idx)
+        form.addRow("Drag snap interval:", self._snap_combo)
+
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -63,3 +82,10 @@ class PreferencesDialog(QDialog):
     @property
     def default_view(self) -> str:
         return self._default_view_combo.currentText()
+
+    @property
+    def snap_minutes(self) -> int:
+        idx = self._snap_combo.currentIndex()
+        if 0 <= idx < len(_SNAP_OPTIONS):
+            return _SNAP_OPTIONS[idx][1]
+        return 15

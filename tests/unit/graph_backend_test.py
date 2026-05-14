@@ -17,6 +17,7 @@ from lilical.backends.graph import (
     GraphBackend,
     GraphCursor,
     _graph_event_to_change,
+    _graph_recurrence_to_rrule,
 )
 
 
@@ -336,9 +337,9 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
 
 
 def test_event_to_change_recurring_occurrences_have_distinct_uids() -> None:
-    """All occurrences of a recurring series share iCalUId but have distinct
-    `id` values. Local uid must come from `id` so apply_remote_changes doesn't
-    collapse them into one row."""
+    """calendarView/delta pre-expands recurring events: every occurrence
+    shares one iCalUId but has a distinct `id`. Local uid must come from
+    `id` so apply_remote_changes doesn't collapse them into one row."""
     occurrences = [
         {
             "id": f"AAMk-occ-{i}",
@@ -359,6 +360,49 @@ def test_event_to_change_recurring_occurrences_have_distinct_uids() -> None:
     uids = [_graph_event_to_change(o, "cal-1").uid for o in occurrences]
     assert uids == ["AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"]
     assert len(set(uids)) == 3
+
+
+def test_event_to_change_series_master_yields_rrule() -> None:
+    data = {
+        "id": "AAMk-master",
+        "iCalUId": "uid-master@outlook.com",
+        "subject": "Weekly standup",
+        "type": "seriesMaster",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {
+                "type": "weekly",
+                "interval": 1,
+                "daysOfWeek": ["wednesday"],
+            },
+            "range": {
+                "type": "noEnd",
+                "startDate": "2026-05-13",
+            },
+        },
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.kind == "upsert"
+    assert change.event is not None
+    assert change.event.summary == "Weekly standup"
+    assert change.event.rrule == "FREQ=WEEKLY;BYDAY=WE"
+    assert change.event.exdates == ()
+
+
+def test_event_to_change_single_instance_no_rrule() -> None:
+    data = {
+        "id": "AAMk-single",
+        "subject": "One-off",
+        "type": "singleInstance",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.event is not None
+    assert change.event.rrule is None
 
 
 # -- end-to-end: parser → EventStore → event_instances expansion --------------
@@ -425,3 +469,386 @@ def test_parsed_graph_event_creates_instance_row(tmp_path) -> None:
     assert instances[0].dtstart_utc == int(
         datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()
     )
+
+
+# -- _graph_recurrence_to_rrule: pattern.type axis ---------------------------
+
+
+def test_recurrence_to_rrule_daily() -> None:
+    rec = {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=DAILY"
+
+
+def test_recurrence_to_rrule_daily_with_interval() -> None:
+    rec = {
+        "pattern": {"type": "daily", "interval": 3},
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=DAILY;INTERVAL=3"
+
+
+def test_recurrence_to_rrule_weekly_multi_day() -> None:
+    rec = {
+        "pattern": {
+            "type": "weekly",
+            "interval": 1,
+            "daysOfWeek": ["monday", "wednesday", "friday"],
+        },
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=WEEKLY;BYDAY=MO,WE,FR"
+
+
+def test_recurrence_to_rrule_absolute_monthly() -> None:
+    rec = {
+        "pattern": {"type": "absoluteMonthly", "interval": 1, "dayOfMonth": 15},
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=MONTHLY;BYMONTHDAY=15"
+
+
+def test_recurrence_to_rrule_relative_monthly_second_tuesday() -> None:
+    rec = {
+        "pattern": {
+            "type": "relativeMonthly",
+            "interval": 1,
+            "index": "second",
+            "daysOfWeek": ["tuesday"],
+        },
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=MONTHLY;BYDAY=2TU"
+
+
+def test_recurrence_to_rrule_relative_monthly_last_friday() -> None:
+    rec = {
+        "pattern": {
+            "type": "relativeMonthly",
+            "interval": 1,
+            "index": "last",
+            "daysOfWeek": ["friday"],
+        },
+        "range": {"type": "noEnd", "startDate": "2026-05-13"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=MONTHLY;BYDAY=-1FR"
+
+
+def test_recurrence_to_rrule_absolute_yearly() -> None:
+    rec = {
+        "pattern": {
+            "type": "absoluteYearly",
+            "interval": 1,
+            "month": 7,
+            "dayOfMonth": 4,
+        },
+        "range": {"type": "noEnd", "startDate": "2026-07-04"},
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=YEARLY;BYMONTH=7;BYMONTHDAY=4"
+
+
+def test_recurrence_to_rrule_relative_yearly() -> None:
+    rec = {
+        "pattern": {
+            "type": "relativeYearly",
+            "interval": 1,
+            "month": 11,
+            "index": "fourth",
+            "daysOfWeek": ["thursday"],
+        },
+        "range": {"type": "noEnd", "startDate": "2026-11-26"},
+    }
+    assert (
+        _graph_recurrence_to_rrule(rec) == "FREQ=YEARLY;BYMONTH=11;BYDAY=4TH"
+    )
+
+
+# -- _graph_recurrence_to_rrule: range.type axis -----------------------------
+
+
+def test_recurrence_to_rrule_numbered_range() -> None:
+    rec = {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {
+            "type": "numbered",
+            "startDate": "2026-05-13",
+            "numberOfOccurrences": 10,
+        },
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=DAILY;COUNT=10"
+
+
+def test_recurrence_to_rrule_end_date_range() -> None:
+    rec = {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {
+            "type": "endDate",
+            "startDate": "2026-05-13",
+            "endDate": "2026-06-13",
+        },
+    }
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=DAILY;UNTIL=20260613T235959Z"
+
+
+def test_recurrence_to_rrule_returns_none_for_unknown_pattern() -> None:
+    rec = {
+        "pattern": {"type": "alienCycle", "interval": 1},
+        "range": {"type": "noEnd"},
+    }
+    assert _graph_recurrence_to_rrule(rec) is None
+
+
+def test_recurrence_to_rrule_returns_none_for_missing_subobjects() -> None:
+    assert _graph_recurrence_to_rrule(None) is None
+    assert _graph_recurrence_to_rrule({}) is None
+    assert _graph_recurrence_to_rrule({"pattern": {"type": "daily"}}) is None
+
+
+# -- master hydration --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_hydrates_occurrences_from_master() -> None:
+    """calendarView/delta returns recurring occurrences with empty
+    subject/body/location — the real values live on the seriesMaster.
+    `_drain_delta` should fetch each unique master once and merge its
+    fields into the in-place event JSON before parsing."""
+    delta_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-1",
+                "iCalUId": "uid-shared@outlook.com",
+                "subject": None,
+                "body": {"contentType": "html", "content": ""},
+                "location": {"displayName": ""},
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-1",
+                "start": {
+                    "dateTime": "2026-05-13T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+                "end": {
+                    "dateTime": "2026-05-13T09:30:00.0000000",
+                    "timeZone": "UTC",
+                },
+            },
+            {
+                "id": "AAMk-occ-2",
+                "iCalUId": "uid-shared@outlook.com",
+                "subject": "",
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-1",
+                "start": {
+                    "dateTime": "2026-05-20T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+                "end": {
+                    "dateTime": "2026-05-20T09:30:00.0000000",
+                    "timeZone": "UTC",
+                },
+            },
+            {
+                "id": "AAMk-single",
+                "iCalUId": "uid-single@outlook.com",
+                "subject": "One-off",
+                "type": "singleInstance",
+                "start": {
+                    "dateTime": "2026-06-01T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+                "end": {
+                    "dateTime": "2026-06-01T09:30:00.0000000",
+                    "timeZone": "UTC",
+                },
+            },
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
+    }
+    master_body = {
+        "id": "AAMk-master-1",
+        "subject": "Weekly standup",
+        "body": {"contentType": "text", "content": "team standup"},
+        "location": {"displayName": "Zoom"},
+        "type": "seriesMaster",
+    }
+
+    master_fetches: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "/me/events/AAMk-master-1" in url:
+            master_fetches.append(url)
+            return httpx.Response(200, json=master_body)
+        return httpx.Response(200, json=delta_body)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    collected = []
+    async for batch, _cursor in backend.initial_sync("cal-1"):
+        collected.extend(batch)
+
+    # Master fetched exactly once even though two occurrences referenced it.
+    assert len(master_fetches) == 1
+
+    by_uid = {c.uid: c.event for c in collected}
+    # Occurrences inherited subject/body/location from the master.
+    assert by_uid["AAMk-occ-1"].summary == "Weekly standup"
+    assert by_uid["AAMk-occ-1"].description == "team standup"
+    assert by_uid["AAMk-occ-1"].location == "Zoom"
+    assert by_uid["AAMk-occ-2"].summary == "Weekly standup"
+    # Single instance with its own subject is untouched.
+    assert by_uid["AAMk-single"].summary == "One-off"
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
+    """If an occurrence already has its own subject (e.g. user edited that
+    one instance), don't waste a request fetching the master."""
+    delta_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-1",
+                "subject": "Custom title for this week",
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-1",
+                "start": {
+                    "dateTime": "2026-05-13T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+                "end": {
+                    "dateTime": "2026-05-13T09:30:00.0000000",
+                    "timeZone": "UTC",
+                },
+            },
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
+    }
+
+    master_fetches: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "/me/events/AAMk-master-1" in url:
+            master_fetches.append(url)
+            return httpx.Response(200, json={"id": "AAMk-master-1"})
+        return httpx.Response(200, json=delta_body)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    async for _batch, _cursor in backend.initial_sync("cal-1"):
+        pass
+
+    assert master_fetches == []
+
+
+@pytest.mark.asyncio
+async def test_initial_sync_uses_calendarview_delta_endpoint() -> None:
+    captured: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(str(req.url))
+        return httpx.Response(
+            200,
+            json={
+                "value": [],
+                "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=X",
+            },
+        )
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    async for _batch, _cursor in backend.initial_sync("cal-1"):
+        pass
+
+    assert captured, "expected at least one request"
+    assert "/calendarView/delta" in captured[0]
+    assert "startDateTime=" in captured[0]
+    assert "endDateTime=" in captured[0]
+
+
+def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
+    """A seriesMaster's RRULE should drive RecurrenceExpander locally,
+    producing one EventInstanceRow per generated occurrence — matching the
+    Google/CalDAV pipeline."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from lilical.models.account import Account
+    from lilical.models.calendar import Calendar
+    from lilical.models.db import Base
+    from lilical.models.event import EventInstanceRow
+    from lilical.storage.event_store import EventStore
+
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session, session.begin():
+        session.add(
+            Account(
+                id="acc-1",
+                kind="graph",
+                display_name="O",
+                identity="u@example.com",
+                secret_ref="acc-1",
+                created_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        session.add(
+            Calendar(
+                id="cal-1",
+                account_id="acc-1",
+                provider_id="graph-cal-id",
+                display_name="Calendar",
+                color="#000000",
+                access_role="owner",
+            )
+        )
+
+    data = {
+        "id": "AAMk-series",
+        "iCalUId": "uid-series@outlook.com",
+        "subject": "Weekly standup",
+        "type": "seriesMaster",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {
+                "type": "weekly",
+                "interval": 1,
+                "daysOfWeek": ["wednesday"],
+            },
+            "range": {
+                "type": "numbered",
+                "startDate": "2026-05-13",
+                "numberOfOccurrences": 4,
+            },
+        },
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.event is not None
+    assert change.event.rrule == "FREQ=WEEKLY;BYDAY=WE;COUNT=4"
+
+    store = EventStore(engine)
+    store.apply_remote_changes("cal-1", [change], '{"delta_link": null}')
+    with Session(engine) as session:
+        instances = (
+            session.query(EventInstanceRow)
+            .filter_by(uid="AAMk-series")
+            .order_by(EventInstanceRow.dtstart_utc)
+            .all()
+        )
+    # COUNT=4 → four instances, every Wednesday starting 2026-05-13.
+    assert len(instances) == 4
+    assert all(inst.uid == "AAMk-series" for inst in instances)
+    expected_starts = [
+        int(datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()),
+        int(datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc).timestamp()),
+        int(datetime(2026, 5, 27, 9, 0, tzinfo=timezone.utc).timestamp()),
+        int(datetime(2026, 6, 3, 9, 0, tzinfo=timezone.utc).timestamp()),
+    ]
+    assert [inst.dtstart_utc for inst in instances] == expected_starts

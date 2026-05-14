@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 from typing import override
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QAction, QFontMetrics, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -17,8 +19,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
+    QSlider,
     QStatusBar,
     QToolBar,
     QToolButton,
@@ -31,13 +33,53 @@ from lilical.ui.tray import SystemTray
 from lilical.ui.views.agenda import AgendaView
 from lilical.ui.views.day import DayView
 from lilical.ui.views.month import MonthView
-from lilical.ui.views.week import WeekView
+from lilical.ui.views.week import VALID_DAY_COUNTS, WeekView
 from lilical.ui.widgets.account_setup import AccountSetupDialog
+from lilical.ui.widgets.event_chip import ChipMode
 
 log = logging.getLogger(__name__)
 
 _VIEW_NAMES = ["Month", "Week", "Day", "Agenda"]
 _DEFAULT_VIEW = "Week"
+
+
+class _ElidingLabel(QLabel):
+    """QLabel pinned to a fixed width that auto-ellipsizes long text.
+
+    Used for the sync status pill: a long error message must not push the
+    status bar (and therefore the whole window) wider. The full text is
+    preserved in the tooltip.
+    """
+
+    def __init__(self, text: str = "", *, width: int = 260,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setFixedWidth(width)
+        self.setToolTip(text)
+        # Don't try to wrap — we always render a single elided line.
+        self.setWordWrap(False)
+
+    @override
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        self._full_text = text
+        self.setToolTip(text)
+        super().setText(text)
+        self.update()
+
+    @override
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        painter = QPainter(self)
+        fm = QFontMetrics(self.font())
+        # Reserve a few pixels of padding either side so the text doesn't
+        # touch the bordering widgets.
+        elided = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight,
+                               self.width() - 4)
+        painter.drawText(
+            self.rect().adjusted(2, 0, -2, 0),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            elided,
+        )
 
 
 class _SyncStatusWidget(QWidget):
@@ -49,7 +91,10 @@ class _SyncStatusWidget(QWidget):
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(4)
         self._dot = QLabel("●")
-        self._text = QLabel("Ready")
+        # `_ElidingLabel` is pinned to a fixed width and auto-ellipsizes; this
+        # prevents a long sync-error string from widening the status bar and
+        # thus the whole window. Full text remains in the tooltip.
+        self._text = _ElidingLabel("Ready", width=260)
         self._dot.setStyleSheet("color: #6ee896;")
         layout.addWidget(self._dot)
         layout.addWidget(self._text)
@@ -132,26 +177,49 @@ class MainWindow(QMainWindow):
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
         main_layout.addWidget(self._sidebar)
 
-        # ── Right side: toolbar + stacked views ───────────────────────────
+        # Top toolbar via QMainWindow's standard API — embedding a QToolBar
+        # inside a QVBoxLayout has caused it to render at zero height on some
+        # platforms; addToolBar() puts it in the dedicated toolbar area where
+        # Qt sizes it correctly.
+        self._toolbar = self._build_toolbar()
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._toolbar)
+
+        # ── Right side: stacked views ─────────────────────────────────────
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
-
-        self._toolbar = self._build_toolbar()
-        right_layout.addWidget(self._toolbar)
 
         # Stacked widget (manual, no QStackedWidget, for direct access)
         self._view_container = QWidget()
         self._view_stack_layout = QVBoxLayout(self._view_container)
         self._view_stack_layout.setContentsMargins(0, 0, 0, 0)
 
+        saved_dc = int(self._settings.value("week_day_count", 7) or 7)
+        if saved_dc not in VALID_DAY_COUNTS:
+            saved_dc = 7
+        saved_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
+        initial_mode = ChipMode.TEXT if saved_chip_mode == "text" else ChipMode.BARS
         self._views: dict[str, QWidget] = {
             "Month": MonthView(event_store),
-            "Week": WeekView(event_store),
+            "Week": WeekView(event_store, day_count=saved_dc),
             "Day": DayView(event_store),
             "Agenda": AgendaView(event_store),
         }
+        # Apply persisted Bars/Text mode to every view that supports it.
+        for v in self._views.values():
+            if hasattr(v, "set_chip_mode"):
+                v.set_chip_mode(initial_mode)
+        saved_snap = int(self._settings.value("snap_minutes", 15) or 15)
+        if saved_snap not in (5, 10, 15, 30, 60):
+            saved_snap = 15
+        self._snap_minutes: int = saved_snap
+        for v in self._views.values():
+            if hasattr(v, "set_snap_minutes"):
+                v.set_snap_minutes(saved_snap)
+        month_view = self._views["Month"]
+        if isinstance(month_view, MonthView):
+            month_view.day_activated.connect(self._on_month_day_activated)
         for view in self._views.values():
             self._view_stack_layout.addWidget(view)
             view.hide()
@@ -197,6 +265,19 @@ class MainWindow(QMainWindow):
         tb = QToolBar()
         tb.setMovable(False)
         tb.setFloatable(False)
+        tb.setMinimumWidth(0)
+        # Compact toolbar: tighter padding, smaller icons, no text-under-icons.
+        tb.setIconSize(QSize(16, 16))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        tb.setContentsMargins(0, 0, 0, 0)
+        # Tighten button + label padding here rather than in the qss so the
+        # rules also apply to the light theme without duplication.
+        tb.setStyleSheet(
+            "QToolBar { spacing: 0px; padding: 0px; }"
+            "QToolBar::separator { width: 1px; margin: 4px 3px; }"
+            "QToolBar QToolButton { padding: 2px 6px; }"
+            "QToolBar QLabel { padding: 0 4px; }"
+        )
 
         # Navigation buttons
         prev_btn = QToolButton()
@@ -229,13 +310,61 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        # ── Week view: day-count slider (1,2,3,4,5,7,10,14) ─────────────
+        self._day_count_label = QLabel("Days:")
+        tb.addWidget(self._day_count_label)
+
+        self._day_count_slider = QSlider(Qt.Orientation.Horizontal)
+        self._day_count_slider.setMinimum(0)
+        self._day_count_slider.setMaximum(len(VALID_DAY_COUNTS) - 1)
+        self._day_count_slider.setSingleStep(1)
+        self._day_count_slider.setPageStep(1)
+        self._day_count_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._day_count_slider.setTickInterval(1)
+        self._day_count_slider.setFixedWidth(110)
+        # Restore last-used value, default 7.
+        saved_dc = int(self._settings.value("week_day_count", 7) or 7)
+        if saved_dc not in VALID_DAY_COUNTS:
+            saved_dc = 7
+        self._day_count_slider.setValue(VALID_DAY_COUNTS.index(saved_dc))
+        self._day_count_slider.valueChanged.connect(self._on_day_count_changed)
+        tb.addWidget(self._day_count_slider)
+
+        self._day_count_value_label = QLabel(str(saved_dc))
+        # Fixed width so "1" vs "14" doesn't change the toolbar's min size.
+        self._day_count_value_label.setFixedWidth(22)
+        self._day_count_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tb.addWidget(self._day_count_value_label)
+
+        tb.addSeparator()
+
+        # ── Month view: Text vs Bars toggle ─────────────────────────────
+        self._mode_toggle = QToolButton()
+        self._mode_toggle.setText("Bars")
+        self._mode_toggle.setCheckable(True)
+        self._mode_toggle.setToolTip("Toggle Bars/Text rendering")
+        # Fixed width so "Bars" / "Text" can't shift sibling widgets around.
+        self._mode_toggle.setFixedWidth(46)
+        saved_mode = str(self._settings.value("chip_mode", "bars") or "bars")
+        self._mode_toggle.setChecked(saved_mode == "text")
+        self._mode_toggle.setText("Text" if saved_mode == "text" else "Bars")
+        self._mode_toggle.toggled.connect(self._on_mode_toggled)
+        tb.addWidget(self._mode_toggle)
+
+        tb.addSeparator()
+
         # Current range label (pushed to right by spacer)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         tb.addWidget(spacer)
 
         self._range_label = QLabel()
-        self._range_label.setStyleSheet("padding: 0 8px;")
+        # Lock the width so the toolbar's minimum-size hint doesn't grow
+        # (and push the window wider) when the range string lengthens —
+        # e.g. switching day-count from 1 → 14 turns "May 11, 2026" into
+        # "May 11 – May 24, 2026".
+        self._range_label.setFixedWidth(210)
+        self._range_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tb.addWidget(self._range_label)
 
         tb.addSeparator()
@@ -261,10 +390,22 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self._refresh_all)
         tb.addWidget(refresh_btn)
 
-        # Preferences
+        # Pin the settings button to the far right with its own expanding spacer
+        # and a divider so it reads visually as a separate "top-right" control,
+        # not just another action button.
+        right_spacer = QWidget()
+        right_spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        tb.addWidget(right_spacer)
+        tb.addSeparator()
+
         prefs_btn = QToolButton()
         prefs_btn.setText("⚙")
-        prefs_btn.setToolTip("Preferences  (Ctrl+,)")
+        prefs_btn.setToolTip("Settings  (Ctrl+,)")
+        # Slightly larger glyph so the gear reads as the primary affordance,
+        # but no extra padding — the toolbar-level rule already keeps it tight.
+        prefs_btn.setStyleSheet("font-size: 16px;")
         prefs_btn.clicked.connect(self._open_preferences)
         tb.addWidget(prefs_btn)
 
@@ -274,6 +415,42 @@ class MainWindow(QMainWindow):
         view = self._views.get(self._current_view_name)
         if view and hasattr(view, "range_label"):
             self._range_label.setText(view.range_label())
+        # Always keep the mini-month in lockstep with whatever the main view
+        # is currently showing.
+        self._sync_mini_month()
+
+    def _sync_mini_month(self) -> None:
+        """Mirror the current view's date range in the sidebar mini-month."""
+        view = self._views.get(self._current_view_name)
+        if view is None:
+            return
+        name = self._current_view_name
+        try:
+            if name == "Day":
+                d = getattr(view, "_day", None)
+                if isinstance(d, date):
+                    self._sidebar.set_active_range(d, d)
+            elif name == "Week":
+                start = getattr(view, "_start", None)
+                count = getattr(view, "_day_count", None)
+                if isinstance(start, date) and isinstance(count, int) and count > 0:
+                    self._sidebar.set_active_range(
+                        start, start + timedelta(days=count - 1)
+                    )
+            elif name == "Month":
+                y = getattr(view, "_year", None)
+                m = getattr(view, "_month", None)
+                if isinstance(y, int) and isinstance(m, int):
+                    last = calendar.monthrange(y, m)[1]
+                    self._sidebar.set_active_range(date(y, m, 1), date(y, m, last))
+            elif name == "Agenda":
+                start = getattr(view, "_start", None)
+                if isinstance(start, date):
+                    # Agenda is a list of upcoming events — highlight just
+                    # the start date so the user can see where it anchors.
+                    self._sidebar.set_active_range(start, start)
+        except Exception:
+            log.exception("Failed to sync mini-month")
 
     # ── Keyboard shortcuts ─────────────────────────────────────────────────
 
@@ -343,16 +520,16 @@ class MainWindow(QMainWindow):
 
     def _on_sidebar_date_selected(self, d) -> None:
         """Jump to the clicked date in mini-month: show Day view for that date."""
-        from datetime import date
         day_view = self._views.get("Day")
         if isinstance(day_view, DayView):
-            day_view._day = d
-            from lilical.ui.views.day import DayGrid
-            day_view._scene.removeItem(day_view._grid)
-            day_view._grid = DayGrid(d, max(800, day_view.viewport().width()))
-            day_view._scene.addItem(day_view._grid)
-            day_view._scene.setSceneRect(day_view._grid.boundingRect())
-            day_view.refresh()
+            day_view.set_day(d)
+        self._switch_view("Day")
+
+    def _on_month_day_activated(self, d) -> None:
+        """User clicked '+N more' in Month view: switch to Day view of that date."""
+        day_view = self._views.get("Day")
+        if isinstance(day_view, DayView):
+            day_view.set_day(d)
         self._switch_view("Day")
 
     # ── View switching ─────────────────────────────────────────────────────
@@ -369,7 +546,37 @@ class MainWindow(QMainWindow):
         # Update toolbar checkmarks
         for n, act in self._view_actions.items():
             act.setChecked(n == name)
+        # Show day-count slider only in Week view.
+        is_week = name == "Week"
+        self._day_count_label.setVisible(is_week)
+        self._day_count_slider.setVisible(is_week)
+        self._day_count_value_label.setVisible(is_week)
+        # Bars/Text toggle applies wherever chips render — Month, Week, Day.
+        # Agenda is a text list; toggle is hidden there.
+        self._mode_toggle.setVisible(name in {"Month", "Week", "Day"})
         self._update_range_label()
+
+    # ── Toolbar handlers (slider + mode toggle) ───────────────────────────
+
+    def _on_day_count_changed(self, slider_value: int) -> None:
+        if slider_value < 0 or slider_value >= len(VALID_DAY_COUNTS):
+            return
+        n = VALID_DAY_COUNTS[slider_value]
+        self._day_count_value_label.setText(str(n))
+        self._settings.setValue("week_day_count", n)
+        week_view = self._views.get("Week")
+        if isinstance(week_view, WeekView):
+            week_view.set_day_count(n)
+            self._update_range_label()
+
+    def _on_mode_toggled(self, checked: bool) -> None:
+        mode = ChipMode.TEXT if checked else ChipMode.BARS
+        self._mode_toggle.setText("Text" if checked else "Bars")
+        self._settings.setValue("chip_mode", "text" if checked else "bars")
+        # Apply to every view that supports the toggle (Month/Week/Day).
+        for view in self._views.values():
+            if hasattr(view, "set_chip_mode"):
+                view.set_chip_mode(mode)
 
     # ── Events ─────────────────────────────────────────────────────────────
 
@@ -411,6 +618,7 @@ class MainWindow(QMainWindow):
             self,
             current_theme=self._theme,
             current_default_view=self._default_view_name,
+            current_snap_minutes=self._snap_minutes,
         )
         if dlg.exec() == QDialog.Accepted:
             if dlg.theme != self._theme:
@@ -420,6 +628,12 @@ class MainWindow(QMainWindow):
             if dlg.default_view != self._default_view_name and dlg.default_view in _VIEW_NAMES:
                 self._default_view_name = dlg.default_view
                 self._settings.setValue("default_view", self._default_view_name)
+            if dlg.snap_minutes != self._snap_minutes:
+                self._snap_minutes = dlg.snap_minutes
+                self._settings.setValue("snap_minutes", self._snap_minutes)
+                for v in self._views.values():
+                    if hasattr(v, "set_snap_minutes"):
+                        v.set_snap_minutes(self._snap_minutes)
 
     def _apply_theme(self, name: str) -> None:
         try:
@@ -432,16 +646,28 @@ class MainWindow(QMainWindow):
         except Exception:
             log.exception("Failed to apply theme '%s'", name)
 
-    # ── Zoom (placeholder) ────────────────────────────────────────────────
+    # ── Zoom (Week/Day vertical pixel-per-hour) ──────────────────────────
+
+    def _active_zoomable_view(self) -> WeekView | DayView | None:
+        view = self._views.get(self._current_view_name)
+        if isinstance(view, (WeekView, DayView)):
+            return view
+        return None
 
     def _zoom_in(self) -> None:
-        pass  # Week/Day zoom not yet implemented
+        v = self._active_zoomable_view()
+        if v is not None:
+            v.zoom_in()
 
     def _zoom_out(self) -> None:
-        pass
+        v = self._active_zoomable_view()
+        if v is not None:
+            v.zoom_out()
 
     def _zoom_reset(self) -> None:
-        pass
+        v = self._active_zoomable_view()
+        if v is not None:
+            v.zoom_reset()
 
     # ── Full-screen / escape ──────────────────────────────────────────────
 
@@ -462,16 +688,19 @@ class MainWindow(QMainWindow):
         help_text = (
             "Keyboard shortcuts\n"
             "──────────────────\n"
-            "1–4       Switch view (Month/Week/Day/Agenda)\n"
-            "T         Go to today\n"
-            "← / →    Previous / next period\n"
-            "N         New event\n"
-            "Ctrl+N    New event\n"
+            "1–4           Switch view (Month/Week/Day/Agenda)\n"
+            "T             Go to today\n"
+            "← / →         Previous / next period\n"
+            "N             New event\n"
+            "Ctrl+N        New event\n"
             "Ctrl+Shift+A  Quick add\n"
-            "Ctrl+R    Refresh now\n"
-            "Ctrl+,    Preferences\n"
-            "F11       Toggle full-screen\n"
-            "?         This help\n"
+            "Ctrl+R        Refresh now\n"
+            "Ctrl+,        Preferences\n"
+            "Ctrl++ / Ctrl+-  Vertical zoom (Week/Day)\n"
+            "Ctrl+0        Reset zoom\n"
+            "Ctrl+scroll   Vertical zoom (Week/Day)\n"
+            "F11           Toggle full-screen\n"
+            "?             This help\n"
         )
         QMessageBox.information(self, "Keyboard shortcuts", help_text)
 

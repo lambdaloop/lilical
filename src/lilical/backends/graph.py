@@ -34,8 +34,43 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # calendarView/delta requires an explicit window. We default to ±2 years; events
 # outside the window simply aren't synced (Outlook desktop uses a similar bound).
+# We use calendarView/delta rather than events/delta because the latter
+# returns a stripped-down event shape (only id/start/end/type/etag) on delta
+# pages and explicitly rejects $select with change tracking — there's no way
+# to ask it for subject/body. calendarView/delta returns full event JSON and
+# we hydrate per-occurrence rows whose subject lives on the seriesMaster
+# (see `_hydrate_occurrences_from_master` below).
 _DELTA_WINDOW_PAST = timedelta(days=365)
 _DELTA_WINDOW_FUTURE = timedelta(days=730)
+
+# Map Microsoft Graph `responseStatus.response` → our normalized vocabulary.
+# `organizer` / `none` / unknown → None (treated as "not invited").
+_GRAPH_RESPONSE_MAP: dict[str, str] = {
+    "accepted": "ACCEPTED",
+    "tentativelyaccepted": "TENTATIVE",
+    "declined": "DECLINED",
+    "notresponded": "NEEDS-ACTION",
+}
+
+# Graph's recurrence pattern weekday name → iCal RRULE BYDAY code.
+_GRAPH_WEEKDAY_TO_RRULE: dict[str, str] = {
+    "sunday": "SU",
+    "monday": "MO",
+    "tuesday": "TU",
+    "wednesday": "WE",
+    "thursday": "TH",
+    "friday": "FR",
+    "saturday": "SA",
+}
+
+# Graph's `pattern.index` (for relative monthly/yearly recurrences) → BYDAY ordinal.
+_GRAPH_INDEX_TO_RRULE: dict[str, str] = {
+    "first": "1",
+    "second": "2",
+    "third": "3",
+    "fourth": "4",
+    "last": "-1",
+}
 
 
 class GraphCursor(SyncCursor):
@@ -152,17 +187,109 @@ def _safe(fn, *, field: str, default=None):
         return default
 
 
+def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
+    """Convert a Graph `recurrence` object into an iCal RRULE string.
+
+    Returns None if the structure is missing the required `pattern`/`range`
+    sub-objects or the pattern type is unrecognized.
+    """
+    if not rec:
+        return None
+    pattern = rec.get("pattern") or {}
+    rng = rec.get("range") or {}
+    if not pattern or not rng:
+        return None
+
+    ptype = str(pattern.get("type") or "").lower()
+    parts: list[str] = []
+
+    if ptype == "daily":
+        parts.append("FREQ=DAILY")
+    elif ptype == "weekly":
+        days = [
+            _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
+            for d in (pattern.get("daysOfWeek") or [])
+            if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
+        ]
+        parts.append("FREQ=WEEKLY")
+        if days:
+            parts.append("BYDAY=" + ",".join(days))
+    elif ptype == "absolutemonthly":
+        parts.append("FREQ=MONTHLY")
+        dom = pattern.get("dayOfMonth")
+        if dom:
+            parts.append(f"BYMONTHDAY={int(dom)}")
+    elif ptype == "relativemonthly":
+        parts.append("FREQ=MONTHLY")
+        index = _GRAPH_INDEX_TO_RRULE.get(str(pattern.get("index") or "").lower())
+        days = [
+            _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
+            for d in (pattern.get("daysOfWeek") or [])
+            if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
+        ]
+        if index and days:
+            parts.append("BYDAY=" + ",".join(f"{index}{d}" for d in days))
+    elif ptype == "absoluteyearly":
+        parts.append("FREQ=YEARLY")
+        month = pattern.get("month")
+        dom = pattern.get("dayOfMonth")
+        if month:
+            parts.append(f"BYMONTH={int(month)}")
+        if dom:
+            parts.append(f"BYMONTHDAY={int(dom)}")
+    elif ptype == "relativeyearly":
+        parts.append("FREQ=YEARLY")
+        month = pattern.get("month")
+        index = _GRAPH_INDEX_TO_RRULE.get(str(pattern.get("index") or "").lower())
+        days = [
+            _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
+            for d in (pattern.get("daysOfWeek") or [])
+            if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
+        ]
+        if month:
+            parts.append(f"BYMONTH={int(month)}")
+        if index and days:
+            parts.append("BYDAY=" + ",".join(f"{index}{d}" for d in days))
+    else:
+        return None
+
+    interval = pattern.get("interval")
+    try:
+        if interval is not None and int(interval) > 1:
+            parts.append(f"INTERVAL={int(interval)}")
+    except (TypeError, ValueError):
+        pass
+
+    rtype = str(rng.get("type") or "").lower()
+    if rtype == "numbered":
+        n = rng.get("numberOfOccurrences")
+        if n:
+            parts.append(f"COUNT={int(n)}")
+    elif rtype == "enddate":
+        # Graph emits `range.recurrenceTimeZone` (Windows-style names like
+        # "Pacific Standard Time") which we don't currently convert; using
+        # end-of-day UTC keeps the final day inclusive on most servers.
+        end = rng.get("endDate")
+        if end:
+            try:
+                d = datetime.strptime(str(end), "%Y-%m-%d")
+                parts.append(f"UNTIL={d.strftime('%Y%m%d')}T235959Z")
+            except ValueError:
+                pass
+    # "noend" → no tail
+    return ";".join(parts)
+
+
 def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
     # Delta responses mark deletions with an "@removed" key on the otherwise-stub event.
-    # We key local rows on Graph's `id`, not `iCalUId` — Graph's calendarView
-    # pre-expands recurring events, so every occurrence carries the same
-    # iCalUId but a distinct id. Using id avoids occurrences clobbering each
-    # other through apply_remote_changes's (uid, calendar_id) filter and
-    # matches what /me/events/{id} expects for delete.
+    # We key local rows on Graph's `id`, not `iCalUId` — calendarView/delta
+    # pre-expands recurring events, so every occurrence shares an iCalUId but
+    # has a distinct id. `id` is also what /me/events/{id} expects for delete.
     if "@removed" in ev_json:
         uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
         return EventChange(kind="delete", uid=uid)
 
+    ev_type = str(ev_json.get("type") or "").lower()
     uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
     body = ev_json.get("body") or {}
     location = ev_json.get("location") or {}
@@ -194,10 +321,26 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
         if email:
             attendees.append(str(email))
 
+    # Microsoft Graph exposes the current user's response at the event level.
+    response_obj = ev_json.get("responseStatus") or {}
+    self_response = _GRAPH_RESPONSE_MAP.get(
+        str(response_obj.get("response") or "").lower()
+    )
+
     last_modified = _safe(
         lambda: _parse_graph_dt(ev_json.get("lastModifiedDateTime"), "UTC"),
         field="lastModifiedDateTime",
     )
+
+    # seriesMasters don't appear in calendarView/delta (it returns expanded
+    # occurrences instead). Keep the wiring in case we ever fetch a master
+    # directly — but in the normal sync path this stays None.
+    rrule = None
+    if ev_type == "seriesmaster":
+        rrule = _safe(
+            lambda: _graph_recurrence_to_rrule(ev_json.get("recurrence")),
+            field="recurrence",
+        )
 
     event = Event(
         uid=uid,
@@ -211,9 +354,11 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
         description=body.get("content", "") or "",
         location=location.get("displayName", "") or "",
         url=ev_json.get("webLink"),
+        rrule=rrule,
         attendees=tuple(attendees),
         categories=categories,
         status=status,
+        self_response=self_response,
         transparency=transparency,
         last_modified=last_modified,
         etag=ev_json.get("@odata.etag"),
@@ -250,6 +395,21 @@ def _delta_window() -> tuple[str, str]:
     start = (now - _DELTA_WINDOW_PAST).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = (now + _DELTA_WINDOW_FUTURE).strftime("%Y-%m-%dT%H:%M:%SZ")
     return start, end
+
+
+# Subset of seriesMaster fields we copy onto occurrences/exceptions whose
+# own copy is blank. Graph keeps the source-of-truth subject/body/location on
+# the master and only fills these on the children when they've been edited
+# individually — so for ~all unmodified occurrences these come back empty.
+_MASTER_HYDRATED_FIELDS: tuple[str, ...] = (
+    "subject",
+    "body",
+    "location",
+    "categories",
+    "attendees",
+    "showAs",
+    "webLink",
+)
 
 
 def _new_msal_app(cache_json: str | None):
@@ -346,7 +506,20 @@ class GraphBackend:
         except httpx.HTTPError as exc:
             raise TransientError(str(exc)) from exc
         if resp.status_code >= 400:
-            resp.raise_for_status()
+            # Graph's response body holds the real reason (e.g. "occurrence of a
+            # series can't be deleted directly"). httpx.raise_for_status drops it,
+            # so attach it ourselves before re-raising.
+            body_snippet = ""
+            try:
+                body_snippet = resp.text[:500]
+            except Exception:
+                pass
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if body_snippet:
+                    exc.args = (f"{exc.args[0] if exc.args else ''} body={body_snippet}",)
+                raise
         return resp
 
     # Microsoft Graph color enum → hex map.
@@ -419,14 +592,62 @@ class GraphBackend:
         while next_url:
             resp = await self._request("GET", next_url)
             data = resp.json()
-            batch = [
-                _graph_event_to_change(ev, calendar_id) for ev in data.get("value", [])
-            ]
+            events = data.get("value", [])
+            await self._hydrate_occurrences_from_master(events)
+            batch = [_graph_event_to_change(ev, calendar_id) for ev in events]
             delta = data.get("@odata.deltaLink")
             link = data.get("@odata.nextLink")
             cursor = GraphCursor(delta_link=delta) if delta else GraphCursor()
             yield batch, cursor
             next_url = link
+
+    async def _hydrate_occurrences_from_master(self, events: list[dict]) -> None:
+        """Fill in subject/body/location on calendarView occurrences that
+        share their data with a seriesMaster.
+
+        calendarView/delta pre-expands recurring events and only populates
+        fields like `subject` on occurrences that have been individually
+        edited — for an unmodified weekly meeting Graph returns blank
+        subject/body/location and expects the caller to pull them from the
+        master via `seriesMasterId`. We fetch each unique master once per
+        page and merge its fields into the in-place event JSON before the
+        normal parser runs.
+        """
+        master_ids: set[str] = set()
+        for ev in events:
+            if "@removed" in ev:
+                continue
+            if not (ev.get("subject") or "").strip():
+                smi = ev.get("seriesMasterId")
+                if smi:
+                    master_ids.add(smi)
+        if not master_ids:
+            return
+
+        async def _fetch(mid: str) -> tuple[str, dict | None]:
+            try:
+                resp = await self._request("GET", f"/me/events/{mid}")
+                return mid, resp.json()
+            except Exception:
+                log.exception("failed to fetch seriesMaster %s", mid)
+                return mid, None
+
+        results = await asyncio.gather(*(_fetch(mid) for mid in master_ids))
+        masters: dict[str, dict] = {mid: m for mid, m in results if m is not None}
+
+        for ev in events:
+            mid = ev.get("seriesMasterId")
+            if not mid or mid not in masters:
+                continue
+            master = masters[mid]
+            for field in _MASTER_HYDRATED_FIELDS:
+                cur = ev.get(field)
+                if not cur or (
+                    isinstance(cur, dict)
+                    and not (cur.get("displayName") or cur.get("content"))
+                ) or (isinstance(cur, list) and not cur):
+                    if master.get(field) is not None:
+                        ev[field] = master[field]
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:

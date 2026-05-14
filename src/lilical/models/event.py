@@ -48,6 +48,9 @@ class EventRow(Base):
     categories: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="CONFIRMED")
+    # Current user's RSVP response for this event. One of:
+    # "ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION", or NULL (not invited).
+    self_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     transparency: Mapped[str] = mapped_column(Text, default="OPAQUE")
     valarms: Mapped[str | None] = mapped_column(Text)
     etag: Mapped[str | None] = mapped_column(Text)
@@ -95,6 +98,9 @@ class Event:
     categories: tuple[str, ...] = ()
     color: str | None = None
     status: str = "CONFIRMED"
+    # Current user's RSVP. One of ACCEPTED/TENTATIVE/DECLINED/NEEDS-ACTION
+    # or None when the user isn't an invited attendee.
+    self_response: str | None = None
     transparency: str = "OPAQUE"
     valarms: tuple[str, ...] = ()
     etag: str | None = None

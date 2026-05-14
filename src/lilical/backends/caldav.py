@@ -179,7 +179,12 @@ def _safe(fn, *, field: str, default=None):
 
 
 def _vevent_to_event(
-    ve: icalendar.Event, *, calendar_id: str, href: str, etag: str
+    ve: icalendar.Event,
+    *,
+    calendar_id: str,
+    href: str,
+    etag: str,
+    user_email: str | None = None,
 ) -> Event:
     dtstart_prop = ve.get("DTSTART")
     dtstart_params = getattr(dtstart_prop, "params", None) if dtstart_prop else None
@@ -215,11 +220,29 @@ def _vevent_to_event(
     )
 
     attendees_raw = ve.get("ATTENDEE")
+    self_response: str | None = None
+    user_email_norm = (user_email or "").strip().lower()
     if attendees_raw is None:
         attendees: tuple[str, ...] = ()
     else:
         items = attendees_raw if isinstance(attendees_raw, list) else [attendees_raw]
         attendees = tuple(str(a) for a in items)
+        # If we know the user's email, scan attendees for a matching mailto:
+        # and capture that attendee's PARTSTAT parameter.
+        if user_email_norm:
+            for a in items:
+                addr = str(a).strip().lower()
+                if addr.startswith("mailto:"):
+                    addr = addr[7:]
+                if addr != user_email_norm:
+                    continue
+                params = getattr(a, "params", None)
+                if params is None:
+                    continue
+                partstat = str(params.get("PARTSTAT", "")).upper()
+                if partstat in {"ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"}:
+                    self_response = partstat
+                break
 
     categories_raw = ve.get("CATEGORIES")
     if categories_raw is None:
@@ -260,6 +283,7 @@ def _vevent_to_event(
         attendees=attendees,
         categories=categories,
         status=str(ve.get("STATUS", "CONFIRMED")),
+        self_response=self_response,
         transparency=str(ve.get("TRANSP", "OPAQUE")),
         last_modified=last_modified,
         etag=etag,
@@ -448,7 +472,11 @@ class CalDavBackend:
                     continue
                 try:
                     event = _vevent_to_event(
-                        ve, calendar_id=calendar_id, href=href, etag=etag
+                        ve,
+                        calendar_id=calendar_id,
+                        href=href,
+                        etag=etag,
+                        user_email=self._username,
                     )
                 except Exception:
                     log.exception("error mapping VEVENT for %s", href)

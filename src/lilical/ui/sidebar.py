@@ -172,6 +172,15 @@ class Sidebar(QWidget):
         self._mini_month.set_month(yr, mo)
         self._update_mini_label()
 
+    def set_active_range(self, start: date, end: date) -> None:
+        """Mirror the main view's date range in the mini-month."""
+        self._mini_month.set_active_range(start, end)
+        self._update_mini_label()
+
+    def clear_active_range(self) -> None:
+        self._mini_month.clear_active_range()
+        self._update_mini_label()
+
     # ── Calendar list ──────────────────────────────────────────────────────
 
     def refresh(self) -> None:

@@ -58,6 +58,15 @@ def _load_client_config() -> dict:
 CLIENT_CONFIG = _load_client_config()
 
 
+# Map Google Calendar responseStatus → our normalized vocabulary.
+_GOOGLE_RESPONSE_MAP: dict[str, str] = {
+    "accepted": "ACCEPTED",
+    "tentative": "TENTATIVE",
+    "declined": "DECLINED",
+    "needsaction": "NEEDS-ACTION",
+}
+
+
 class GoogleCursor(SyncCursor):
     def __init__(self, sync_token: str | None = None) -> None:
         self.sync_token = sync_token
@@ -235,9 +244,16 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
 
     attendees_raw = ev_json.get("attendees") or []
     attendees: list[str] = []
+    self_response: str | None = None
     for a in attendees_raw:
-        if isinstance(a, dict) and a.get("email"):
+        if not isinstance(a, dict):
+            continue
+        if a.get("email"):
             attendees.append(str(a["email"]))
+        if a.get("self") is True:
+            self_response = _GOOGLE_RESPONSE_MAP.get(
+                str(a.get("responseStatus") or "").lower()
+            )
 
     last_modified: datetime | None = None
     updated_raw = ev_json.get("updated")
@@ -264,6 +280,7 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
         rdates=rdates,
         attendees=tuple(attendees),
         status=g_status,
+        self_response=self_response,
         transparency=transparency,
         last_modified=last_modified,
         etag=ev_json.get("etag"),

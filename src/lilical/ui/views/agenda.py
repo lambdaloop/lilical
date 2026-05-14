@@ -4,7 +4,7 @@ import logging
 from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QSizePolicy,
     QTreeWidget,
@@ -14,6 +14,23 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.storage.event_store import EventStore
+from lilical.ui import theme
+
+
+def _color_swatch_icon(color_hex: str | None, size: int = 12) -> QIcon:
+    """Build a small filled-circle icon used as the row's color chip."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    c = QColor(color_hex) if color_hex else QColor(theme.CHIP_FALLBACK)
+    if not c.isValid():
+        c = QColor(theme.CHIP_FALLBACK)
+    p.setBrush(c)
+    p.setPen(QPen(c.darker(160), 1))
+    p.drawEllipse(1, 1, size - 2, size - 2)
+    p.end()
+    return QIcon(pm)
 
 log = logging.getLogger(__name__)
 
@@ -96,9 +113,9 @@ class AgendaView(QWidget):
             day_item = QTreeWidgetItem(self._tree)
             day_item.setText(0, d.strftime("%A, %B %-d, %Y"))
             day_item.setFont(0, bold)
-            day_item.setBackground(0, QColor("#333333"))
-            day_item.setBackground(1, QColor("#333333"))
-            day_item.setBackground(2, QColor("#333333"))
+            day_item.setBackground(0, QColor(theme.BG_SURFACE_3))
+            day_item.setBackground(1, QColor(theme.BG_SURFACE_3))
+            day_item.setBackground(2, QColor(theme.BG_SURFACE_3))
             day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
             for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):
@@ -122,17 +139,12 @@ class AgendaView(QWidget):
                             break
                 row.setText(2, cal_label)
 
-                # Color chip via foreground tint on event column. Use the
-                # event's own color first, falling back to the calendar's.
+                # Color swatch icon to the left of the event title.
                 color_hint = event.color
                 if not color_hint:
                     cal = self._store.get_calendar(inst.calendar_id)
                     color_hint = cal.color if cal else None
-                if color_hint:
-                    from PySide6.QtGui import QBrush
-                    c = QColor(color_hint)
-                    if c.isValid():
-                        row.setForeground(1, QBrush(c))
+                row.setIcon(1, _color_swatch_icon(color_hint))
 
                 row.setData(0, Qt.ItemDataRole.UserRole, (inst.uid, inst.calendar_id))
 

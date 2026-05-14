@@ -102,6 +102,7 @@ def _create_test_schema(engine) -> None:
                 categories TEXT,
                 color TEXT,
                 status TEXT DEFAULT 'CONFIRMED',
+                self_response TEXT,
                 transparency TEXT DEFAULT 'OPAQUE',
                 valarms TEXT,
                 etag TEXT,
@@ -546,3 +547,101 @@ def test_upsert_calendars_preserves_visibility_on_existing_rows(engine) -> None:
     with Session(engine) as s:
         cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
     assert cal.is_visible == 0
+
+
+# -- calendar colour (server + palette fallback + user override) --------------
+
+
+def test_upsert_calendars_stores_server_color_for_new_calendar(engine) -> None:
+    store = EventStore(engine)
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "remote-cal-A", "display_name": "Work", "color": "#228b22"}],
+    )
+    with Session(engine) as s:
+        cal = s.query(Calendar).filter(Calendar.provider_id == "remote-cal-A").one()
+    assert cal.color == "#228b22"
+
+
+def test_upsert_calendars_falls_back_to_palette_when_no_server_color(engine) -> None:
+    """When the backend doesn't report a colour, we pick deterministically from
+    the curated palette via sha1(provider_id) — same input always yields the
+    same colour."""
+    store = EventStore(engine)
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "no-color-cal", "display_name": "Anon"}],
+    )
+    with Session(engine) as s:
+        cal = s.query(Calendar).filter(Calendar.provider_id == "no-color-cal").one()
+    assert cal.color in EventStore._FALLBACK_PALETTE
+    # Determinism: re-deriving should give the same answer.
+    assert cal.color == EventStore._fallback_color("no-color-cal")
+
+
+def test_upsert_calendars_replaces_legacy_default_color_with_server_color(engine) -> None:
+    """The legacy `#5e9fff` sentinel is treated as 'unset' — a server-provided
+    colour replaces it on first sync."""
+    store = EventStore(engine)
+    # The fixture seeds a calendar with color="#5e9fff" (the legacy default).
+    store.upsert_calendars(
+        "acc-1",
+        [
+            {
+                "provider_id": "provider-cal-1",
+                "display_name": "Work",
+                "color": "#216ffc",
+            }
+        ],
+    )
+    with Session(engine) as s:
+        cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
+    assert cal.color == "#216ffc"
+
+
+def test_upsert_calendars_preserves_user_overridden_color(engine) -> None:
+    """If the user has set a non-default colour, a subsequent sync must not
+    overwrite it with the server's value."""
+    store = EventStore(engine)
+    store.set_calendar_color("cal-1", "#ff00aa")
+    store.upsert_calendars(
+        "acc-1",
+        [
+            {
+                "provider_id": "provider-cal-1",
+                "display_name": "Work",
+                "color": "#216ffc",  # server tries to change it; we must ignore.
+            }
+        ],
+    )
+    with Session(engine) as s:
+        cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
+    assert cal.color == "#ff00aa"
+
+
+def test_set_calendar_color_emits_events_changed(engine) -> None:
+    store = EventStore(engine)
+    captured: list[tuple[str, set]] = []
+    store.events_changed.connect(lambda cid, uids: captured.append((cid, uids)))
+    store.set_calendar_color("cal-1", "#abcdef")
+    assert ("cal-1", set()) in captured
+    with Session(engine) as s:
+        cal = s.query(Calendar).filter(Calendar.id == "cal-1").one()
+    assert cal.color == "#abcdef"
+
+
+def test_get_calendar_returns_row(engine) -> None:
+    store = EventStore(engine)
+    cal = store.get_calendar("cal-1")
+    assert cal is not None
+    assert cal.provider_id == "provider-cal-1"
+    assert store.get_calendar("nonexistent-id") is None
+
+
+def test_fallback_palette_size_and_stability() -> None:
+    assert len(EventStore._FALLBACK_PALETTE) == 12
+    # sha1-based, so the answer is stable across processes (unlike hash()).
+    a = EventStore._fallback_color("snail-id-1")
+    b = EventStore._fallback_color("snail-id-1")
+    assert a == b
+    assert a in EventStore._FALLBACK_PALETTE

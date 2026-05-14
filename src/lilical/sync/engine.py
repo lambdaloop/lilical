@@ -12,6 +12,7 @@ from lilical.backends.base import (
     AuthExpired,
     ConflictError,
     CursorExpired,
+    PermanentError,
     TransientError,
 )
 from lilical.storage.event_store import EventStore
@@ -121,11 +122,12 @@ class SyncEngine(QObject):
             self._wake_events.pop(account.id, None)
 
     async def _apply_pending_op(self, backend, op) -> None:
-        event = _event_from_payload(op.payload)
         if op.op == "create":
+            event = _event_from_payload(op.payload)
             canonical = await backend.create_event(op.calendar_id, event)
             self._store.queue_update(canonical, prev_etag=None)
         elif op.op == "update":
+            event = _event_from_payload(op.payload)
             await backend.update_event(op.calendar_id, event, if_match=op.if_match)
         elif op.op == "delete":
             await backend.delete_event(op.calendar_id, op.uid, if_match=op.if_match)
@@ -148,6 +150,15 @@ class SyncEngine(QObject):
                 self.conflict_detected.emit(op.uid)
             except TransientError:
                 raise
+            except PermanentError as e:
+                # The op will never succeed as-is (bad ID, occurrence delete,
+                # etc). Drop it so we don't crash sync every tick — surface the
+                # error but keep pulling remote changes.
+                log.error(
+                    "dropping pending %s op for %s: %s", op.op, op.uid, e
+                )
+                self._store.delete_pending_op(op.id)
+                self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
         # 2) Pull incremental changes per calendar
         for cal in self._store.list_calendars(account.id, visible_only=False):
@@ -185,8 +196,10 @@ class SyncEngine(QObject):
     async def _full_resync(self, account, backend, calendar_id: str) -> None:
         log.info("full resync for %s / %s", account.id, calendar_id)
         self.sync_started.emit(account.id)
-        remote_cals = await backend.list_calendars()
-        self._store.upsert_calendars(account.id, remote_cals)
+        # _tick just ran list_calendars (we're here because it raised
+        # CursorExpired), so skip the second discovery round-trip and
+        # read from the store instead. New calendars surface within
+        # one normal tick (≤300s).
         cals = self._store.list_calendars(account.id, visible_only=False)
         for cal in cals:
             if calendar_id and cal.provider_id != calendar_id:

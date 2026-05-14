@@ -114,6 +114,8 @@ class EventDialog(QDialog):
         store: "EventStore",
         event: "Event | None" = None,
         default_dt: datetime | None = None,
+        default_dtend: datetime | None = None,
+        default_all_day: bool = False,
     ) -> None:
         super().__init__(parent)
         self._store = store
@@ -135,8 +137,10 @@ class EventDialog(QDialog):
         # ── Start / End ────────────────────────────────────────────────────────
         self._all_day_cb = QCheckBox("All day")
 
+        # Prefill order: an explicit `event` (edit mode) wins; otherwise the
+        # caller-supplied `default_dt` / `default_dtend` win over "now + 1 h".
         start_default = default_dt or datetime.now(timezone.utc)
-        end_default = start_default + timedelta(hours=1)
+        end_default = default_dtend or (start_default + timedelta(hours=1))
         if event:
             start_default = event.dtstart or start_default
             end_default = event.dtend or end_default
@@ -162,7 +166,7 @@ class EventDialog(QDialog):
         dt_row.addStretch()
         form.addRow("", dt_row)
 
-        if event and event.all_day:
+        if (event and event.all_day) or default_all_day:
             self._all_day_cb.setChecked(True)
             self._start_edit.setDisplayFormat("yyyy-MM-dd")
             self._end_edit.setDisplayFormat("yyyy-MM-dd")

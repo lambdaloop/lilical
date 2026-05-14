@@ -260,23 +260,58 @@ solid color with no text (hover shows tooltip).
 
 ### 4.3 Drag verbs
 
-BC2-style direct manipulation, adapted for mouse:
+BC2-style direct manipulation for mouse. Three independent flows:
 
-| Gesture                                     | Action                                |
-| ------------------------------------------- | ------------------------------------- |
-| Click event                                 | Select; show resize handles top+bottom |
-| Drag event body                             | Move event (snap to 15 min by default; hold Alt for free) |
-| Drag top handle                             | Adjust start time                     |
-| Drag bottom handle                          | Adjust end time                       |
-| Drag on empty grid                          | Create event spanning the drag        |
-| Drop event across day boundary              | Day change too                        |
-| Drag event into the all-day band            | Convert to all-day                    |
-| Drag all-day event into the time grid       | Convert to timed (default 1 h at drop point) |
-| Esc during drag                             | Cancel; restore original position     |
+#### Drag-to-create (empty grid)
 
-A grey "ghost" preview follows the cursor with a live tooltip showing
-the new start/end time (BC2 shows the same). Release confirms;
-optimistic UI updates the chip immediately and queues the write.
+| Surface              | Drag direction        | Result                                           |
+| -------------------- | --------------------- | ------------------------------------------------ |
+| Timed body           | Vertical              | Ghost spans drag extent; release → EventDialog pre-filled with snapped times |
+| All-day band (Week)  | Horizontal            | Ghost spans columns; release → EventDialog with all-day checked, correct date range |
+| Click (no drag)      | —                     | EventDialog opens with clicked time + 1 h default |
+
+The ghost preview (`DragPreview`) shows a semi-transparent accent rectangle
+with a centered label: `HH:MM – HH:MM  (Nh Mm)` for timed, or
+`All day · N day(s)` for all-day. Times snap as the cursor moves.
+
+#### Drag-to-move (chip body)
+
+Press in the body zone of a timed chip, move > 4 px: the ghost preview
+tracks the cursor. Vertical delta changes start/end times; horizontal delta
+(Week only) changes the day column. Release → `queue_update` is called,
+no dialog opened. Day view ignores horizontal delta (single-column).
+
+All-day chips in the all-day band support body drag; vertical drag is
+ignored (clamped to the all-day band).
+
+#### Drag-to-resize (chip edges)
+
+| Edge zone      | Activated when                     | Action              |
+| -------------- | ---------------------------------- | ------------------- |
+| Top 6 px       | Chip height ≥ 18 px, timed chip    | Adjusts `dtstart`   |
+| Bottom 6 px    | Chip height ≥ 18 px, timed chip    | Adjusts `dtend`     |
+
+Cursor changes to `SizeVerCursor` on hover to reveal the affordance.
+Chips shorter than 18 px only support body-drag (resize via dialog).
+Resize snaps to the configured snap interval. Minimum duration = snap interval.
+End time is clamped at midnight; multi-day timed events are not created.
+
+#### Ghost preview
+
+`DragPreview` is a `QGraphicsItem` at Z=200 (above chips Z=0 and sticky
+header Z=100). It is reused across create/move/resize in the same view
+and torn down on commit or cancel.
+
+Label formats:
+- Create / resize: `HH:MM – HH:MM  (Nh Mm)`
+- Move: `DDD  HH:MM – HH:MM`
+
+#### Snap and cancel
+
+- **Snap** applies to all three flows. Configurable 5/10/15/30/60 min
+  (default 15). Set in **Preferences → Drag snap interval**.
+- **Esc** during any active drag cancels it, removes the ghost, and does
+  not commit any change.
 
 ### 4.4 Day-count slider
 
@@ -319,6 +354,17 @@ horizontal breathing room and a wider all-day band.
 Day-view-specific: a small **mini-agenda** at the bottom shows the next
 3 upcoming events from any visible calendar (BC2 includes a similar
 "today's events" strip).
+
+### 5.1 Drag verbs in Day view
+
+Same three flows as §4.3 (drag-to-create, drag-to-move, drag-to-resize)
+with two simplifications:
+
+- **Horizontal delta is ignored** during chip-move. The Day view has a
+  single column; moving an event to a different day requires the dialog
+  or switching to Week view.
+- **All-day create** drag always produces a single-day event (there is no
+  horizontal multi-day extent to drag in a one-column layout).
 
 ---
 
@@ -610,7 +656,25 @@ tokens file at startup.
 
 ---
 
-## 15. Behaviors NOT borrowed from Business Calendar 2
+## 15. Preferences dialog (`Ctrl+,`)
+
+Opened from the **⚙** toolbar button or `Ctrl+,`. Persisted to
+`QSettings` under `~/.config/lilical/lilical.conf`.
+
+| Setting                 | Options                                   | Default   | Notes |
+| ----------------------- | ----------------------------------------- | --------- | ----- |
+| Theme                   | dark / light                              | dark      |       |
+| Week starts on          | Monday / Sunday / Saturday                | Monday    |       |
+| Default view            | Month / Week / Day / Agenda               | Week      | View shown at launch |
+| Drag snap interval      | 5 / 10 / 15 / 30 / 60 min                 | 15 min    | Applied to create, move, and resize drags in Week and Day views |
+
+The snap interval is applied in real-time (no restart needed) and
+persisted across sessions. Changing it while a drag is in progress takes
+effect on the next drag.
+
+---
+
+## 17. Behaviors NOT borrowed from Business Calendar 2
 
 We intentionally drop:
 
@@ -626,7 +690,7 @@ We intentionally drop:
 
 ---
 
-## 16. Open visual questions (parked)
+## 18. Open visual questions (parked)
 
 1. **Multi-day event packing.** When 5+ multi-day events overlap in
    a Month-view week row, do we stack inside the row (taller cell) or
