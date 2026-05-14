@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from typing import override
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -72,5 +73,6 @@ class WeekView(QGraphicsView):
         week_start = today - timedelta(days=today.weekday())
         self._grid = WeekGrid(week_start, day_count)
 
+    @override
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         self._grid.paint(painter, self.viewport().width())

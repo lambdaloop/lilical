@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy import Index
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lilical.models.db import Base
@@ -17,11 +16,11 @@ class EventRow(Base):
                          name="uq_events_provider"),
         Index("idx_events_calendar", "calendar_id"),
         Index("idx_events_dirty", "local_dirty",
-              sqlite_where="local_dirty=1"),
+              sqlite_where=text("local_dirty=1")),
         Index("idx_events_deleted", "deleted_locally",
-              sqlite_where="deleted_locally=1"),
+              sqlite_where=text("deleted_locally=1")),
         Index("idx_events_conflict", "conflict_state",
-              sqlite_where="conflict_state IS NOT NULL"),
+              sqlite_where=text("conflict_state IS NOT NULL")),
     )
 
     uid: Mapped[str] = mapped_column(String, primary_key=True)

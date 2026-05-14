@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsScene,
+    QGraphicsView,
+)
 
 
 class MiniMonthGrid(QGraphicsView):

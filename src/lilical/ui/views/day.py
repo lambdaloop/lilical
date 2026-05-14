@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
+from typing import override
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -24,9 +25,9 @@ class DayView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+    @override
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         w = self.viewport().width()
-        h = self.viewport().height()
         pen = QPen(QColor("#3a3a3a"))
         painter.setPen(pen)
 

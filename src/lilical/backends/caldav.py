@@ -5,7 +5,6 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import AsyncIterator
-from urllib.parse import urlparse
 
 import caldav
 import icalendar
@@ -13,7 +12,6 @@ from caldav.lib.error import AuthorizationError, DAVError
 
 from lilical.backends.base import (
     AuthExpired,
-    Backend,
     ConflictError,
     CursorExpired,
     EventChange,
@@ -69,7 +67,6 @@ def _vevent_to_event(
     ve: icalendar.Event, *, calendar_id: str, href: str, etag: str
 ) -> Event:
     dtstart_prop = ve.get("DTSTART")
-    dtend_prop = ve.get("DTEND") or ve.get("DURATION")
     all_day = dtstart_prop.params.get("VALUE") == "DATE" if dtstart_prop else False
     return Event(
         uid=str(ve.get("UID", "")),

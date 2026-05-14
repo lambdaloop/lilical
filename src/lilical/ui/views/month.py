@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import override
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -29,6 +30,7 @@ class MonthGrid(QGraphicsItem):
         self._start = self._first - timedelta(days=self._first.weekday())
         self._today = date.today()
 
+    @override
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, COLS * CELL_W, HEADER_H + ROWS * CELL_H)
 

@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 
 from lilical.models.event import Event
 

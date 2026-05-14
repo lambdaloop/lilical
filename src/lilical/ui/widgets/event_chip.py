@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import override
+
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter
+from PySide6.QtWidgets import QGraphicsItem
 
 from lilical.models.event import Event
 
@@ -13,6 +15,7 @@ class EventChip(QGraphicsItem):
         self._event = event
         self._rect = rect
 
+    @override
     def boundingRect(self) -> QRectF:
         return self._rect
 

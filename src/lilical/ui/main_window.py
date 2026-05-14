@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from typing import override
+
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QStackedWidget,
     QStatusBar,
@@ -15,11 +15,11 @@ from PySide6.QtWidgets import (
 
 from lilical.ui.sidebar import Sidebar
 from lilical.ui.tray import SystemTray
+from lilical.ui.views.agenda import AgendaView
+from lilical.ui.views.day import DayView
 from lilical.ui.views.month import MonthView
 from lilical.ui.views.week import WeekView
-from lilical.ui.views.day import DayView
 from lilical.ui.views.year import YearView
-from lilical.ui.views.agenda import AgendaView
 
 
 class MainWindow(QMainWindow):
@@ -85,7 +85,6 @@ class MainWindow(QMainWindow):
         self._sync.sync_finished.connect(self._on_sync_finished)
 
     def _apply_theme(self, name: str) -> None:
-        path = f":/styles/{name}.qss"
         try:
             from pathlib import Path
             theme_path = Path(__file__).parent / "styles" / f"{name}.qss"
@@ -104,5 +103,6 @@ class MainWindow(QMainWindow):
     def _on_sync_finished(self, account_id: str, n_changes: int) -> None:
         self._status.showMessage(f"Synced {account_id} ({n_changes} changes)", 5000)
 
+    @override
     def closeEvent(self, e):
         super().closeEvent(e)

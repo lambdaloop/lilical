@@ -40,7 +40,12 @@ class RecurrenceExpander:
                 ve.add("RDATE", rd)
         ical.add_component(ve)
 
-        cache_key = (event.uid, event.etag or "", window_start.isoformat(), window_end.isoformat())
+        cache_key = (
+            event.uid,
+            event.etag or "",
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
         if cache_key in self._cache:
             return self._cache[cache_key]
 

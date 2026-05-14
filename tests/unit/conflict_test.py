@@ -26,12 +26,16 @@ def test_lower_sequence_loses() -> None:
 
 
 def test_same_sequence_newer_wins() -> None:
-    local = _event("e1", sequence=1, last_modified=datetime(2026, 5, 13, tzinfo=timezone.utc))
-    remote = _event("e1", sequence=1, last_modified=datetime(2026, 5, 12, tzinfo=timezone.utc))
+    may13 = datetime(2026, 5, 13, tzinfo=timezone.utc)
+    may12 = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    local = _event("e1", sequence=1, last_modified=may13)
+    remote = _event("e1", sequence=1, last_modified=may12)
     assert resolve_conflict(local, remote) == "local"
 
 
 def test_same_sequence_older_loses() -> None:
-    local = _event("e1", sequence=1, last_modified=datetime(2026, 5, 12, tzinfo=timezone.utc))
-    remote = _event("e1", sequence=1, last_modified=datetime(2026, 5, 13, tzinfo=timezone.utc))
+    may13 = datetime(2026, 5, 13, tzinfo=timezone.utc)
+    may12 = datetime(2026, 5, 12, tzinfo=timezone.utc)
+    local = _event("e1", sequence=1, last_modified=may12)
+    remote = _event("e1", sequence=1, last_modified=may13)
     assert resolve_conflict(local, remote) == "remote"

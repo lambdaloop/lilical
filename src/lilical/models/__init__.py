@@ -1,7 +1,7 @@
-from lilical.models.db import Base
 from lilical.models.account import Account
 from lilical.models.calendar import Calendar
-from lilical.models.event import EventRow, EventInstanceRow
+from lilical.models.db import Base
+from lilical.models.event import EventInstanceRow, EventRow
 from lilical.models.pending_op import PendingOpRow
 from lilical.models.setting import Setting
 

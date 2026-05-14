@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 import json
 import logging
@@ -8,13 +7,11 @@ from typing import Any, AsyncIterator
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from lilical.backends.base import (
     AuthExpired,
-    Backend,
     ConflictError,
     CursorExpired,
     EventChange,
@@ -123,7 +120,9 @@ class GoogleBackend:
         creds = self._get_credentials()
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        self._service = build(
+            "calendar", "v3", credentials=creds, cache_discovery=False
+        )
         return self._service
 
     @_classify_errors

@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 import sys
 
 import qasync
 from PySide6.QtWidgets import QApplication
 
+from lilical.backends.factory import build_backend_factory
 from lilical.config import Config
 from lilical.logging_setup import setup_logging
-from lilical.storage.db import open_engine, ensure_schema
+from lilical.recurrence.expander import RecurrenceExpander
+from lilical.storage.db import ensure_schema, open_engine
 from lilical.storage.event_store import EventStore
 from lilical.storage.secrets import SecretsStore
 from lilical.sync.engine import SyncEngine
-from lilical.backends.factory import build_backend_factory
-from lilical.recurrence.expander import RecurrenceExpander
 from lilical.ui.main_window import MainWindow
 from lilical.ui.notifications import NotificationScheduler
 

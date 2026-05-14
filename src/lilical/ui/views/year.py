@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import override
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QSizePolicy
 
 from lilical.storage.event_store import EventStore
@@ -24,6 +25,7 @@ class YearView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+    @override
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         w = self.viewport().width()
         cols = MONTHS_PER_ROW

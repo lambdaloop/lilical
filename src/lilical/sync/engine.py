@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -9,10 +10,8 @@ from PySide6.QtCore import QObject, Signal
 
 from lilical.backends.base import (
     AuthExpired,
-    Backend,
     ConflictError,
     CursorExpired,
-    SyncCursor,
     TransientError,
 )
 from lilical.storage.event_store import EventStore
@@ -60,10 +59,8 @@ class SyncEngine(QObject):
         wake = self._wake_events[account.id] = asyncio.Event()
         delay = 0
         while True:
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=delay or 1e-9)
-            except asyncio.TimeoutError:
-                pass
             wake.clear()
             try:
                 await self._tick(account, backend)
@@ -84,11 +81,71 @@ class SyncEngine(QObject):
                 delay = 300
                 self.sync_failed.emit(account.id, str(e))
 
+    async def _apply_pending_op(
+        self, backend, op
+    ) -> None:
+        event = _event_from_payload(op.payload)
+        if op.op == "create":
+            canonical = await backend.create_event(op.calendar_id, event)
+            self._store.queue_update(canonical, prev_etag=None)
+        elif op.op == "update":
+            await backend.update_event(
+                op.calendar_id, event, if_match=op.if_match
+            )
+        elif op.op == "delete":
+            await backend.delete_event(
+                op.calendar_id, op.uid, if_match=op.if_match
+            )
+
     async def _tick(self, account, backend) -> None:
         self.sync_started.emit(account.id)
         n_changes = 0
-        for cal in self._store.list_calendars(account.id):
-            self.sync_finished.emit(account.id, n_changes)
+
+        # 1) Drain pending writes
+        for op in self._store.list_pending_ops(account.id):
+            try:
+                await self._apply_pending_op(backend, op)
+                self._store.delete_pending_op(op.id)
+            except ConflictError:
+                self.conflict_detected.emit(op.uid)
+            except TransientError:
+                raise
+
+        # 2) Pull incremental changes per calendar
+        for cal in self._store.list_calendars(account.id, visible_only=False):
+            from lilical.sync.cursor import cursor_from_json
+
+            cursor = cursor_from_json(
+                json.loads(cal.sync_cursor) if cal.sync_cursor else None
+            )
+            if cursor is None:
+                async for changes, new_cur in backend.initial_sync(cal.provider_id):
+                    n_changes += self._store.apply_remote_changes(
+                        cal.id,
+                        changes,
+                        json.dumps(new_cur.to_json()),
+                    )
+            else:
+                changes, new_cur = await backend.incremental_sync(
+                    cal.provider_id, cursor
+                )
+                n_changes += self._store.apply_remote_changes(
+                    cal.id,
+                    changes,
+                    json.dumps(new_cur.to_json()),
+                )
+
+        self.sync_finished.emit(account.id, n_changes)
 
     async def _full_resync(self, account, backend, calendar_id: str) -> None:
         log.info("full resync for %s / %s", account.id, calendar_id)
+
+
+def _event_from_payload(payload: str | None):
+    import json
+
+    from lilical.models.event import Event
+    if not payload:
+        return Event(uid="", calendar_id="")
+    data = json.loads(payload)
+    return Event(**{k: v for k, v in data.items() if k in Event.__dataclass_fields__})

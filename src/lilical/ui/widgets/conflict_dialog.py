@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -24,8 +23,9 @@ class ConflictDialog(QDialog):
         self.setMinimumWidth(500)
 
         layout = QVBoxLayout(self)
+        name = local.summary if local else ""
         layout.addWidget(QLabel(
-            f"\"{local.summary if local else ''}\" was changed both here and on the server."
+            f'"{name}" was changed both here and on the server.'
         ))
 
         self._local_radio = QRadioButton("Keep your version")

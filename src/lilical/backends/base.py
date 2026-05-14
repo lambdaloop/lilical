@@ -19,13 +19,13 @@ class EventChange:
     uid: str = ""
 
 
-class CursorExpired(Exception):
+class CursorExpired(Exception):  # noqa: N818
     def __init__(self, calendar_id: str = "") -> None:
         self.calendar_id = calendar_id
         super().__init__(f"Cursor expired for calendar {calendar_id}")
 
 
-class AuthExpired(Exception):
+class AuthExpired(Exception):  # noqa: N818
     pass
 
 

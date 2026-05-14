@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from lilical.backends.base import (
     AuthExpired,

@@ -1,18 +1,44 @@
 from __future__ import annotations
 
+import dataclasses
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
+from PySide6.QtCore import QObject, Signal
 from sqlalchemy.orm import Session
 
-from PySide6.QtCore import QObject, Signal
-
-from lilical.models.event import EventRow, EventInstanceRow, Event
+from lilical.models.calendar import Calendar
+from lilical.models.event import Event, EventInstanceRow, EventRow
+from lilical.models.pending_op import PendingOpRow
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _to_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _parse_dt(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    return datetime.fromisoformat(s)
+
+
+def _json_dumps(obj: Any) -> str | None:
+    if obj is None:
+        return None
+    return json.dumps(obj)
+
+
+def _json_loads_tuple(s: str | None) -> tuple:
+    if not s:
+        return ()
+    return tuple(json.loads(s))
 
 
 def _row_to_event(row: EventRow) -> Event:
@@ -20,19 +46,57 @@ def _row_to_event(row: EventRow) -> Event:
         uid=row.uid,
         calendar_id=row.calendar_id,
         provider_event_id=row.provider_event_id,
+        dtstart=_parse_dt(row.dtstart),
+        dtend=_parse_dt(row.dtend),
+        tz=row.tz or "UTC",
+        all_day=bool(row.all_day),
         summary=row.summary or "",
         description=row.description or "",
         location=row.location or "",
+        url=row.url,
+        rrule=row.rrule,
+        exdates=_parse_dt_tuple(row.exdates),
+        rdates=_parse_dt_tuple(row.rdates),
+        attendees=_json_loads_tuple(row.attendees),
+        categories=_json_loads_tuple(row.categories),
+        color=row.color,
         status=row.status or "CONFIRMED",
         transparency=row.transparency or "OPAQUE",
+        valarms=_json_loads_tuple(row.valarms),
         etag=row.etag,
         sequence=row.sequence or 0,
+        last_modified=_parse_dt(row.last_modified),
         local_dirty=bool(row.local_dirty),
         deleted_locally=bool(row.deleted_locally),
         conflict_state=row.conflict_state,
-        all_day=bool(row.all_day),
-        tz=row.tz or "UTC",
     )
+
+
+def _parse_dt_tuple(s: str | None) -> tuple[datetime, ...]:
+    if not s:
+        return ()
+    raw = json.loads(s)
+    return tuple(datetime.fromisoformat(x) for x in raw)
+
+
+def _dt_tuple_to_json(dts: tuple[datetime, ...]) -> str | None:
+    if not dts:
+        return None
+    return json.dumps([dt.isoformat() for dt in dts])
+
+
+def _event_to_json(event: Event) -> str:
+    d = dataclasses.asdict(event)
+    d["dtstart"] = _to_iso(event.dtstart)
+    d["dtend"] = _to_iso(event.dtend)
+    d["recurrence_id"] = _to_iso(event.recurrence_id)
+    d["last_modified"] = _to_iso(event.last_modified)
+    d["exdates"] = [dt.isoformat() for dt in event.exdates]
+    d["rdates"] = [dt.isoformat() for dt in event.rdates]
+    d["attendees"] = list(event.attendees)
+    d["categories"] = list(event.categories)
+    d["valarms"] = list(event.valarms)
+    return json.dumps(d)
 
 
 def _event_to_row(event: Event) -> EventRow:
@@ -40,18 +104,29 @@ def _event_to_row(event: Event) -> EventRow:
         uid=event.uid,
         calendar_id=event.calendar_id,
         provider_event_id=event.provider_event_id,
+        dtstart=event.dtstart.isoformat() if event.dtstart else "",
+        dtend=event.dtend.isoformat() if event.dtend else "",
+        tz=event.tz,
+        all_day=int(event.all_day),
         summary=event.summary,
         description=event.description,
         location=event.location,
+        url=event.url,
+        rrule=event.rrule,
+        exdates=_dt_tuple_to_json(event.exdates),
+        rdates=_dt_tuple_to_json(event.rdates),
+        attendees=_json_dumps(list(event.attendees)) or "",
+        categories=_json_dumps(list(event.categories)) or "",
+        color=event.color,
         status=event.status,
         transparency=event.transparency,
+        valarms=_json_dumps(list(event.valarms)) or "",
         etag=event.etag,
         sequence=event.sequence,
+        last_modified=_to_iso(event.last_modified),
         local_dirty=int(event.local_dirty),
         deleted_locally=int(event.deleted_locally),
         conflict_state=event.conflict_state,
-        all_day=int(event.all_day),
-        tz=event.tz,
         inserted_at=_utc_now(),
     )
 
@@ -88,30 +163,61 @@ class EventStore(QObject):
                 return None
             return _row_to_event(row)
 
+    def _account_id_for_calendar(self, calendar_id: str) -> str | None:
+        cal = (
+            Session(self._engine)
+            .query(Calendar)
+            .filter(Calendar.id == calendar_id)
+            .first()
+        )
+        return cal.account_id if cal else None
+
     def queue_create(self, event: Event) -> None:
+        account_id = self._account_id_for_calendar(event.calendar_id)
         with Session(self._engine) as s, s.begin():
             row = _event_to_row(event)
             row.local_dirty = True
             s.add(row)
+            if account_id:
+                s.add(PendingOpRow(
+                    account_id=account_id,
+                    calendar_id=event.calendar_id,
+                    uid=event.uid,
+                    op="create",
+                    payload=_event_to_json(event),
+                    if_match=None,
+                    created_at=_utc_now(),
+                ))
         self.events_changed.emit(event.calendar_id, {event.uid})
 
     def queue_update(self, event: Event, prev_etag: str | None) -> None:
+        account_id = self._account_id_for_calendar(event.calendar_id)
         with Session(self._engine) as s, s.begin():
             row = s.query(EventRow).filter_by(
                 uid=event.uid, calendar_id=event.calendar_id
             ).first()
             if row is not None:
-                for field in (
-                    "summary", "description", "location", "dtstart", "dtend",
-                    "tz", "all_day", "rrule", "status", "transparency",
-                ):
-                    val = getattr(event, field, None)
-                    if val is not None:
-                        setattr(row, field, val)
+                updated = _event_to_row(event)
+                _skip = {"uid", "calendar_id", "recurrence_id", "inserted_at"}
+                for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
+                    if col_name in _skip:
+                        continue
+                    setattr(row, col_name, getattr(updated, col_name, None))
                 row.local_dirty = True
+                if account_id:
+                    s.add(PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=event.calendar_id,
+                        uid=event.uid,
+                        op="update",
+                        payload=_event_to_json(event),
+                        if_match=prev_etag,
+                        created_at=_utc_now(),
+                    ))
         self.events_changed.emit(event.calendar_id, {event.uid})
 
     def queue_delete(self, uid: str, calendar_id: str) -> None:
+        account_id = self._account_id_for_calendar(calendar_id)
         with Session(self._engine) as s, s.begin():
             row = s.query(EventRow).filter_by(
                 uid=uid, calendar_id=calendar_id
@@ -119,6 +225,16 @@ class EventStore(QObject):
             if row is not None:
                 row.deleted_locally = True
                 row.local_dirty = True
+                if account_id:
+                    s.add(PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        op="delete",
+                        payload="{}",
+                        if_match=row.etag,
+                        created_at=_utc_now(),
+                    ))
         self.events_changed.emit(calendar_id, {uid})
 
     def apply_remote_changes(
@@ -137,21 +253,30 @@ class EventStore(QObject):
                     ).delete()
                     count += 1
                 elif change.kind == "upsert" and change.event is not None:
+                    local_event = dataclasses.replace(
+                        change.event, calendar_id=calendar_id
+                    )
                     row = s.query(EventRow).filter_by(
                         uid=uid, calendar_id=calendar_id
                     ).first()
                     if row is None:
-                        row = _event_to_row(change.event)
+                        row = _event_to_row(local_event)
                         s.add(row)
                     else:
-                        updated = _event_to_row(change.event)
-                        for col in EventRow.__table__.columns.keys():
-                            if col in ("uid", "calendar_id", "recurrence_id"):
+                        updated = _event_to_row(local_event)
+                        _skip = {"uid", "calendar_id", "recurrence_id"}
+                        for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
+                            if col_name in _skip:
                                 continue
-                            setattr(row, col, getattr(updated, col, None))
+                            setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
                     count += 1
-        self.events_changed.emit(calendar_id, {c.uid for c in changes if hasattr(c, "uid")})
+            if new_cursor_json:
+                s.query(Calendar).filter(
+                    Calendar.id == calendar_id
+                ).update({"sync_cursor": new_cursor_json})
+        changed_uids = {c.uid for c in changes if hasattr(c, "uid")}
+        self.events_changed.emit(calendar_id, changed_uids)
         return count
 
     def list_accounts(self, enabled_only: bool = True) -> list:

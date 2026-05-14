@@ -20,4 +20,18 @@ def cursor_to_json(cursor: SyncCursor | None) -> dict | None:
     return cursor.to_json()
 
 
+def register_cursor(cls: type[SyncCursor]) -> None:
+    _CURSOR_REGISTRY.append(cls)
+
+
 _CURSOR_REGISTRY: list[type[SyncCursor]] = []
+
+
+# Register known cursor types at import time
+from lilical.backends.caldav import CalDavCursor  # noqa: E402
+from lilical.backends.google import GoogleCursor  # noqa: E402
+from lilical.backends.graph import GraphCursor  # noqa: E402
+
+register_cursor(CalDavCursor)
+register_cursor(GoogleCursor)
+register_cursor(GraphCursor)

@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
 
-class SchemaOutOfDate(Exception):
+class SchemaOutOfDate(Exception):  # noqa: N818
     def __init__(self, expected: str, actual: str | None) -> None:
         self.expected = expected
         self.actual = actual
-        super().__init__(f"Schema {actual} != expected {expected}. Run `pixi run migrate`.")
+        super().__init__(
+            f"Schema {actual} != expected {expected}. Run `pixi run migrate`."
+        )
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def open_engine(db_path: str) -> Engine:
@@ -33,7 +41,8 @@ def ensure_schema(engine: Engine) -> None:
     from alembic.config import Config as AlembicConfig
     from alembic.script import ScriptDirectory
 
-    cfg = AlembicConfig("alembic.ini")
+    ini_path = _project_root() / "alembic.ini"
+    cfg = AlembicConfig(str(ini_path))
     script = ScriptDirectory.from_config(cfg)
     expected = script.get_current_head()
     with engine.connect() as conn:
