@@ -52,6 +52,6 @@ test-cov   = { cmd = "pytest --cov=lilical --cov-report=term-missing", env = { P
 lint       = { cmd = "ruff check src tests", env = { PYTHONPATH = "src" } }
 fmt        = { cmd = "ruff format src tests", env = { PYTHONPATH = "src" } }
 typecheck  = { cmd = "basedpyright src", env = { PYTHONPATH = "src" } }
-migrate    = "alembic upgrade head"
-makemig    = { cmd = "alembic revision --autogenerate -m", depends-on = [] }
+migrate    = { cmd = "alembic upgrade head", env = { PYTHONPATH = "src" } }
+makemig    = { cmd = "alembic revision --autogenerate -m", depends-on = [], env = { PYTHONPATH = "src" } }
 radicale   = "docker run --rm -p 5232:5232 tomsquest/docker-radicale"

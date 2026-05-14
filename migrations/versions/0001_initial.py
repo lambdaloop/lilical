@@ -43,9 +43,7 @@ def upgrade() -> None:
         sa.Column("last_synced_at", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["account_id"], ["accounts.id"], ondelete="CASCADE"),
-    )
-    op.create_unique_constraint(
-        "uq_calendars_provider", "calendars", ["account_id", "provider_id"]
+        sa.UniqueConstraint("account_id", "provider_id", name="uq_calendars_provider"),
     )
     op.create_table(
         "events",
@@ -80,26 +78,24 @@ def upgrade() -> None:
         sa.Column("inserted_at", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("uid", "calendar_id", "recurrence_id"),
         sa.ForeignKeyConstraint(["calendar_id"], ["calendars.id"], ondelete="CASCADE"),
+        sa.UniqueConstraint(
+            "calendar_id", "provider_event_id", name="uq_events_provider"
+        ),
     )
-    op.create_unique_constraint(
-        "uq_events_provider", "events", ["calendar_id", "provider_event_id"]
-    )
-    op.create_index("idx_events_calendar", "events", ["calendar_id"])
-    op.create_index(
-        "idx_events_dirty", "events", ["local_dirty"],
-        sqlite_where="local_dirty=1",
-        postgresql_where="local_dirty=1",
-    )
-    op.create_index(
-        "idx_events_deleted", "events", ["deleted_locally"],
-        sqlite_where="deleted_locally=1",
-        postgresql_where="deleted_locally=1",
-    )
-    op.create_index(
-        "idx_events_conflict", "events", ["conflict_state"],
-        sqlite_where="conflict_state IS NOT NULL",
-        postgresql_where="conflict_state IS NOT NULL",
-    )
+    with op.batch_alter_table("events") as b:
+        b.create_index("idx_events_calendar", ["calendar_id"])
+        b.create_index(
+            "idx_events_dirty", ["local_dirty"],
+            sqlite_where=sa.text("local_dirty=1"),
+        )
+        b.create_index(
+            "idx_events_deleted", ["deleted_locally"],
+            sqlite_where=sa.text("deleted_locally=1"),
+        )
+        b.create_index(
+            "idx_events_conflict", ["conflict_state"],
+            sqlite_where=sa.text("conflict_state IS NOT NULL"),
+        )
     op.create_table(
         "event_instances",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
@@ -113,15 +109,10 @@ def upgrade() -> None:
         sa.Column("is_override", sa.Integer(), nullable=True, server_default="0"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "idx_instances_range", "event_instances", ["dtstart_utc", "dtend_utc"]
-    )
-    op.create_index(
-        "idx_instances_calendar", "event_instances", ["calendar_id", "dtstart_utc"]
-    )
-    op.create_index(
-        "idx_instances_uid", "event_instances", ["uid", "calendar_id"]
-    )
+    with op.batch_alter_table("event_instances") as b:
+        b.create_index("idx_instances_range", ["dtstart_utc", "dtend_utc"])
+        b.create_index("idx_instances_calendar", ["calendar_id", "dtstart_utc"])
+        b.create_index("idx_instances_uid", ["uid", "calendar_id"])
     op.create_table(
         "pending_ops",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
