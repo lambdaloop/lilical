@@ -104,9 +104,7 @@ async def test_list_calendars_translates_none_tree_attribute_error() -> None:
     """Caldav lib raises AttributeError on tree.tag when the server body isn't
     XML. We must translate it into a PermanentError with the bad URL so the
     user knows where to look — not a cryptic 'NoneType has no attribute tag'."""
-    backend = CalDavBackend(
-        "acc-1", "https://wrong-host.example", "u", "p"
-    )
+    backend = CalDavBackend("acc-1", "https://wrong-host.example", "u", "p")
     err = AttributeError("'NoneType' object has no attribute 'tag'")
     _wire_fake_client(backend, _FakeClient(err))
 
@@ -153,9 +151,7 @@ def test_discover_follows_307_redirect(monkeypatch) -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.method == "PROPFIND"
         assert str(req.url) == "https://snailbox.ink/.well-known/caldav"
-        return httpx.Response(
-            307, headers={"Location": "https://snailbox.ink/dav/cal"}
-        )
+        return httpx.Response(307, headers={"Location": "https://snailbox.ink/dav/cal"})
 
     _patch_httpx_client(monkeypatch, handler)
     result = _discover_caldav_url("https://snailbox.ink", "u", "p")

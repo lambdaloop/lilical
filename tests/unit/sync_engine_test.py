@@ -377,7 +377,9 @@ async def test_tick_calls_list_calendars_and_upsert_before_pulling_deltas() -> N
       list_calendars → upsert → list local calendars → initial_sync."""
     store = _RecordingStore()
     store.calendars = []  # nothing to drain
-    backend = _DiscoveryBackend(remote_cals=[{"provider_id": "real", "display_name": "Real"}])
+    backend = _DiscoveryBackend(
+        remote_cals=[{"provider_id": "real", "display_name": "Real"}]
+    )
     engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
@@ -386,7 +388,9 @@ async def test_tick_calls_list_calendars_and_upsert_before_pulling_deltas() -> N
     assert store.calls[0].startswith("upsert(")
     # list_calendars-on-store must come AFTER upsert so the placeholder is gone.
     upsert_idx = next(i for i, c in enumerate(store.calls) if c.startswith("upsert"))
-    list_idx = next(i for i, c in enumerate(store.calls) if c.startswith("list_calendars"))
+    list_idx = next(
+        i for i, c in enumerate(store.calls) if c.startswith("list_calendars")
+    )
     assert upsert_idx < list_idx
 
 
@@ -410,11 +414,19 @@ async def test_tick_emits_sync_progress_per_page() -> None:
     store = FakeStore()
     pages = [
         [
-            EventChange(kind="upsert", event=Event(uid=f"e{i}", calendar_id="cal-1"), uid=f"e{i}")
+            EventChange(
+                kind="upsert",
+                event=Event(uid=f"e{i}", calendar_id="cal-1"),
+                uid=f"e{i}",
+            )
             for i in range(3)
         ],
         [
-            EventChange(kind="upsert", event=Event(uid=f"e{i}", calendar_id="cal-1"), uid=f"e{i}")
+            EventChange(
+                kind="upsert",
+                event=Event(uid=f"e{i}", calendar_id="cal-1"),
+                uid=f"e{i}",
+            )
             for i in range(3, 5)
         ],
     ]
@@ -443,11 +455,23 @@ async def test_full_resync_runs_discovery_and_emits_progress() -> None:
     store = FakeStoreMultiCal()
     pages_by_cal = {
         "provider-cal-1": [
-            [EventChange(kind="upsert", event=Event(uid="x"), uid="x")],
+            [
+                EventChange(
+                    kind="upsert", event=Event(uid="x", calendar_id="cal-1"), uid="x"
+                )
+            ],
         ],
         "provider-cal-2": [
-            [EventChange(kind="upsert", event=Event(uid="y"), uid="y")],
-            [EventChange(kind="upsert", event=Event(uid="z"), uid="z")],
+            [
+                EventChange(
+                    kind="upsert", event=Event(uid="y", calendar_id="cal-2"), uid="y"
+                )
+            ],
+            [
+                EventChange(
+                    kind="upsert", event=Event(uid="z", calendar_id="cal-2"), uid="z"
+                )
+            ],
         ],
     }
     backend = _DiscoveryBackend(remote_cals=[], pages_per_cal=pages_by_cal)

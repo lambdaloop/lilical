@@ -449,9 +449,7 @@ def test_upsert_calendars_updates_display_name_when_changed(engine) -> None:
         [{"provider_id": "provider-cal-1", "display_name": "Renamed"}],
     )
     with Session(engine) as s:
-        cal = (
-            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
-        )
+        cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
     assert cal.display_name == "Renamed"
 
 
@@ -537,9 +535,7 @@ def test_upsert_calendars_preserves_visibility_on_existing_rows(engine) -> None:
     server resends the same provider_id."""
     store = EventStore(engine)
     with Session(engine) as s, s.begin():
-        cal = (
-            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
-        )
+        cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
         cal.is_visible = 0
 
     store.upsert_calendars(
@@ -548,7 +544,5 @@ def test_upsert_calendars_preserves_visibility_on_existing_rows(engine) -> None:
     )
 
     with Session(engine) as s:
-        cal = (
-            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
-        )
+        cal = s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
     assert cal.is_visible == 0
