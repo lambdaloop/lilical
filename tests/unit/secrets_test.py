@@ -6,8 +6,17 @@ from lilical.config import Config
 from lilical.storage.secrets import SecretsStore
 
 
-def test_secrets_get_set_delete() -> None:
-    """Bug 16: SecretsStore basic get/set/delete operations."""
+# All tests patch keyring.* — otherwise the in-memory tests below would clobber
+# the developer's real system keyring (and have, historically: a stale `_index`
+# pointing at test fixtures orphaned real account secrets and caused a forced
+# re-auth on every app restart).
+
+
+@patch("keyring.set_password")
+@patch("keyring.get_password", return_value=None)
+@patch("keyring.delete_password")
+def test_secrets_get_set_delete(mock_delete, mock_get, mock_set) -> None:
+    """Basic get/set/delete operations round-trip via the in-memory cache."""
     store = SecretsStore()
     assert store.get("missing") is None
 
@@ -23,14 +32,20 @@ def test_secrets_get_set_delete() -> None:
     assert store.get("acc-2") == {"token": "def"}
 
 
-def test_secrets_delete_nonexistent_does_not_raise() -> None:
-    """Bug 16: Deleting a non-existent key should not raise."""
+@patch("keyring.set_password")
+@patch("keyring.get_password", return_value=None)
+@patch("keyring.delete_password")
+def test_secrets_delete_nonexistent_does_not_raise(
+    mock_delete, mock_get, mock_set
+) -> None:
     store = SecretsStore()
     store.delete("no-such-account")
 
 
-def test_secrets_update_overwrites() -> None:
-    """Bug 16: Updating an existing account overwrites the secret."""
+@patch("keyring.set_password")
+@patch("keyring.get_password", return_value=None)
+@patch("keyring.delete_password")
+def test_secrets_update_overwrites(mock_delete, mock_get, mock_set) -> None:
     store = SecretsStore()
     store.set("acc-1", {"token": "old"})
     store.set("acc-1", {"token": "new", "extra": "value"})
@@ -39,15 +54,19 @@ def test_secrets_update_overwrites() -> None:
 
 @patch("keyring.set_password")
 @patch("keyring.delete_password")
-def test_secrets_set_calls_keyring_per_account(mock_delete, mock_set) -> None:
-    """Bug 16: set() writes per-account keyring entries, not a single JSON blob."""
+def test_secrets_set_writes_per_account_keyring_entry(mock_delete, mock_set) -> None:
+    """set() writes a per-account keyring entry. There is no _index key:
+    the DB is the source of truth for which accounts exist, so any separately
+    maintained index would only add a way to lose secrets."""
     store = SecretsStore()
     store.set("acc-1", {"token": "xyz"})
     store.set("acc-2", {"token": "abc"})
 
     mock_set.assert_any_call("lilical", "account:acc-1", '{"token": "xyz"}')
     mock_set.assert_any_call("lilical", "account:acc-2", '{"token": "abc"}')
-    mock_set.assert_any_call("lilical", "_index", '["acc-1", "acc-2"]')
+    # No _index write — that key was the bug that orphaned real secrets.
+    written_keys = {call.args[1] for call in mock_set.call_args_list}
+    assert "_index" not in written_keys
 
 
 @patch("keyring.set_password")
@@ -55,7 +74,6 @@ def test_secrets_set_calls_keyring_per_account(mock_delete, mock_set) -> None:
 def test_secrets_does_not_overwrite_other_accounts_on_delete(
     mock_delete, mock_set
 ) -> None:
-    """Bug 16: Deleting one account does not affect other accounts' data."""
     store = SecretsStore(data={"acc-a": {"token": "a"}, "acc-b": {"token": "b"}})
     store.delete("acc-a")
 
@@ -64,14 +82,35 @@ def test_secrets_does_not_overwrite_other_accounts_on_delete(
 
 
 @patch("keyring.get_password")
-def test_secrets_open_reads_per_account(mock_get) -> None:
-    """Bug 16: open() reads per-account entries via _index."""
+def test_secrets_get_reads_from_keyring_on_cache_miss(mock_get) -> None:
+    """The fix for the re-auth-on-restart bug: even if open() did not
+    pre-load an account, get() must still find its secret in keyring."""
     mock_get.side_effect = lambda service, key: {
-        ("lilical", "_index"): '["acc-a", "acc-b"]',
         ("lilical", "account:acc-a"): '{"token": "aaa"}',
-        ("lilical", "account:acc-b"): '{"token": "bbb"}',
     }.get((service, key))
 
     store = SecretsStore.open(Config())
     assert store.get("acc-a") == {"token": "aaa"}
-    assert store.get("acc-b") == {"token": "bbb"}
+    # Subsequent lookups hit the cache.
+    assert store.get("acc-a") == {"token": "aaa"}
+    assert mock_get.call_count == 1
+
+
+@patch("keyring.get_password", return_value=None)
+def test_secrets_get_returns_none_when_not_in_keyring(mock_get) -> None:
+    store = SecretsStore.open(Config())
+    assert store.get("ghost") is None
+
+
+@patch("keyring.get_password", side_effect=RuntimeError("dbus disconnected"))
+def test_secrets_get_returns_none_when_keyring_raises(mock_get) -> None:
+    """Keyring backend errors must not crash callers — they get None and
+    can prompt the user to re-enter credentials."""
+    store = SecretsStore.open(Config())
+    assert store.get("acc-a") is None
+
+
+@patch("keyring.get_password", return_value="this is not json")
+def test_secrets_get_returns_none_on_malformed_payload(mock_get) -> None:
+    store = SecretsStore.open(Config())
+    assert store.get("acc-a") is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -297,6 +298,75 @@ async def test_force_refresh_sets_wake_event() -> None:
     engine.force_refresh("test-acc")
 
     assert ev.is_set()
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_restarts_dead_task_after_auth_expired() -> None:
+    """force_refresh resurrects an account whose loop terminated on AuthExpired.
+
+    The user's "Sync now" must actually retry after a credentials fix, instead
+    of being a silent no-op once the loop has exited.
+    """
+    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine._store.list_calendars = MagicMock(return_value=[])
+    engine._store.list_pending_ops = MagicMock(return_value=[])
+
+    account = SimpleNamespace(id="acc-resurrect")
+    engine._store.get_account = MagicMock(return_value=account)
+
+    # First run: tick raises AuthExpired → loop terminates and pops both dicts.
+    async def auth_failing_tick(account, backend):
+        raise AuthExpired("401 Unauthorized")
+
+    engine._tick = auth_failing_tick
+    sighup_1 = asyncio.Event()
+
+    async def run_and_signal(acc, ev):
+        await engine._run_account(acc)
+        ev.set()
+
+    engine._tasks["acc-resurrect"] = asyncio.create_task(
+        run_and_signal(account, sighup_1)
+    )
+    await asyncio.wait_for(sighup_1.wait(), timeout=5)
+    assert "acc-resurrect" not in engine._tasks
+    assert "acc-resurrect" not in engine._wake_events
+
+    # Swap in a success tick before resurrecting, so the second run doesn't loop
+    # AuthExpired forever (and so we can confirm a wake_event reappears).
+    second_tick_called = asyncio.Event()
+
+    async def succeeding_tick(account, backend):
+        second_tick_called.set()
+
+    engine._tick = succeeding_tick
+
+    # force_refresh on a dead account must restart it.
+    engine.force_refresh("acc-resurrect")
+    assert "acc-resurrect" in engine._tasks
+
+    # Give the new task one tick of the event loop, then confirm the second
+    # _tick fired and a fresh wake_event was registered.
+    await asyncio.wait_for(second_tick_called.wait(), timeout=5)
+    assert "acc-resurrect" in engine._wake_events
+
+    # Clean up the still-running resurrected task.
+    task = engine._tasks["acc-resurrect"]
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_noop_when_account_unknown() -> None:
+    """force_refresh on an unknown account must not crash or create a task."""
+    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine._store.get_account = MagicMock(return_value=None)
+
+    engine.force_refresh("ghost-acc")
+
+    assert "ghost-acc" not in engine._tasks
+    assert "ghost-acc" not in engine._wake_events
 
 
 @pytest.mark.asyncio

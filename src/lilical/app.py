@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 
 import qasync
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from lilical.backends.factory import build_backend_factory
@@ -69,6 +71,18 @@ def main() -> int:
         loop.stop()
 
     qt_app.aboutToQuit.connect(lambda: asyncio.ensure_future(_shutdown()))
+
+    # Wire Ctrl+C (SIGINT) to a clean shutdown. Two pieces are required:
+    # 1. A Python signal handler that calls QApplication.quit() — which fires
+    #    aboutToQuit and routes through _shutdown().
+    # 2. A no-op QTimer that fires every 100 ms so the Python interpreter gets
+    #    a chance to run signal handlers while Qt is in its C++ event loop;
+    #    otherwise SIGINT is queued but never delivered until the next Qt event.
+    signal.signal(signal.SIGINT, lambda *_: qt_app.quit())
+    signal.signal(signal.SIGTERM, lambda *_: qt_app.quit())
+    sigint_pulse = QTimer()
+    sigint_pulse.start(100)
+    sigint_pulse.timeout.connect(lambda: None)
 
     asyncio.ensure_future(sync_engine.start_all())
     asyncio.ensure_future(notifier.start())

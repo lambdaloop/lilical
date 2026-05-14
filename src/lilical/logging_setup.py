@@ -19,3 +19,11 @@ def setup_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=handlers,
     )
+
+    # At DEBUG, also surface HTTP traffic from libraries our backends use, so
+    # CalDAV / Graph / Google failures can be diagnosed by URL+status. The
+    # python-caldav library uses requests/urllib3; httpx is used directly by
+    # our discovery helper and by msal/google clients.
+    if level.upper() == "DEBUG":
+        for name in ("caldav", "urllib3.connectionpool", "httpx", "httpcore"):
+            logging.getLogger(name).setLevel(logging.DEBUG)

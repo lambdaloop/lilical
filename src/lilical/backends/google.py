@@ -6,6 +6,9 @@ import inspect
 import json
 import logging
 import os
+import zoneinfo
+from datetime import date as _date_cls
+from datetime import datetime, time, timezone
 from typing import Any, AsyncIterator
 
 from google.auth.transport.requests import Request
@@ -117,25 +120,154 @@ def _classify_errors(f):
         return wrapper
 
 
-def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
+def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
+    """Resolve a Google start/end object to (datetime, tz, all_day).
+
+    Google's start/end is either:
+      - {"date": "YYYY-MM-DD"}  → all-day, returned as naive midnight datetime
+        so EventStore._ensure_aware_dt treats it as UTC midnight.
+      - {"dateTime": "...", "timeZone": "America/Los_Angeles"}  → timed; if the
+        parsed dateTime is naive, the timeZone field is applied.
+    """
+    if not part:
+        return None, "UTC", False
+    if "date" in part:
+        try:
+            d = _date_cls.fromisoformat(part["date"])
+            return datetime.combine(d, time.min), "UTC", True
+        except ValueError:
+            return None, "UTC", True
+    raw = part.get("dateTime")
+    tz = str(part.get("timeZone") or "UTC")
+    if not raw:
+        return None, tz, False
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None, tz, False
+    if dt.tzinfo is not None:
+        return dt, tz, False
+    if tz and tz != "UTC":
+        try:
+            return dt.replace(tzinfo=zoneinfo.ZoneInfo(tz)), tz, False
+        except Exception:
+            pass
+    return dt.replace(tzinfo=timezone.utc), tz, False
+
+
+def _parse_recurrence_lines(lines: list[str]) -> tuple[str | None, tuple, tuple]:
+    """Split Google's `recurrence` array into (rrule, exdates, rdates).
+
+    Google formats recurrence as iCal property strings:
+      "RRULE:FREQ=WEEKLY;BYDAY=MO"
+      "EXDATE;TZID=America/Los_Angeles:20260527T090000"
+      "RDATE:20260601T090000Z"
+    We need the RRULE value (without the prefix) for RecurrenceExpander, and
+    EXDATE/RDATE values as datetime tuples.
+    """
+    import icalendar
+
+    rrule_val: str | None = None
+    exdates: list[datetime] = []
+    rdates: list[datetime] = []
+    for raw in lines or []:
+        if not isinstance(raw, str):
+            continue
+        try:
+            tag, rest = raw.split(":", 1) if ":" in raw else (raw, "")
+        except Exception:
+            continue
+        name = tag.split(";", 1)[0].upper()
+        if name == "RRULE" and rrule_val is None:
+            rrule_val = rest
+            continue
+        if name in ("EXDATE", "RDATE"):
+            try:
+                # icalendar parses the full property; we only need its value list.
+                cal = icalendar.Calendar.from_ical(
+                    f"BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:x\nDTSTART:20260101T000000Z\n{raw}\nEND:VEVENT\nEND:VCALENDAR\n"
+                )
+                vevents = list(cal.walk("VEVENT"))
+                if not vevents:
+                    continue
+                prop = vevents[0].get(name)
+                if prop is None:
+                    continue
+                items = prop if isinstance(prop, list) else [prop]
+                bucket = exdates if name == "EXDATE" else rdates
+                for p in items:
+                    dts = getattr(p, "dts", None) or []
+                    for entry in dts:
+                        val = getattr(entry, "dt", None)
+                        if isinstance(val, datetime):
+                            bucket.append(val if val.tzinfo else val.replace(tzinfo=timezone.utc))
+                        elif isinstance(val, _date_cls):
+                            bucket.append(datetime.combine(val, time.min))
+            except Exception:
+                log.exception("Google: failed to parse recurrence line %r", raw)
+    return rrule_val, tuple(exdates), tuple(rdates)
+
+
+def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | None:
     status = ev_json.get("status", "")
     if status == "cancelled":
         return EventChange(
             kind="delete",
             uid=ev_json.get("iCalUID", ev_json.get("id", "")),
         )
+    # Skip recurrence overrides (modified instances of a recurring series).
+    # The storage layer keys events by (uid, calendar_id) and doesn't yet
+    # distinguish overrides — accepting them would clobber the master and we'd
+    # lose the RRULE.
+    if ev_json.get("recurringEventId"):
+        return None
+
     uid = ev_json.get("iCalUID", ev_json.get("id", ""))
+
+    dtstart, tz_start, all_day_start = _parse_google_dt(ev_json.get("start"))
+    dtend, _tz_end, _all_day_end = _parse_google_dt(ev_json.get("end"))
+    all_day = all_day_start
+
+    rrule, exdates, rdates = _parse_recurrence_lines(ev_json.get("recurrence") or [])
+
+    g_status = "CONFIRMED" if status == "confirmed" else (status.upper() if status else "CONFIRMED")
+    transparency = "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
+
+    attendees_raw = ev_json.get("attendees") or []
+    attendees: list[str] = []
+    for a in attendees_raw:
+        if isinstance(a, dict) and a.get("email"):
+            attendees.append(str(a["email"]))
+
+    last_modified: datetime | None = None
+    updated_raw = ev_json.get("updated")
+    if isinstance(updated_raw, str):
+        try:
+            last_modified = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
         provider_event_id=ev_json.get("id"),
+        dtstart=dtstart,
+        dtend=dtend,
+        tz=tz_start,
+        all_day=all_day,
         summary=ev_json.get("summary", ""),
         description=ev_json.get("description", ""),
         location=ev_json.get("location", ""),
         url=ev_json.get("htmlLink"),
+        rrule=rrule,
+        exdates=exdates,
+        rdates=rdates,
+        attendees=tuple(attendees),
+        status=g_status,
+        transparency=transparency,
+        last_modified=last_modified,
         etag=ev_json.get("etag"),
         sequence=ev_json.get("sequence", 0),
-        status="CONFIRMED" if status == "confirmed" else status.upper(),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
 
@@ -220,14 +352,19 @@ class GoogleBackend:
     async def list_calendars(self) -> list:
         service = await self._ensure_service()
         resp = await self._execute(service.calendarList().list())
-        return [
-            {
+        out = []
+        for cal in resp.get("items", []):
+            # Google returns backgroundColor as a `#rrggbb` hex string.
+            colour = cal.get("backgroundColor")
+            if colour and not colour.startswith("#"):
+                colour = "#" + colour
+            out.append({
                 "id": cal["id"],
                 "display_name": cal.get("summary", cal["id"]),
                 "provider_id": cal["id"],
-            }
-            for cal in resp.get("items", [])
-        ]
+                "color": (colour or "").lower() or None,
+            })
+        return out
 
     @_classify_errors
     async def initial_sync(
@@ -244,7 +381,9 @@ class GoogleBackend:
         while req is not None:
             resp = await self._execute(req)
             for ev in resp.get("items", []):
-                all_changes.append(_google_event_to_change(ev, calendar_id))
+                change = _google_event_to_change(ev, calendar_id)
+                if change is not None:
+                    all_changes.append(change)
             if "nextPageToken" in resp:
                 req = service.events().list_next(req, resp)
             else:
@@ -268,7 +407,11 @@ class GoogleBackend:
         )
         resp = await self._execute(req)
         changes = [
-            _google_event_to_change(ev, calendar_id) for ev in resp.get("items", [])
+            c
+            for c in (
+                _google_event_to_change(ev, calendar_id) for ev in resp.get("items", [])
+            )
+            if c is not None
         ]
         new_token = resp.get("nextSyncToken", sync_token)
         return changes, GoogleCursor(sync_token=new_token)

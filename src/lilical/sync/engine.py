@@ -30,7 +30,7 @@ class SyncEngine(QObject):
     sync_progress = Signal(str, str, int)  # account_id, calendar_label, events_so_far
     sync_finished = Signal(str, int)
     sync_failed = Signal(str, str)
-    auth_expired = Signal(str)
+    auth_expired = Signal(str, str)  # account_id, error message
     conflict_detected = Signal(str)
 
     def __init__(self, store: EventStore, secrets: SecretsStore, factory) -> None:
@@ -74,6 +74,17 @@ class SyncEngine(QObject):
         ev = self._wake_events.get(account_id)
         if ev is not None:
             ev.set()
+            return
+        # No wake event → the sync loop has exited (e.g. terminated by
+        # AuthExpired). Resurrect it so the user's "Sync now" / Ctrl+R
+        # actually retries instead of being a silent no-op.
+        if account_id in self._tasks:
+            # Task is mid-teardown; let it finish.
+            return
+        acc = self._store.get_account(account_id)
+        if acc is None:
+            return
+        self._tasks[account_id] = asyncio.create_task(self._run_account(acc))
 
     async def _run_account(self, account) -> None:
         backend = self._factory(account)
@@ -93,8 +104,8 @@ class SyncEngine(QObject):
                 except CursorExpired as e:
                     await self._full_resync(account, backend, e.calendar_id)
                     delay = 5
-                except AuthExpired:
-                    self.auth_expired.emit(account.id)
+                except AuthExpired as e:
+                    self.auth_expired.emit(account.id, str(e))
                     return
                 except TransientError as e:
                     delay = _next_backoff(delay)

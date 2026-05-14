@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import httpx
 import icalendar
 import pytest
@@ -305,3 +307,309 @@ def test_vevent_to_event_reads_tzid_from_dtstart_params() -> None:
     ve["DTSTART"].params["TZID"] = "America/New_York"
     event = _vevent_to_event(ve, calendar_id="cal-1", href="h", etag="e")
     assert event.tz == "America/New_York"
+
+
+# -- _vevent_to_event: real CalDAV-shaped VCALENDAR payloads -----------------
+
+
+_VCAL_TIMED = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:timed-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DTEND:20260513T100000Z
+SUMMARY:Design review
+DESCRIPTION:Plan the next sprint
+LOCATION:Room 4
+SEQUENCE:2
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_ALL_DAY = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:all-day-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART;VALUE=DATE:20260704
+DTEND;VALUE=DATE:20260705
+SUMMARY:Independence Day
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_DURATION = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:dur-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DURATION:PT1H30M
+SUMMARY:Workshop
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_RRULE_EXDATE = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:weekly-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DTEND:20260513T100000Z
+RRULE:FREQ=WEEKLY;COUNT=10
+EXDATE:20260527T090000Z
+SUMMARY:Weekly standup
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_RICH = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:rich-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DTEND:20260513T100000Z
+SUMMARY:Big meeting
+URL:https://example.com/meeting
+STATUS:TENTATIVE
+TRANSP:TRANSPARENT
+CATEGORIES:work,important
+ATTENDEE;CN=Alice:mailto:alice@example.com
+ATTENDEE;CN=Bob:mailto:bob@example.com
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_TZID = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:tz-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=America/New_York:20260513T090000
+DTEND;TZID=America/New_York:20260513T100000
+SUMMARY:NY meeting
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def test_vevent_to_event_extracts_timed_event_datetimes() -> None:
+    vevents = _parse_vevents(_VCAL_TIMED)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.dtstart == datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+    assert event.dtend == datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc)
+    assert event.summary == "Design review"
+    assert event.description == "Plan the next sprint"
+    assert event.location == "Room 4"
+    assert event.sequence == 2
+    assert event.all_day is False
+
+
+def test_vevent_to_event_extracts_all_day_event() -> None:
+    vevents = _parse_vevents(_VCAL_ALL_DAY)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.all_day is True
+    # All-day → naive datetime at midnight; EventStore._ensure_aware_dt then
+    # assumes UTC, which keeps the date consistent.
+    assert event.dtstart == datetime(2026, 7, 4, 0, 0)
+    assert event.dtend == datetime(2026, 7, 5, 0, 0)
+
+
+def test_vevent_to_event_computes_dtend_from_duration() -> None:
+    vevents = _parse_vevents(_VCAL_DURATION)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.dtstart == datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+    assert event.dtend == datetime(2026, 5, 13, 10, 30, tzinfo=timezone.utc)
+
+
+def test_vevent_to_event_extracts_rrule_and_exdates() -> None:
+    vevents = _parse_vevents(_VCAL_RRULE_EXDATE)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.rrule is not None
+    assert "FREQ=WEEKLY" in event.rrule
+    assert "COUNT=10" in event.rrule
+    assert len(event.exdates) == 1
+    assert event.exdates[0] == datetime(2026, 5, 27, 9, 0, tzinfo=timezone.utc)
+
+
+def test_vevent_to_event_extracts_rich_fields() -> None:
+    vevents = _parse_vevents(_VCAL_RICH)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.url == "https://example.com/meeting"
+    assert event.status == "TENTATIVE"
+    assert event.transparency == "TRANSPARENT"
+    assert set(event.categories) == {"work", "important"}
+    assert len(event.attendees) == 2
+    assert any("alice" in a.lower() for a in event.attendees)
+
+
+def test_vevent_to_event_attaches_tzid_to_naive_datetime() -> None:
+    vevents = _parse_vevents(_VCAL_TZID)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.tz == "America/New_York"
+    assert event.dtstart is not None
+    assert event.dtstart.tzinfo is not None
+    # 09:00 in NY in May (EDT, UTC-4) → 13:00 UTC
+    assert event.dtstart.astimezone(timezone.utc) == datetime(
+        2026, 5, 13, 13, 0, tzinfo=timezone.utc
+    )
+
+
+def test_events_to_changes_skips_recurrence_overrides() -> None:
+    """A VCALENDAR with a master VEVENT and a RECURRENCE-ID override should
+    emit only the master change. The schema's events table is keyed by
+    (uid, calendar_id) without recurrence_id, so accepting the override
+    would overwrite the master and we'd lose the RRULE."""
+    backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+    class _FakeEvent:
+        def __init__(self, url: str, data: str, etag: str) -> None:
+            self.url = url
+            self.data = data
+            self.etag = etag
+
+    ev = _FakeEvent(
+        url="https://example.com/foo.ics",
+        data=_VCALENDAR_RECURRENCE_OVERRIDE,
+        etag="abc",
+    )
+    changes = backend._events_to_changes([ev], calendar_id="cal-1")
+    assert len(changes) == 1
+    assert changes[0].event.rrule is not None
+    assert "FREQ=WEEKLY" in changes[0].event.rrule
+
+
+# -- end-to-end: parser → EventStore → event_instances expansion -------------
+
+
+def test_parsed_rrule_event_expands_into_event_instances(tmp_path) -> None:
+    """Regression for the blank-UI bug: prove the full pipeline now produces
+    instance rows. Before the parser fix, dtstart was empty, so
+    _rebuild_instances_for short-circuited and the views had nothing to show."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from lilical.backends.base import EventChange
+    from lilical.models.account import Account
+    from lilical.models.calendar import Calendar
+    from lilical.models.db import Base
+    from lilical.models.event import EventInstanceRow
+    from lilical.storage.event_store import EventStore
+
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session, session.begin():
+        session.add(
+            Account(
+                id="acc-1",
+                kind="caldav",
+                display_name="Test",
+                identity="user@example.com",
+                secret_ref="acc-1",
+                created_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        session.add(
+            Calendar(
+                id="cal-1",
+                account_id="acc-1",
+                provider_id="https://e/c/",
+                display_name="Test",
+                color="#000000",
+                access_role="owner",
+            )
+        )
+
+    vevents = _parse_vevents(_VCAL_RRULE_EXDATE)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+
+    store = EventStore(engine)
+    n = store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=event, uid=event.uid)],
+        '{"sync_token": null, "ctag": null}',
+    )
+    assert n == 1
+
+    with Session(engine) as session:
+        instances = session.query(EventInstanceRow).all()
+
+    # RRULE=FREQ=WEEKLY;COUNT=10 with one EXDATE → 9 instances inside the
+    # ±1-year window the store expands by default.
+    assert len(instances) == 9
+    # Sanity: all instances belong to our event and have monotonic dtstart_utc.
+    assert all(i.uid == "weekly-1@example.com" for i in instances)
+    # The EXDATE on 2026-05-27T09:00:00Z must not appear among instances.
+    starts_iso = {i.dtstart_local for i in instances}
+    assert "2026-05-27T09:00:00+00:00" not in starts_iso
+    assert "2026-05-13T09:00:00+00:00" in starts_iso  # first occurrence
+
+
+def test_parsed_non_recurring_event_creates_single_instance(tmp_path) -> None:
+    """The single-event case: parser → store → exactly one EventInstanceRow."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from lilical.backends.base import EventChange
+    from lilical.models.account import Account
+    from lilical.models.calendar import Calendar
+    from lilical.models.db import Base
+    from lilical.models.event import EventInstanceRow
+    from lilical.storage.event_store import EventStore
+
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session, session.begin():
+        session.add(
+            Account(
+                id="acc-1",
+                kind="caldav",
+                display_name="Test",
+                identity="user@example.com",
+                secret_ref="acc-1",
+                created_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        session.add(
+            Calendar(
+                id="cal-1",
+                account_id="acc-1",
+                provider_id="https://e/c/",
+                display_name="Test",
+                color="#000000",
+                access_role="owner",
+            )
+        )
+
+    vevents = _parse_vevents(_VCAL_TIMED)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    store = EventStore(engine)
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=event, uid=event.uid)],
+        '{"sync_token": null, "ctag": null}',
+    )
+
+    with Session(engine) as session:
+        instances = session.query(EventInstanceRow).all()
+
+    assert len(instances) == 1
+    assert instances[0].uid == "timed-1@example.com"
+    # 2026-05-13T09:00:00+00:00 → epoch 1778666400
+    assert instances[0].dtstart_utc == int(
+        datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()
+    )

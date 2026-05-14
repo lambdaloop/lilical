@@ -1,57 +1,161 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+import logging
+from datetime import date, datetime, timedelta
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QTableWidget,
-    QTableWidgetItem,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from lilical.storage.event_store import EventStore
 
+log = logging.getLogger(__name__)
+
+_DAYS_AHEAD = 30
+
+
+def _local_midnight(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
+
 
 class AgendaView(QWidget):
     def __init__(self, store: EventStore) -> None:
         super().__init__()
         self._store = store
+        self._start = date.today()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._table = QTableWidget()
-        self._table.setColumnCount(3)
-        self._table.setHorizontalHeaderLabels(["", "Time", "Event"])
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.verticalHeader().hide()
-        layout.addWidget(self._table)
+        self._tree = QTreeWidget()
+        self._tree.setColumnCount(3)
+        self._tree.setHeaderLabels(["Time", "Event", "Calendar"])
+        self._tree.header().setStretchLastSection(True)
+        self._tree.setUniformRowHeights(False)
+        self._tree.setAlternatingRowColors(True)
+        self._tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        layout.addWidget(self._tree)
 
-        self._populate()
+        self.refresh()
 
-    def _populate(self) -> None:
-        start = date.today()
-        rows = 0
-        for d_offset in range(14):
-            d = start + timedelta(days=d_offset)
-            rows += 3
-        self._table.setRowCount(rows)
-        row = 0
-        for d_offset in range(14):
-            d = start + timedelta(days=d_offset)
-            item = QTableWidgetItem(d.strftime("%a, %b %d"))
-            font = QFont()
-            font.setBold(True)
-            item.setFont(font)
-            self._table.setItem(row, 0, item)
-            self._table.setItem(row, 1, QTableWidgetItem(""))
-            self._table.setItem(row, 2, QTableWidgetItem(""))
-            row += 1
-            for _ in range(2):
-                self._table.setItem(row, 0, QTableWidgetItem(""))
-                self._table.setItem(row, 1, QTableWidgetItem(""))
-                self._table.setItem(row, 2, QTableWidgetItem(""))
-                row += 1
+    def navigate(self, days: int) -> None:
+        self._start = self._start + timedelta(days=days)
+        self.refresh()
+
+    def go_today(self) -> None:
+        self._start = date.today()
+        self.refresh()
+
+    def range_label(self) -> str:
+        end = self._start + timedelta(days=_DAYS_AHEAD - 1)
+        return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
+
+    def refresh(self) -> None:
+        self._tree.clear()
+
+        end = self._start + timedelta(days=_DAYS_AHEAD)
+        start_dt = _local_midnight(self._start)
+        end_dt = _local_midnight(end)
+
+        try:
+            instances = self._store.list_instances(
+                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
+            )
+        except Exception:
+            log.exception("AgendaView: failed to query instances")
+            return
+
+        by_day: dict[date, list[tuple[datetime, object]]] = {}
+        for inst in instances:
+            try:
+                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+            except (ValueError, TypeError):
+                continue
+            d = t.date()
+            if d < self._start or d >= end:
+                continue
+            by_day.setdefault(d, []).append((t, inst))
+
+        bold = QFont()
+        bold.setBold(True)
+
+        if not by_day:
+            empty = QTreeWidgetItem(self._tree)
+            empty.setText(0, "No events in this period")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            return
+
+        for d in sorted(by_day):
+            day_item = QTreeWidgetItem(self._tree)
+            day_item.setText(0, d.strftime("%A, %B %-d, %Y"))
+            day_item.setFont(0, bold)
+            day_item.setBackground(0, QColor("#333333"))
+            day_item.setBackground(1, QColor("#333333"))
+            day_item.setBackground(2, QColor("#333333"))
+            day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+
+            for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):
+                event = self._store.get_event(inst.uid, inst.calendar_id)
+                if event is None:
+                    continue
+                row = QTreeWidgetItem(day_item)
+                if inst.all_day:
+                    row.setText(0, "All day")
+                else:
+                    row.setText(0, t.strftime("%H:%M"))
+                row.setText(1, event.summary or "(no title)")
+
+                # Show calendar name if available
+                cal_label = inst.calendar_id
+                accs = self._store.list_accounts()
+                for acc in accs:
+                    for cal in self._store.list_calendars(acc.id, visible_only=False):
+                        if cal.id == inst.calendar_id:
+                            cal_label = cal.display_name
+                            break
+                row.setText(2, cal_label)
+
+                # Color chip via foreground tint on event column. Use the
+                # event's own color first, falling back to the calendar's.
+                color_hint = event.color
+                if not color_hint:
+                    cal = self._store.get_calendar(inst.calendar_id)
+                    color_hint = cal.color if cal else None
+                if color_hint:
+                    from PySide6.QtGui import QBrush
+                    c = QColor(color_hint)
+                    if c.isValid():
+                        row.setForeground(1, QBrush(c))
+
+                row.setData(0, Qt.ItemDataRole.UserRole, (inst.uid, inst.calendar_id))
+
+            day_item.setExpanded(True)
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        uid, cal_id = data
+        event = self._store.get_event(uid, cal_id)
+        if event is None:
+            return
+
+        from lilical.ui.widgets.event_dialog import EventDialog
+
+        dlg = EventDialog(self, store=self._store, event=event)
+        if dlg.exec():
+            import dataclasses
+            updated = dataclasses.replace(
+                dlg.build_event(event.uid),
+                calendar_id=dlg.calendar_id or event.calendar_id,
+                etag=event.etag,
+                sequence=event.sequence + 1,
+            )
+            self._store.queue_update(updated, event.etag)

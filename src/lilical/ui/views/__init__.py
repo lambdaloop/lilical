@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class CalendarView(Protocol):
+    """Common protocol for all calendar view widgets."""
+
+    def refresh(self) -> None: ...
+    def navigate(self, delta: int) -> None: ...
+    def go_today(self) -> None: ...
+    def range_label(self) -> str: ...

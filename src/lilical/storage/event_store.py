@@ -454,6 +454,29 @@ class EventStore(QObject):
                 {"is_visible": 1 if is_visible else 0}
             )
 
+    def get_calendar(self, calendar_id: str):
+        from lilical.models.calendar import Calendar
+
+        with Session(self._engine) as s:
+            return s.query(Calendar).filter(Calendar.id == calendar_id).first()
+
+    def set_calendar_color(self, calendar_id: str, color: str) -> None:
+        """User-set color. Fires events_changed so views re-render with the new tint."""
+        from lilical.models.calendar import Calendar
+
+        cal_account_id = None
+        with Session(self._engine) as s, s.begin():
+            row = s.query(Calendar).filter(Calendar.id == calendar_id).first()
+            if row is None:
+                return
+            row.color = color
+            cal_account_id = row.account_id
+        # No targeted "calendar metadata changed" signal exists yet; piggy-back
+        # on events_changed with an empty UID set to nudge any view watching
+        # this calendar to re-paint.
+        self.events_changed.emit(calendar_id, set())
+        _ = cal_account_id  # reserved for a future account-level signal
+
     def create_account(
         self,
         account_id: str,
@@ -503,12 +526,63 @@ class EventStore(QObject):
                 q = q.filter(Calendar.is_visible == 1)
             return q.all()
 
+    def visible_calendar_ids(self) -> set[str]:
+        """IDs of every visible calendar across every enabled account.
+
+        Returned as a `set` (never None) so views can pass it directly as the
+        `calendar_ids` filter to `list_instances`: a `set()` means "no visible
+        calendars, render nothing" — explicitly distinct from `None` ("no
+        filter, render everything").
+        """
+        from lilical.models.calendar import Calendar
+
+        with Session(self._engine) as s:
+            rows = s.query(Calendar.id).filter(Calendar.is_visible == 1).all()
+            return {row[0] for row in rows}
+
+    # 12-colour fallback palette for calendars the backend doesn't tint.
+    # Hash of provider_id picks the slot, so order is stable across syncs.
+    _FALLBACK_PALETTE: tuple[str, ...] = (
+        "#5e9fff",  # blue
+        "#5cc97a",  # green
+        "#e25c5c",  # red
+        "#f59e0b",  # orange
+        "#a855f7",  # purple
+        "#ec4899",  # pink
+        "#14b8a6",  # teal
+        "#eab308",  # yellow
+        "#06b6d4",  # cyan
+        "#84cc16",  # lime
+        "#6366f1",  # indigo
+        "#f43f5e",  # rose
+    )
+    # The colour that historically meant "no color chosen" — we treat it as
+    # unset so a backend-provided color can replace it on first sync.
+    _LEGACY_DEFAULT_COLOR = "#5e9fff"
+
+    @classmethod
+    def _fallback_color(cls, provider_id: str) -> str:
+        # hash() is salted per-process — use a stable hash for deterministic
+        # palette assignment across restarts.
+        import hashlib
+
+        idx = int(hashlib.sha1(provider_id.encode("utf-8")).hexdigest(), 16) % len(
+            cls._FALLBACK_PALETTE
+        )
+        return cls._FALLBACK_PALETTE[idx]
+
     def upsert_calendars(self, account_id: str, calendars: list[dict]) -> None:
         """Reconcile local calendar rows with the backend's calendar list.
 
         Inserts new calendars, updates display_name on existing ones, and removes
         the bootstrap placeholder row (provider_id="default") when the backend
         returns real IDs that don't include "default".
+
+        Colours: if the backend provided a colour, use it for new calendars and
+        for existing calendars whose stored colour is still the legacy default
+        (treated as "unset" so a user override won't be clobbered). If the
+        backend didn't provide a colour, fall back to the curated palette
+        deterministically picked by provider_id hash.
         """
         import uuid
 
@@ -528,10 +602,15 @@ class EventStore(QObject):
                 if not pid:
                     continue
                 name = remote.get("display_name") or pid
+                remote_color = remote.get("color")
                 if pid in existing_by_pid:
                     cal = existing_by_pid[pid]
                     if cal.display_name != name:
                         cal.display_name = name
+                    # Only overwrite stored color if the local value is the
+                    # legacy default sentinel — preserves user overrides.
+                    if cal.color in (None, "", self._LEGACY_DEFAULT_COLOR):
+                        cal.color = remote_color or self._fallback_color(pid)
                 else:
                     s.add(
                         Calendar(
@@ -539,7 +618,7 @@ class EventStore(QObject):
                             account_id=account_id,
                             provider_id=pid,
                             display_name=name,
-                            color="#5e9fff",
+                            color=remote_color or self._fallback_color(pid),
                             is_primary=0,
                             is_visible=1,
                             access_role="owner",

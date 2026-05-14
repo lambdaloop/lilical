@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+import logging
+from datetime import date, datetime, timedelta
 from typing import override
 
 from PySide6.QtCore import QRectF, Qt
@@ -10,14 +11,26 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSiz
 from lilical.storage.event_store import EventStore
 from lilical.ui.widgets.event_chip import EventChip
 
+log = logging.getLogger(__name__)
+
 TIME_AXIS_WIDTH = 60
 DAY_HEADER_H = 40
 PX_PER_HOUR = 64
 HOURS = 24
 
+# "Work-hours" range gets the normal background; off-hours are dimmed.
+WORK_START_HOUR = 8
+WORK_END_HOUR = 23
+WORK_END_MINUTE = 45
+
 
 def _grid_height() -> float:
     return DAY_HEADER_H + HOURS * PX_PER_HOUR
+
+
+def _local_midnight(d: date) -> datetime:
+    """Return midnight of `d` in the system local timezone as a UTC-aware datetime."""
+    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
 
 
 class DayGrid(QGraphicsItem):
@@ -36,9 +49,59 @@ class DayGrid(QGraphicsItem):
 
     @override
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        pen = QPen(QColor("#3a3a3a"))
-        painter.setPen(pen)
+        is_today = date.today() == self._day
 
+        # 1. Header background — slightly lighter than the body for separation.
+        painter.fillRect(
+            QRectF(0, 0, self._width, DAY_HEADER_H),
+            QColor("#1a1a1a"),
+        )
+        # 1b. Time-axis column background.
+        painter.fillRect(
+            QRectF(0, DAY_HEADER_H, TIME_AXIS_WIDTH, HOURS * PX_PER_HOUR),
+            QColor("#161616"),
+        )
+        # 1c. Today gets a faint tint over the body.
+        if is_today:
+            painter.fillRect(
+                QRectF(
+                    TIME_AXIS_WIDTH,
+                    DAY_HEADER_H,
+                    self._width - TIME_AXIS_WIDTH,
+                    HOURS * PX_PER_HOUR,
+                ),
+                QColor(62, 130, 246, 28),  # #3b82f6 @ ~11% alpha
+            )
+
+        # 1d. Off-hours dim — translucent black over 00:00-08:00 and 23:45-24:00
+        # so the active range stands out without changing the layout.
+        body_x = TIME_AXIS_WIDTH
+        body_w = self._width - TIME_AXIS_WIDTH
+        dim = QColor(0, 0, 0, 90)
+        painter.fillRect(
+            QRectF(body_x, DAY_HEADER_H, body_w, WORK_START_HOUR * PX_PER_HOUR),
+            dim,
+        )
+        work_end_minutes = WORK_END_HOUR * 60 + WORK_END_MINUTE
+        work_end_y = DAY_HEADER_H + work_end_minutes * PX_PER_HOUR / 60
+        painter.fillRect(
+            QRectF(body_x, work_end_y, body_w, _grid_height() - work_end_y),
+            dim,
+        )
+
+        # 2. Grid lines (mid-gray, drawn AFTER fills so they read on top).
+        painter.setPen(QPen(QColor("#555555"), 1))
+        for hour in range(HOURS + 1):
+            y = DAY_HEADER_H + hour * PX_PER_HOUR
+            painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
+        # Vertical separator between time axis and body.
+        painter.drawLine(TIME_AXIS_WIDTH, 0, TIME_AXIS_WIDTH, _grid_height())
+        # Header bottom border (slightly stronger).
+        painter.setPen(QPen(QColor("#7a7a7a"), 1))
+        painter.drawLine(0, DAY_HEADER_H, self._width, DAY_HEADER_H)
+
+        # 3. Header text — pure white, bold.
+        painter.setPen(QColor("#ffffff"))
         painter.setFont(QFont("sans-serif", 12, QFont.Weight.Bold))
         painter.drawText(
             QRectF(0, 0, self._width, DAY_HEADER_H),
@@ -46,23 +109,28 @@ class DayGrid(QGraphicsItem):
             self._day.strftime("%A, %B %d, %Y"),
         )
 
-        painter.setFont(QFont("sans-serif", 8))
-        for hour in range(HOURS + 1):
+        # 4. Hour labels — secondary text (readable but secondary to event chips).
+        painter.setPen(QColor("#c8c8c8"))
+        painter.setFont(QFont("sans-serif", 9))
+        for hour in range(HOURS):
             y = DAY_HEADER_H + hour * PX_PER_HOUR
-            if hour < HOURS:
-                painter.drawText(
-                    QRectF(0, y - 8, TIME_AXIS_WIDTH - 4, 16),
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                    f"{hour:02d}:00",
-                )
-            painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
+            painter.drawText(
+                QRectF(0, y - 8, TIME_AXIS_WIDTH - 6, 16),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{hour:02d}:00",
+            )
 
-        now = datetime.now()
-        if now.date() == self._day:
+        # 5. Red "now" line — recomputed every paint so it stays current.
+        now = datetime.now().astimezone()
+        if is_today:
             minutes = now.hour * 60 + now.minute
             ny = DAY_HEADER_H + minutes * PX_PER_HOUR / 60
-            painter.setPen(QPen(QColor("#e25c5c"), 2))
+            painter.setPen(QPen(QColor("#ff6b6b"), 2))
             painter.drawLine(TIME_AXIS_WIDTH, ny, self._width, ny)
+            # Small dot on the time-axis side for visibility.
+            painter.setBrush(QColor("#ff6b6b"))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QRectF(TIME_AXIS_WIDTH - 4, ny - 4, 8, 8))
 
 
 class DayView(QGraphicsView):
@@ -90,6 +158,25 @@ class DayView(QGraphicsView):
         self._scene.setSceneRect(0, 0, w, _grid_height())
         self._reposition_chips()
 
+    def navigate(self, days: int) -> None:
+        self._day = self._day + timedelta(days=days)
+        self._scene.removeItem(self._grid)
+        self._grid = DayGrid(self._day, max(800, self.viewport().width()))
+        self._scene.addItem(self._grid)
+        self._scene.setSceneRect(self._grid.boundingRect())
+        self.refresh()
+
+    def go_today(self) -> None:
+        self._day = date.today()
+        self._scene.removeItem(self._grid)
+        self._grid = DayGrid(self._day, max(800, self.viewport().width()))
+        self._scene.addItem(self._grid)
+        self._scene.setSceneRect(self._grid.boundingRect())
+        self.refresh()
+
+    def range_label(self) -> str:
+        return self._day.strftime("%A, %B %-d, %Y")
+
     def refresh(self) -> None:
         for chip in self._chips:
             self._scene.removeItem(chip)
@@ -97,33 +184,82 @@ class DayView(QGraphicsView):
         self._reposition_chips()
 
     def _reposition_chips(self) -> None:
-        start_dt = datetime(
-            self._day.year, self._day.month, self._day.day, tzinfo=timezone.utc
-        )
-        end_dt = start_dt + timedelta(days=1)
+        # Query a 28-hour window around local midnight so we cover any timezone offset.
+        start_dt = _local_midnight(self._day)
+        end_dt = start_dt + timedelta(hours=28)
         w = self._grid.boundingRect().width()
         col_w = max(20, w - TIME_AXIS_WIDTH)
 
-        for inst in self._store.list_instances(start_dt, end_dt):
+        try:
+            instances = self._store.list_instances(
+                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
+            )
+        except Exception:
+            log.exception("DayView: failed to query instances")
+            return
+
+        cal_color: dict[str, str | None] = {}
+        for inst in instances:
             event = self._store.get_event(inst.uid, inst.calendar_id)
             if event is None:
                 continue
             try:
-                t = datetime.fromisoformat(inst.dtstart_local)
+                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
             except (ValueError, TypeError):
                 continue
-            minutes = t.hour * 60 + t.minute
-            y = DAY_HEADER_H + minutes * PX_PER_HOUR / 60
-            try:
-                end_t = datetime.fromisoformat(inst.dtend_local)
-            except (ValueError, TypeError):
-                end_t = t
-            end_minutes = end_t.hour * 60 + end_t.minute
-            h = max(18, (end_minutes - minutes) * PX_PER_HOUR / 60)
+            # Only show events that fall on this specific day in local time.
+            if t.date() != self._day:
+                continue
+
             if inst.all_day:
                 y = DAY_HEADER_H + 2
                 h = 26
+            else:
+                minutes = t.hour * 60 + t.minute
+                y = DAY_HEADER_H + minutes * PX_PER_HOUR / 60
+                try:
+                    end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
+                except (ValueError, TypeError):
+                    end_t = t
+                end_minutes = end_t.hour * 60 + end_t.minute
+                h = max(18, (end_minutes - minutes) * PX_PER_HOUR / 60)
 
-            chip = EventChip(event, QRectF(TIME_AXIS_WIDTH + 1, y, col_w - 2, h))
+            if inst.calendar_id not in cal_color:
+                cal = self._store.get_calendar(inst.calendar_id)
+                cal_color[inst.calendar_id] = cal.color if cal else None
+            chip = EventChip(
+                event,
+                QRectF(TIME_AXIS_WIDTH + 1, y, col_w - 2, h),
+                calendar_color=cal_color[inst.calendar_id],
+            )
+            chip.edit_requested.connect(self._on_edit_requested)
+            chip.delete_requested.connect(self._on_delete_requested)
             self._scene.addItem(chip)
             self._chips.append(chip)
+
+    def _on_edit_requested(self, event) -> None:
+        from lilical.ui.widgets.event_dialog import EventDialog
+
+        dlg = EventDialog(self.parent(), store=self._store, event=event)
+        if dlg.exec():
+            import dataclasses
+            updated = dataclasses.replace(
+                dlg.build_event(event.uid),
+                calendar_id=dlg.calendar_id or event.calendar_id,
+                etag=event.etag,
+                sequence=event.sequence + 1,
+            )
+            self._store.queue_update(updated, event.etag)
+
+    def _on_delete_requested(self, event) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        if (
+            QMessageBox.question(
+                self.parent(),
+                "Delete event",
+                f'Delete "{event.summary}"?',
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self._store.queue_delete(event.uid, event.calendar_id)

@@ -4,6 +4,8 @@ import asyncio
 import functools
 import inspect
 import logging
+import re
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Callable
 
@@ -109,22 +111,111 @@ def _classify_errors(f):
     return wrapper
 
 
+# Graph emits 7-digit fractional seconds (e.g. "...09:00:00.0000000") which
+# datetime.fromisoformat rejects pre-3.11-style; strip extra digits so any
+# Python version parses cleanly.
+_FRACTIONAL_TRIM_RE = re.compile(r"\.(\d{6})\d+")
+
+
+def _parse_graph_dt(raw: str | None, tz_hint: str | None) -> datetime | None:
+    """Parse a Graph dateTime string and attach tzinfo from tz_hint.
+
+    Graph always returns naive datetimes; the timezone arrives separately on
+    the parent {dateTime, timeZone} object. For all-day events the timeZone is
+    typically "UTC" and the resulting datetime represents midnight on the
+    given local date — matching EventStore._ensure_aware_dt's convention.
+    """
+    if not raw:
+        return None
+    cleaned = _FRACTIONAL_TRIM_RE.sub(r".\1", raw)
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        return dt
+    if tz_hint and tz_hint != "UTC":
+        try:
+            return dt.replace(tzinfo=zoneinfo.ZoneInfo(tz_hint))
+        except Exception:
+            pass
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def _safe(fn, *, field: str, default=None):
+    try:
+        return fn()
+    except Exception:
+        log.exception("error extracting Graph field %s", field)
+        return default
+
+
 def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
     # Delta responses mark deletions with an "@removed" key on the otherwise-stub event.
+    # We key local rows on Graph's `id`, not `iCalUId` — Graph's calendarView
+    # pre-expands recurring events, so every occurrence carries the same
+    # iCalUId but a distinct id. Using id avoids occurrences clobbering each
+    # other through apply_remote_changes's (uid, calendar_id) filter and
+    # matches what /me/events/{id} expects for delete.
     if "@removed" in ev_json:
-        uid = ev_json.get("iCalUId") or ev_json.get("id") or ""
+        uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
         return EventChange(kind="delete", uid=uid)
 
-    uid = ev_json.get("iCalUId") or ev_json.get("id") or ""
+    uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
     body = ev_json.get("body") or {}
     location = ev_json.get("location") or {}
+
+    start_obj = ev_json.get("start") or {}
+    end_obj = ev_json.get("end") or {}
+    tz = str(start_obj.get("timeZone") or "UTC")
+    dtstart = _safe(
+        lambda: _parse_graph_dt(start_obj.get("dateTime"), tz),
+        field="start.dateTime",
+    )
+    dtend = _safe(
+        lambda: _parse_graph_dt(end_obj.get("dateTime"), end_obj.get("timeZone") or tz),
+        field="end.dateTime",
+    )
+
+    all_day = bool(ev_json.get("isAllDay"))
+    status = "CANCELLED" if ev_json.get("isCancelled") else "CONFIRMED"
+    show_as = str(ev_json.get("showAs") or "").lower()
+    transparency = "TRANSPARENT" if show_as in {"free", "workingelsewhere"} else "OPAQUE"
+
+    categories_raw = ev_json.get("categories") or []
+    categories = tuple(str(c) for c in categories_raw if c)
+
+    attendees_raw = ev_json.get("attendees") or []
+    attendees: list[str] = []
+    for a in attendees_raw:
+        email = (a.get("emailAddress") or {}).get("address") if isinstance(a, dict) else None
+        if email:
+            attendees.append(str(email))
+
+    last_modified = _safe(
+        lambda: _parse_graph_dt(ev_json.get("lastModifiedDateTime"), "UTC"),
+        field="lastModifiedDateTime",
+    )
+
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
         provider_event_id=ev_json.get("id"),
+        dtstart=dtstart,
+        dtend=dtend,
+        tz=tz,
+        all_day=all_day,
         summary=ev_json.get("subject", "") or "",
         description=body.get("content", "") or "",
         location=location.get("displayName", "") or "",
+        url=ev_json.get("webLink"),
+        attendees=tuple(attendees),
+        categories=categories,
+        status=status,
+        transparency=transparency,
+        last_modified=last_modified,
         etag=ev_json.get("@odata.etag"),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
@@ -258,18 +349,42 @@ class GraphBackend:
             resp.raise_for_status()
         return resp
 
+    # Microsoft Graph color enum → hex map.
+    # Source: https://learn.microsoft.com/en-us/graph/api/resources/calendar
+    _GRAPH_COLOR_MAP: dict[str, str] = {
+        "lightBlue": "#5e9fff",
+        "lightGreen": "#5cc97a",
+        "lightOrange": "#f59e0b",
+        "lightGray": "#9ca3af",
+        "lightYellow": "#eab308",
+        "lightTeal": "#14b8a6",
+        "lightPink": "#ec4899",
+        "lightBrown": "#a16207",
+        "lightRed": "#ef4444",
+        "maxColor": "#6366f1",
+    }
+
     @_classify_errors
     async def list_calendars(self) -> list:
-        resp = await self._request("GET", "/me/calendars")
+        resp = await self._request(
+            "GET", "/me/calendars?$select=id,name,color,hexColor"
+        )
         data = resp.json()
-        return [
-            {
+        out = []
+        for cal in data.get("value", []):
+            # Prefer hexColor (newer field, exact hex) over the color enum.
+            colour = cal.get("hexColor") or self._GRAPH_COLOR_MAP.get(
+                cal.get("color", "")
+            )
+            if colour and not colour.startswith("#"):
+                colour = "#" + colour
+            out.append({
                 "id": cal.get("id", ""),
                 "display_name": cal.get("name") or cal.get("id") or "",
                 "provider_id": cal.get("id", ""),
-            }
-            for cal in data.get("value", [])
-        ]
+                "color": (colour or "").lower() or None,
+            })
+        return out
 
     @_classify_errors
     async def initial_sync(

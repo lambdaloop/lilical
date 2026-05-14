@@ -48,6 +48,7 @@ class AccountSetupDialog(QDialog):
         self.setMinimumWidth(420)
 
         self._secret_data: dict[str, Any] = {}
+        self._active_oauth_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
         layout = QVBoxLayout(self)
 
@@ -139,7 +140,12 @@ class AccountSetupDialog(QDialog):
 
         secret_data: dict[str, Any] = {}
         if kind == "caldav":
-            secret_data["password"] = self._password_edit.text()
+            # Only include the password if non-empty. On re-auth the field is
+            # blank by default to mean "keep the existing password"; persisting
+            # "" here would silently wipe a working secret.
+            pw = self._password_edit.text()
+            if pw:
+                secret_data["password"] = pw
 
         return (kind, display_name, identity, server_url, secret_data)
 
@@ -167,6 +173,11 @@ class AccountSetupDialog(QDialog):
         self._secret_data = secret_data
         self.accept()
 
+    def _cancel_active_oauth(self) -> None:
+        if self._active_oauth_pool is not None:
+            self._active_oauth_pool.shutdown(wait=False, cancel_futures=True)
+            self._active_oauth_pool = None
+
     def _run_oauth_flow(self, kind: str) -> str | None:
         progress = QProgressDialog(
             "Opening browser for authentication...\n"
@@ -180,7 +191,9 @@ class AccountSetupDialog(QDialog):
         progress.setMinimumDuration(0)
         progress.show()
 
+        self._cancel_active_oauth()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._active_oauth_pool = pool
         try:
             if kind == "google":
                 future = pool.submit(_run_google_oauth_sync)
@@ -198,7 +211,8 @@ class AccountSetupDialog(QDialog):
                 QMessageBox.critical(self, "Authentication failed", str(e))
                 return None
         finally:
-            pool.shutdown(wait=False)
+            pool.shutdown(wait=False, cancel_futures=True)
+            self._active_oauth_pool = None
             progress.close()
 
     def _run_graph_device_flow(self) -> str | None:
@@ -265,7 +279,9 @@ class AccountSetupDialog(QDialog):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
+        self._cancel_active_oauth()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._active_oauth_pool = pool
         future = pool.submit(complete_graph_device_flow, app, cache, flow)
 
         result: dict[str, Any] = {"token": None, "error": None}
@@ -286,7 +302,8 @@ class AccountSetupDialog(QDialog):
             outcome = dialog.exec()
         finally:
             timer.stop()
-            pool.shutdown(wait=False)
+            pool.shutdown(wait=False, cancel_futures=True)
+            self._active_oauth_pool = None
 
         if outcome != QDialog.DialogCode.Accepted:
             return None
