@@ -23,6 +23,12 @@ qasync = ">=0.28"
 recurring-ical-events = ">=2.2"
 desktop-notifier = "*"
 
+[pypi-options]
+prerelease-mode = "allow"
+
+[feature.graph.pypi-dependencies]
+msgraph-sdk = "*"
+
 [feature.dev.dependencies]
 ruff = "*"
 basedpyright = "*"
@@ -37,6 +43,7 @@ pytest-recording = "*"
 [environments]
 default = { features = [], solve-group = "main" }
 dev = { features = ["dev"], solve-group = "main" }
+full = { features = ["dev", "graph"], solve-group = "main" }
 
 [tasks]
 run        = { cmd = "python -m lilical", env = { PYTHONPATH = "src" } }

@@ -4,12 +4,6 @@ import functools
 import logging
 from typing import Any, AsyncIterator
 
-from azure.identity import InteractiveBrowserCredential
-from msgraph import GraphServiceClient
-from msgraph.generated.users.item.calendars.item.calendar_view.delta.delta_request_builder import (
-    DeltaRequestBuilder,
-)
-
 from lilical.backends.base import (
     AuthExpired,
     ConflictError,
@@ -77,12 +71,15 @@ class GraphBackend:
     ) -> None:
         self.account_id = account_id
         self._token_json = token_json
-        self._client: GraphServiceClient | None = None
-        self._credential: InteractiveBrowserCredential | None = None
+        self._client = None
+        self._credential = None
 
-    def _get_client(self) -> GraphServiceClient:
+    def _get_client(self):
         if self._client is not None:
             return self._client
+        from azure.identity import InteractiveBrowserCredential
+        from msgraph import GraphServiceClient
+
         self._credential = InteractiveBrowserCredential(
             client_id=GRAPH_CLIENT_ID,
             tenant_id="common",
