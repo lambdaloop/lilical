@@ -1,0 +1,6 @@
+/* dark theme */
+QMainWindow { background-color: #1c1c1c; }
+QToolBar { background-color: #262626; border-bottom: 1px solid #3a3a3a; }
+QStatusBar { background-color: #2e2e2e; border-top: 1px solid #3a3a3a; color: #e8e8e8; }
+QGraphicsView { background-color: #1c1c1c; }
+QLabel { color: #e8e8e8; }

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=lilical
+Comment=Calendar for Google, Outlook, and CalDAV
+Exec=lilical %f
+Icon=io.github.lilical.Lilical
+Terminal=false
+Categories=Office;Calendar;
+MimeType=text/calendar;
+StartupWMClass=lilical
