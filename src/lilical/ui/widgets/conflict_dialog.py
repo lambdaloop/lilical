@@ -24,9 +24,7 @@ class ConflictDialog(QDialog):
 
         layout = QVBoxLayout(self)
         name = local.summary if local else ""
-        layout.addWidget(QLabel(
-            f'"{name}" was changed both here and on the server.'
-        ))
+        layout.addWidget(QLabel(f'"{name}" was changed both here and on the server.'))
 
         self._local_radio = QRadioButton("Keep your version")
         self._remote_radio = QRadioButton("Use server version")
@@ -38,8 +36,7 @@ class ConflictDialog(QDialog):
         layout.addWidget(self._merge_radio)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Ok
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)

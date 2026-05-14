@@ -1,48 +1,335 @@
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
+import webbrowser
+from typing import Any
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
+    QProgressDialog,
     QVBoxLayout,
     QWidget,
 )
 
+_KIND_TO_LABEL = {
+    "google": "Google Calendar",
+    "graph": "Microsoft / Outlook",
+    "caldav": "CalDAV",
+}
+_LABEL_TO_KIND = {v: k for k, v in _KIND_TO_LABEL.items()}
+
 
 class AccountSetupDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    _OAUTH_TIMEOUT = 300
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        existing_account=None,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add an account")
-        self.setMinimumWidth(400)
+        self._existing_account = existing_account
+        self._reauth = existing_account is not None
+
+        if self._reauth:
+            self.setWindowTitle(f"Re-authenticate — {existing_account.display_name}")
+        else:
+            self.setWindowTitle("Add an account")
+        self.setMinimumWidth(420)
+
+        self._secret_data: dict[str, Any] = {}
 
         layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("Step 1 of 3 — What kind of account?"))
+        if self._reauth:
+            layout.addWidget(
+                QLabel(
+                    "Refresh credentials for this account. You can also update "
+                    "its display name, identity, and server URL here."
+                )
+            )
+        else:
+            layout.addWidget(QLabel("Step 1 of 3 — What kind of account?"))
 
         self._kind_combo = QComboBox()
         self._kind_combo.addItems(["Google Calendar", "Microsoft / Outlook", "CalDAV"])
+        if self._reauth:
+            label = _KIND_TO_LABEL.get(existing_account.kind)
+            if label is not None:
+                self._kind_combo.setCurrentText(label)
+            self._kind_combo.setEnabled(False)
         layout.addWidget(self._kind_combo)
 
-        form = QFormLayout()
+        self._form = QFormLayout()
         self._name_edit = QLineEdit()
-        form.addRow("Display name:", self._name_edit)
+        self._name_edit.setPlaceholderText("e.g. Work, Personal")
+        self._form.addRow("Display name:", self._name_edit)
+
+        self._identity_edit = QLineEdit()
+        self._identity_edit.setPlaceholderText("email@example.com")
+        self._form.addRow("Email / Username:", self._identity_edit)
+
         self._server_edit = QLineEdit()
         self._server_edit.setPlaceholderText("https://caldav.example.com")
-        form.addRow("Server URL:", self._server_edit)
-        layout.addLayout(form)
+        self._form.addRow("Server URL:", self._server_edit)
+
+        self._password_edit = QLineEdit()
+        self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password_edit.setPlaceholderText("App password or password")
+        self._form.addRow("Password:", self._password_edit)
+
+        layout.addLayout(self._form)
         self._server_edit.setVisible(False)
+        self._password_edit.setVisible(False)
+
+        if self._reauth:
+            self._name_edit.setText(existing_account.display_name or "")
+            self._identity_edit.setText(existing_account.identity or "")
+            if existing_account.server_url:
+                self._server_edit.setText(existing_account.server_url)
+
         self._kind_combo.currentTextChanged.connect(self._on_kind_changed)
+        self._on_kind_changed(self._kind_combo.currentText())
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Ok
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
-        buttons.accepted.connect(self.accept)
+        self._continue_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._continue_btn.setText("Re-authenticate" if self._reauth else "Continue")
+        buttons.accepted.connect(self._on_continue)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def _on_kind_changed(self, text: str) -> None:
-        self._server_edit.setVisible(text == "CalDAV")
+        is_caldav = text == "CalDAV"
+        self._server_edit.setVisible(is_caldav)
+        self._password_edit.setVisible(is_caldav)
+        self._identity_edit.setPlaceholderText(
+            "Username" if is_caldav else "email@example.com"
+        )
+        if not is_caldav:
+            self._server_edit.clear()
+            self._password_edit.clear()
+
+    def _collect_data(self) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
+        kind_map = {
+            "Google Calendar": "google",
+            "Microsoft / Outlook": "graph",
+            "CalDAV": "caldav",
+        }
+        kind = kind_map.get(self._kind_combo.currentText())
+        display_name = (
+            self._name_edit.text().strip() or self._identity_edit.text().strip()
+        )
+        identity = self._identity_edit.text().strip()
+        server_url = self._server_edit.text().strip() or None
+
+        if not identity:
+            return None
+
+        secret_data: dict[str, Any] = {}
+        if kind == "caldav":
+            secret_data["password"] = self._password_edit.text()
+
+        return (kind, display_name, identity, server_url, secret_data)
+
+    def _on_continue(self) -> None:
+        data = self._collect_data()
+        if data is None:
+            QMessageBox.warning(
+                self, "Missing info", "Please enter an email or username."
+            )
+            return
+
+        kind, display_name, identity, server_url, secret_data = data
+
+        if kind == "google":
+            token = self._run_oauth_flow("google")
+            if token is None:
+                return
+            secret_data["token"] = token
+        elif kind == "graph":
+            cache_json = self._run_graph_device_flow()
+            if cache_json is None:
+                return
+            secret_data["msal_cache"] = cache_json
+
+        self._secret_data = secret_data
+        self.accept()
+
+    def _run_oauth_flow(self, kind: str) -> str | None:
+        progress = QProgressDialog(
+            "Opening browser for authentication...\n"
+            "Complete the sign-in in your browser window, then return here.",
+            "Cancel",
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle("Authentication required")
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            if kind == "google":
+                future = pool.submit(_run_google_oauth_sync)
+            else:
+                raise RuntimeError(f"unexpected oauth kind: {kind}")
+            while not future.done():
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    return None
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    future.result(timeout=0.2)
+            try:
+                return future.result()
+            except Exception as e:
+                QMessageBox.critical(self, "Authentication failed", str(e))
+                return None
+        finally:
+            pool.shutdown(wait=False)
+            progress.close()
+
+    def _run_graph_device_flow(self) -> str | None:
+        try:
+            import msal  # noqa: F401
+        except ImportError as err:
+            QMessageBox.critical(
+                self,
+                "Authentication failed",
+                "Microsoft 365 support requires the 'msal' package. "
+                "Install it with: pixi install\n\n" + str(err),
+            )
+            return None
+
+        from lilical.backends.graph import (
+            complete_graph_device_flow,
+            initiate_graph_device_flow,
+        )
+
+        try:
+            app, cache, flow = initiate_graph_device_flow()
+        except Exception as e:
+            QMessageBox.critical(self, "Authentication failed", str(e))
+            return None
+
+        user_code = flow.get("user_code", "")
+        verification_uri = flow.get(
+            "verification_uri", "https://microsoft.com/devicelogin"
+        )
+        with contextlib.suppress(Exception):
+            webbrowser.open(verification_uri)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Sign in to Microsoft 365")
+        dialog.setMinimumWidth(460)
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(
+            QLabel(
+                "A browser tab is opening Microsoft's sign-in page.\n"
+                "Enter this code when prompted:"
+            )
+        )
+        code_label = QLabel(user_code)
+        code_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        code_label.setStyleSheet(
+            "font-size: 28pt; font-weight: bold; letter-spacing: 6px; "
+            "padding: 16px; background: palette(base); border-radius: 6px;"
+        )
+        code_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(code_label)
+
+        url_label = QLabel(
+            f'<a href="{verification_uri}">{verification_uri}</a> '
+            "(if the browser did not open automatically)"
+        )
+        url_label.setOpenExternalLinks(True)
+        layout.addWidget(url_label)
+
+        status_label = QLabel("Waiting for sign-in...")
+        layout.addWidget(status_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(complete_graph_device_flow, app, cache, flow)
+
+        result: dict[str, Any] = {"token": None, "error": None}
+
+        def _check_done() -> None:
+            if future.done():
+                try:
+                    result["token"] = future.result()
+                except Exception as e:
+                    result["error"] = e
+                dialog.accept()
+
+        timer = QTimer(dialog)
+        timer.timeout.connect(_check_done)
+        timer.start(500)
+
+        try:
+            outcome = dialog.exec()
+        finally:
+            timer.stop()
+            pool.shutdown(wait=False)
+
+        if outcome != QDialog.DialogCode.Accepted:
+            return None
+        if result["error"] is not None:
+            QMessageBox.critical(self, "Authentication failed", str(result["error"]))
+            return None
+        return result["token"]
+
+    def result_data(self) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
+        kind_map = {
+            "Google Calendar": "google",
+            "Microsoft / Outlook": "graph",
+            "CalDAV": "caldav",
+        }
+        kind = kind_map.get(self._kind_combo.currentText())
+        display_name = (
+            self._name_edit.text().strip() or self._identity_edit.text().strip()
+        )
+        identity = self._identity_edit.text().strip()
+        server_url = self._server_edit.text().strip() or None
+
+        if not identity:
+            return None
+
+        return (kind, display_name, identity, server_url, dict(self._secret_data))
+
+
+def _run_google_oauth_sync() -> str:
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError as err:
+        raise RuntimeError(
+            "Google Calendar support requires 'google-auth-oauthlib'. "
+            "Install it with: pixi install"
+        ) from err
+
+    from lilical.backends.google import (
+        CLIENT_CONFIG,
+        SCOPES,
+        _validate_client_config,
+    )
+
+    _validate_client_config()
+    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
+    creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
+    return creds.to_json()

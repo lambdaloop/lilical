@@ -18,9 +18,11 @@ def parse_ics_file(path: str | Path) -> list[Event]:
         if component.name == "VEVENT":
             uid = str(component.get("UID", ""))
             summary = str(component.get("SUMMARY", ""))
-            events.append(Event(
-                uid=uid,
-                calendar_id="",
-                summary=summary,
-            ))
+            events.append(
+                Event(
+                    uid=uid,
+                    calendar_id="",
+                    summary=summary,
+                )
+            )
     return events

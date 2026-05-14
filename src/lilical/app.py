@@ -17,6 +17,20 @@ from lilical.sync.engine import SyncEngine
 from lilical.ui.main_window import MainWindow
 from lilical.ui.notifications import NotificationScheduler
 
+# Monkey-patch qasync 0.28.0 _SimpleTimer.timerEvent to suppress
+# benign KeyError when a timer fires after its callback was cleaned up.
+_orig_timer_event = qasync._SimpleTimer.timerEvent
+
+
+def _patched_timer_event(self, event):
+    try:
+        return _orig_timer_event(self, event)
+    except KeyError:
+        pass
+
+
+qasync._SimpleTimer.timerEvent = _patched_timer_event
+
 
 def main() -> int:
     setup_logging()

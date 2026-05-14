@@ -5,12 +5,13 @@ from lilical.sync.engine import _next_backoff
 
 def test_backoff_starts_at_minimum() -> None:
     delay = _next_backoff(0)
-    assert 2.5 <= delay <= 7.5
+    assert 2 <= delay <= 7
 
 
 def test_backoff_doubles() -> None:
     delay = _next_backoff(5)
     assert 5 <= delay <= 15
+    # int() truncation of min (10*0.5=5.0) and max (10*1.5=15.0) produces [5, 15]
 
 
 def test_backoff_is_capped() -> None:

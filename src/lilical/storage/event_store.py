@@ -135,9 +135,86 @@ class EventStore(QObject):
     events_changed = Signal(str, set)
     instances_changed = Signal(str, datetime, datetime)
 
+    _instances_window_years = 1
+
     def __init__(self, engine: Any) -> None:
         super().__init__()
         self._engine = engine
+
+    def rebuild_all_instances(self) -> None:
+        now = datetime.now(timezone.utc)
+        window_start = now.replace(year=now.year - self._instances_window_years)
+        window_end = now.replace(year=now.year + self._instances_window_years)
+        with Session(self._engine) as s, s.begin():
+            s.query(EventInstanceRow).delete()
+            for row in s.query(EventRow).all():
+                event = _row_to_event(row)
+                self._rebuild_instances_for(s, event, window_start, window_end)
+
+    @staticmethod
+    def _ensure_aware_dt(val) -> datetime:
+        from datetime import date as _date_cls
+        from datetime import time
+
+        if isinstance(val, _date_cls) and not isinstance(val, datetime):
+            return datetime.combine(val, time.min, tzinfo=timezone.utc)
+        if isinstance(val, datetime):
+            if val.tzinfo is None:
+                return val.replace(tzinfo=timezone.utc)
+            return val
+        return val
+
+    def _rebuild_instances_for(
+        self,
+        session,
+        event: Event,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> None:
+        if not event.dtstart:
+            return
+        if window_start is None or window_end is None:
+            now = datetime.now(timezone.utc)
+            window_start = now.replace(year=now.year - self._instances_window_years)
+            window_end = now.replace(year=now.year + self._instances_window_years)
+        session.query(EventInstanceRow).filter(
+            EventInstanceRow.uid == event.uid,
+            EventInstanceRow.calendar_id == event.calendar_id,
+        ).delete()
+        if event.rrule:
+            from lilical.recurrence.expander import RecurrenceExpander
+
+            expander = RecurrenceExpander(self)
+            for occ in expander.expand_for_storage(event, window_start, window_end):
+                ds = self._ensure_aware_dt(occ["dtstart"])
+                de = self._ensure_aware_dt(occ["dtend"])
+                session.add(
+                    EventInstanceRow(
+                        uid=occ["uid"],
+                        calendar_id=occ["calendar_id"],
+                        dtstart_utc=int(ds.timestamp()),
+                        dtend_utc=int(de.timestamp()),
+                        dtstart_local=ds.isoformat(),
+                        dtend_local=de.isoformat(),
+                        all_day=int(occ["all_day"]),
+                        is_override=int(occ.get("is_override", False)),
+                    )
+                )
+            return
+        dtstart = self._ensure_aware_dt(event.dtstart)
+        dtend = self._ensure_aware_dt(event.dtend or event.dtstart)
+        session.add(
+            EventInstanceRow(
+                uid=event.uid,
+                calendar_id=event.calendar_id,
+                dtstart_utc=int(dtstart.timestamp()),
+                dtend_utc=int(dtend.timestamp()),
+                dtstart_local=dtstart.isoformat(),
+                dtend_local=dtend.isoformat(),
+                all_day=int(event.all_day),
+                is_override=1 if event.recurrence_id else 0,
+            )
+        )
 
     def list_instances(
         self,
@@ -156,21 +233,15 @@ class EventStore(QObject):
 
     def get_event(self, uid: str, calendar_id: str) -> Event | None:
         with Session(self._engine) as s:
-            row = s.query(EventRow).filter_by(
-                uid=uid, calendar_id=calendar_id
-            ).first()
+            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
             if row is None:
                 return None
             return _row_to_event(row)
 
     def _account_id_for_calendar(self, calendar_id: str) -> str | None:
-        cal = (
-            Session(self._engine)
-            .query(Calendar)
-            .filter(Calendar.id == calendar_id)
-            .first()
-        )
-        return cal.account_id if cal else None
+        with Session(self._engine) as s:
+            cal = s.query(Calendar).filter(Calendar.id == calendar_id).first()
+            return cal.account_id if cal else None
 
     def queue_create(self, event: Event) -> None:
         account_id = self._account_id_for_calendar(event.calendar_id)
@@ -178,24 +249,29 @@ class EventStore(QObject):
             row = _event_to_row(event)
             row.local_dirty = True
             s.add(row)
+            self._rebuild_instances_for(s, event)
             if account_id:
-                s.add(PendingOpRow(
-                    account_id=account_id,
-                    calendar_id=event.calendar_id,
-                    uid=event.uid,
-                    op="create",
-                    payload=_event_to_json(event),
-                    if_match=None,
-                    created_at=_utc_now(),
-                ))
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=event.calendar_id,
+                        uid=event.uid,
+                        op="create",
+                        payload=_event_to_json(event),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
         self.events_changed.emit(event.calendar_id, {event.uid})
 
     def queue_update(self, event: Event, prev_etag: str | None) -> None:
         account_id = self._account_id_for_calendar(event.calendar_id)
         with Session(self._engine) as s, s.begin():
-            row = s.query(EventRow).filter_by(
-                uid=event.uid, calendar_id=event.calendar_id
-            ).first()
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=event.uid, calendar_id=event.calendar_id)
+                .first()
+            )
             if row is not None:
                 updated = _event_to_row(event)
                 _skip = {"uid", "calendar_id", "recurrence_id", "inserted_at"}
@@ -204,37 +280,43 @@ class EventStore(QObject):
                         continue
                     setattr(row, col_name, getattr(updated, col_name, None))
                 row.local_dirty = True
+                self._rebuild_instances_for(s, event)
                 if account_id:
-                    s.add(PendingOpRow(
-                        account_id=account_id,
-                        calendar_id=event.calendar_id,
-                        uid=event.uid,
-                        op="update",
-                        payload=_event_to_json(event),
-                        if_match=prev_etag,
-                        created_at=_utc_now(),
-                    ))
+                    s.add(
+                        PendingOpRow(
+                            account_id=account_id,
+                            calendar_id=event.calendar_id,
+                            uid=event.uid,
+                            op="update",
+                            payload=_event_to_json(event),
+                            if_match=prev_etag,
+                            created_at=_utc_now(),
+                        )
+                    )
         self.events_changed.emit(event.calendar_id, {event.uid})
 
     def queue_delete(self, uid: str, calendar_id: str) -> None:
         account_id = self._account_id_for_calendar(calendar_id)
         with Session(self._engine) as s, s.begin():
-            row = s.query(EventRow).filter_by(
-                uid=uid, calendar_id=calendar_id
-            ).first()
+            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
             if row is not None:
                 row.deleted_locally = True
                 row.local_dirty = True
+                s.query(EventInstanceRow).filter_by(
+                    uid=uid, calendar_id=calendar_id
+                ).delete()
                 if account_id:
-                    s.add(PendingOpRow(
-                        account_id=account_id,
-                        calendar_id=calendar_id,
-                        uid=uid,
-                        op="delete",
-                        payload="{}",
-                        if_match=row.etag,
-                        created_at=_utc_now(),
-                    ))
+                    s.add(
+                        PendingOpRow(
+                            account_id=account_id,
+                            calendar_id=calendar_id,
+                            uid=uid,
+                            op="delete",
+                            payload="{}",
+                            if_match=row.etag,
+                            created_at=_utc_now(),
+                        )
+                    )
         self.events_changed.emit(calendar_id, {uid})
 
     def apply_remote_changes(
@@ -256,9 +338,11 @@ class EventStore(QObject):
                     local_event = dataclasses.replace(
                         change.event, calendar_id=calendar_id
                     )
-                    row = s.query(EventRow).filter_by(
-                        uid=uid, calendar_id=calendar_id
-                    ).first()
+                    row = (
+                        s.query(EventRow)
+                        .filter_by(uid=uid, calendar_id=calendar_id)
+                        .first()
+                    )
                     if row is None:
                         row = _event_to_row(local_event)
                         s.add(row)
@@ -270,39 +354,211 @@ class EventStore(QObject):
                                 continue
                             setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
+                    self._rebuild_instances_for(s, local_event)
                     count += 1
             if new_cursor_json:
-                s.query(Calendar).filter(
-                    Calendar.id == calendar_id
-                ).update({"sync_cursor": new_cursor_json})
+                s.query(Calendar).filter(Calendar.id == calendar_id).update(
+                    {"sync_cursor": new_cursor_json}
+                )
         changed_uids = {c.uid for c in changes if hasattr(c, "uid")}
         self.events_changed.emit(calendar_id, changed_uids)
         return count
 
+    def list_events_in_range(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+        calendar_ids: set[str] | None = None,
+    ) -> list[Event]:
+        with Session(self._engine) as s:
+            q = s.query(EventRow).filter(
+                EventRow.dtstart < end_utc.isoformat(),
+                EventRow.dtend > start_utc.isoformat(),
+            )
+            if calendar_ids is not None:
+                q = q.filter(EventRow.calendar_id.in_(calendar_ids))
+            return [_row_to_event(r) for r in q.all()]
+
+    def get_account(self, account_id: str):
+        from lilical.models.account import Account
+
+        with Session(self._engine) as s:
+            return s.query(Account).filter(Account.id == account_id).first()
+
     def list_accounts(self, enabled_only: bool = True) -> list:
         from lilical.models.account import Account
+
         with Session(self._engine) as s:
             q = s.query(Account)
             if enabled_only:
                 q = q.filter(Account.enabled == 1)
             return q.all()
 
+    def update_account(
+        self,
+        account_id: str,
+        *,
+        display_name: str | None = None,
+        identity: str | None = None,
+        server_url: str | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        from lilical.models.account import Account
+
+        with Session(self._engine) as s, s.begin():
+            acc = s.query(Account).filter(Account.id == account_id).first()
+            if acc is None:
+                return
+            if display_name is not None:
+                acc.display_name = display_name
+            if identity is not None:
+                acc.identity = identity
+            if server_url is not None:
+                acc.server_url = server_url
+            if enabled is not None:
+                acc.enabled = 1 if enabled else 0
+
+    def delete_account(self, account_id: str) -> None:
+        from lilical.models.account import Account
+        from lilical.models.calendar import Calendar
+
+        with Session(self._engine) as s, s.begin():
+            cal_ids = [
+                cid
+                for (cid,) in s.query(Calendar.id)
+                .filter(Calendar.account_id == account_id)
+                .all()
+            ]
+            if cal_ids:
+                s.query(EventInstanceRow).filter(
+                    EventInstanceRow.calendar_id.in_(cal_ids)
+                ).delete(synchronize_session=False)
+                s.query(EventRow).filter(EventRow.calendar_id.in_(cal_ids)).delete(
+                    synchronize_session=False
+                )
+            s.query(PendingOpRow).filter(PendingOpRow.account_id == account_id).delete(
+                synchronize_session=False
+            )
+            s.query(Calendar).filter(Calendar.account_id == account_id).delete(
+                synchronize_session=False
+            )
+            s.query(Account).filter(Account.id == account_id).delete(
+                synchronize_session=False
+            )
+
+    def set_calendar_visibility(self, calendar_id: str, is_visible: bool) -> None:
+        from lilical.models.calendar import Calendar
+
+        with Session(self._engine) as s, s.begin():
+            s.query(Calendar).filter(Calendar.id == calendar_id).update(
+                {"is_visible": 1 if is_visible else 0}
+            )
+
+    def create_account(
+        self,
+        account_id: str,
+        kind: str,
+        display_name: str,
+        identity: str,
+        server_url: str | None,
+        calendar_id: str,
+        calendar_display_name: str,
+    ) -> None:
+        from lilical.models.account import Account
+        from lilical.models.calendar import Calendar
+
+        now = datetime.now(timezone.utc).isoformat()
+        with Session(self._engine) as s, s.begin():
+            s.add(
+                Account(
+                    id=account_id,
+                    kind=kind,
+                    display_name=display_name,
+                    identity=identity,
+                    server_url=server_url,
+                    secret_ref=account_id,
+                    created_at=now,
+                    enabled=1,
+                )
+            )
+            s.add(
+                Calendar(
+                    id=calendar_id,
+                    account_id=account_id,
+                    provider_id="default",
+                    display_name=calendar_display_name,
+                    color="#5e9fff",
+                    is_primary=1,
+                    is_visible=1,
+                    access_role="owner",
+                )
+            )
+
     def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
         from lilical.models.calendar import Calendar
+
         with Session(self._engine) as s:
             q = s.query(Calendar).filter(Calendar.account_id == account_id)
             if visible_only:
                 q = q.filter(Calendar.is_visible == 1)
             return q.all()
 
+    def upsert_calendars(self, account_id: str, calendars: list[dict]) -> None:
+        """Reconcile local calendar rows with the backend's calendar list.
+
+        Inserts new calendars, updates display_name on existing ones, and removes
+        the bootstrap placeholder row (provider_id="default") when the backend
+        returns real IDs that don't include "default".
+        """
+        import uuid
+
+        from lilical.models.calendar import Calendar
+
+        remote_pids = {c["provider_id"] for c in calendars if c.get("provider_id")}
+        with Session(self._engine) as s, s.begin():
+            existing = s.query(Calendar).filter(Calendar.account_id == account_id).all()
+            existing_by_pid = {c.provider_id: c for c in existing}
+
+            for cal in existing:
+                if cal.provider_id == "default" and "default" not in remote_pids:
+                    s.delete(cal)
+
+            for remote in calendars:
+                pid = remote.get("provider_id")
+                if not pid:
+                    continue
+                name = remote.get("display_name") or pid
+                if pid in existing_by_pid:
+                    cal = existing_by_pid[pid]
+                    if cal.display_name != name:
+                        cal.display_name = name
+                else:
+                    s.add(
+                        Calendar(
+                            id=str(uuid.uuid4()),
+                            account_id=account_id,
+                            provider_id=pid,
+                            display_name=name,
+                            color="#5e9fff",
+                            is_primary=0,
+                            is_visible=1,
+                            access_role="owner",
+                        )
+                    )
+
     def list_pending_ops(self, account_id: str) -> list:
         from lilical.models.pending_op import PendingOpRow
+
         with Session(self._engine) as s:
-            return s.query(PendingOpRow).filter(
-                PendingOpRow.account_id == account_id
-            ).order_by(PendingOpRow.created_at).all()
+            return (
+                s.query(PendingOpRow)
+                .filter(PendingOpRow.account_id == account_id)
+                .order_by(PendingOpRow.created_at)
+                .all()
+            )
 
     def delete_pending_op(self, op_id: int) -> None:
         from lilical.models.pending_op import PendingOpRow
+
         with Session(self._engine) as s, s.begin():
             s.query(PendingOpRow).filter(PendingOpRow.id == op_id).delete()

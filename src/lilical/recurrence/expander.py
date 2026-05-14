@@ -42,7 +42,9 @@ class RecurrenceExpander:
 
         cache_key = (
             event.uid,
-            event.etag or "",
+            event.dtstart.isoformat() if event.dtstart else "",
+            event.dtend.isoformat() if event.dtend else "",
+            event.rrule or "",
             window_start.isoformat(),
             window_end.isoformat(),
         )

@@ -1,18 +1,12 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import Engine
 
-
-class SchemaOutOfDate(Exception):  # noqa: N818
-    def __init__(self, expected: str, actual: str | None) -> None:
-        self.expected = expected
-        self.actual = actual
-        super().__init__(
-            f"Schema {actual} != expected {expected}. Run `pixi run migrate`."
-        )
+log = logging.getLogger(__name__)
 
 
 def _project_root() -> Path:
@@ -38,16 +32,15 @@ def open_engine(db_path: str) -> Engine:
 
 
 def ensure_schema(engine: Engine) -> None:
+    from alembic import command
     from alembic.config import Config as AlembicConfig
-    from alembic.script import ScriptDirectory
 
     ini_path = _project_root() / "alembic.ini"
     cfg = AlembicConfig(str(ini_path))
-    script = ScriptDirectory.from_config(cfg)
-    expected = script.get_current_head()
-    with engine.connect() as conn:
-        result = conn.exec_driver_sql(
-            "SELECT value FROM settings WHERE key='schema_version'"
-        ).scalar()
-    if result != expected:
-        raise SchemaOutOfDate(expected=expected, actual=result)
+    cfg.set_main_option("sqlalchemy.url", str(engine.url))
+
+    inspector = inspect(engine)
+    if "settings" not in inspector.get_table_names():
+        log.info("Fresh database — running initial schema migration")
+
+    command.upgrade(cfg, "head")

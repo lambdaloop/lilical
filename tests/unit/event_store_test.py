@@ -136,6 +136,21 @@ def _create_test_schema(engine) -> None:
         )
         conn.exec_driver_sql(
             """
+            CREATE TABLE event_instances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT NOT NULL,
+                calendar_id TEXT NOT NULL,
+                dtstart_utc INTEGER NOT NULL,
+                dtend_utc INTEGER NOT NULL,
+                dtstart_local TEXT NOT NULL,
+                dtend_local TEXT NOT NULL,
+                all_day INTEGER DEFAULT 0,
+                is_override INTEGER DEFAULT 0
+            )
+            """
+        )
+        conn.exec_driver_sql(
+            """
             CREATE TABLE settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -274,6 +289,122 @@ def test_get_event_round_trips_stored_fields(engine) -> None:
     assert event.last_modified == datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
 
 
+def test_create_account_creates_account_and_calendar(engine) -> None:
+    """Bug 11: EventStore.create_account creates both Account and Calendar rows."""
+    store = EventStore(engine)
+    store.create_account(
+        account_id="new-acc",
+        kind="google",
+        display_name="Test",
+        identity="test@example.com",
+        server_url=None,
+        calendar_id="new-cal",
+        calendar_display_name="Test Calendar",
+    )
+
+    with Session(engine) as s:
+        accounts = s.query(Account).all()
+        calendars = s.query(Calendar).all()
+        cal = s.query(Calendar).filter(Calendar.id == "new-cal").first()
+
+    assert len(accounts) == 2
+    assert len(calendars) == 2
+    new_acc = [a for a in accounts if a.id == "new-acc"][0]
+    assert new_acc.kind == "google"
+    assert new_acc.display_name == "Test"
+    assert new_acc.identity == "test@example.com"
+    assert new_acc.server_url is None
+    assert new_acc.enabled == 1
+    assert cal is not None
+    assert cal.account_id == "new-acc"
+    assert cal.display_name == "Test Calendar"
+    assert cal.is_primary == 1
+    assert cal.is_visible == 1
+
+
+def test_update_account_modifies_named_fields_only(engine) -> None:
+    store = EventStore(engine)
+
+    store.update_account("acc-1", display_name="Renamed")
+
+    acc = store.get_account("acc-1")
+    assert acc.display_name == "Renamed"
+    assert acc.identity == "lili@example.com"  # unchanged
+    assert acc.server_url is None  # unchanged
+    assert acc.enabled == 1  # unchanged
+
+    store.update_account("acc-1", identity="new@example.com", server_url="https://x")
+    acc = store.get_account("acc-1")
+    assert acc.identity == "new@example.com"
+    assert acc.server_url == "https://x"
+
+    store.update_account("acc-1", enabled=False)
+    acc = store.get_account("acc-1")
+    assert acc.enabled == 0
+
+
+def test_update_account_noop_for_missing_account(engine) -> None:
+    store = EventStore(engine)
+    store.update_account("does-not-exist", display_name="x")  # must not raise
+
+
+def test_delete_account_cascades_through_calendars_events_and_pending_ops(
+    engine,
+) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event())
+
+    with Session(engine) as s:
+        assert s.query(Account).count() == 1
+        assert s.query(Calendar).count() == 1
+        assert s.query(EventRow).count() == 1
+        assert s.query(PendingOpRow).count() == 1
+
+    store.delete_account("acc-1")
+
+    with Session(engine) as s:
+        assert s.query(Account).count() == 0
+        assert s.query(Calendar).count() == 0
+        assert s.query(EventRow).count() == 0
+        assert s.query(PendingOpRow).count() == 0
+
+
+def test_delete_account_only_removes_targeted_account(engine) -> None:
+    store = EventStore(engine)
+    store.create_account(
+        account_id="acc-2",
+        kind="caldav",
+        display_name="Personal",
+        identity="lili@personal",
+        server_url=None,
+        calendar_id="cal-2",
+        calendar_display_name="Personal Calendar",
+    )
+
+    store.delete_account("acc-1")
+
+    with Session(engine) as s:
+        accounts = s.query(Account).all()
+        calendars = s.query(Calendar).all()
+
+    assert [a.id for a in accounts] == ["acc-2"]
+    assert [c.id for c in calendars] == ["cal-2"]
+
+
+def test_set_calendar_visibility_toggles_flag(engine) -> None:
+    store = EventStore(engine)
+    cals_before = store.list_calendars("acc-1", visible_only=False)
+    assert cals_before[0].is_visible == 1
+
+    store.set_calendar_visibility("cal-1", False)
+    cals = store.list_calendars("acc-1", visible_only=False)
+    assert cals[0].is_visible == 0
+
+    store.set_calendar_visibility("cal-1", True)
+    cals = store.list_calendars("acc-1", visible_only=False)
+    assert cals[0].is_visible == 1
+
+
 def test_apply_remote_changes_uses_local_calendar_and_persists_cursor(engine) -> None:
     store = EventStore(engine)
     remote_event = _event(calendar_id="provider-cal-1")
@@ -293,3 +424,131 @@ def test_apply_remote_changes_uses_local_calendar_and_persists_cursor(engine) ->
     assert row.calendar_id == "cal-1"
     assert calendar is not None
     assert calendar.sync_cursor == cursor_json
+
+
+# -- upsert_calendars (Bug: 400 from /me/calendars/default; placeholder cleanup) --
+
+
+def test_upsert_calendars_inserts_new_calendar(engine) -> None:
+    store = EventStore(engine)
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "remote-cal-A", "display_name": "Holidays"}],
+    )
+    with Session(engine) as s:
+        cals = s.query(Calendar).filter(Calendar.account_id == "acc-1").all()
+    pids = {c.provider_id for c in cals}
+    assert "remote-cal-A" in pids
+
+
+def test_upsert_calendars_updates_display_name_when_changed(engine) -> None:
+    store = EventStore(engine)
+    # The fixture seeds a calendar with provider_id="provider-cal-1".
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "provider-cal-1", "display_name": "Renamed"}],
+    )
+    with Session(engine) as s:
+        cal = (
+            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
+        )
+    assert cal.display_name == "Renamed"
+
+
+def test_upsert_calendars_removes_default_placeholder(engine) -> None:
+    """Bug: Graph backend hit /me/calendars/default/calendarView/delta and 400'd
+    because create_account inserts a stub row with provider_id='default'. After
+    real calendars are discovered, the stub must be deleted."""
+    store = EventStore(engine)
+    with Session(engine) as s, s.begin():
+        s.add(
+            Calendar(
+                id="placeholder",
+                account_id="acc-1",
+                provider_id="default",
+                display_name="placeholder",
+                color="#000",
+                access_role="owner",
+            )
+        )
+
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "AAMk-real-calendar-id", "display_name": "Real"}],
+    )
+
+    with Session(engine) as s:
+        cals = s.query(Calendar).filter(Calendar.account_id == "acc-1").all()
+    pids = {c.provider_id for c in cals}
+    assert "default" not in pids
+    assert "AAMk-real-calendar-id" in pids
+
+
+def test_upsert_calendars_keeps_default_when_in_remote_list(engine) -> None:
+    """Google uses provider_id='default'/'primary' as a real alias for the
+    primary calendar — don't delete it in that case."""
+    store = EventStore(engine)
+    with Session(engine) as s, s.begin():
+        # Clear the seeded row so we can put a 'default' one in.
+        s.query(Calendar).delete()
+        s.add(
+            Calendar(
+                id="placeholder",
+                account_id="acc-1",
+                provider_id="default",
+                display_name="placeholder",
+                color="#000",
+                access_role="owner",
+            )
+        )
+
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "default", "display_name": "Primary"}],
+    )
+
+    with Session(engine) as s:
+        cals = s.query(Calendar).filter(Calendar.account_id == "acc-1").all()
+    assert len(cals) == 1
+    assert cals[0].provider_id == "default"
+    assert cals[0].display_name == "Primary"
+
+
+def test_upsert_calendars_skips_entries_with_empty_provider_id(engine) -> None:
+    store = EventStore(engine)
+    store.upsert_calendars(
+        "acc-1",
+        [
+            {"provider_id": "", "display_name": "junk"},
+            {"provider_id": None, "display_name": "more junk"},
+            {"provider_id": "real", "display_name": "Real"},
+        ],
+    )
+    with Session(engine) as s:
+        cals = s.query(Calendar).filter(Calendar.account_id == "acc-1").all()
+    pids = {c.provider_id for c in cals}
+    assert pids >= {"real"}
+    assert "" not in pids
+    assert None not in pids
+
+
+def test_upsert_calendars_preserves_visibility_on_existing_rows(engine) -> None:
+    """Visibility toggles are user state; upsert must not stomp them when the
+    server resends the same provider_id."""
+    store = EventStore(engine)
+    with Session(engine) as s, s.begin():
+        cal = (
+            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
+        )
+        cal.is_visible = 0
+
+    store.upsert_calendars(
+        "acc-1",
+        [{"provider_id": "provider-cal-1", "display_name": "Work Calendar"}],
+    )
+
+    with Session(engine) as s:
+        cal = (
+            s.query(Calendar).filter(Calendar.provider_id == "provider-cal-1").one()
+        )
+    assert cal.is_visible == 0

@@ -10,6 +10,7 @@ def setup_logging() -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     try:
         from systemd.journal import JournalHandler
+
         handlers.append(JournalHandler(SYSLOG_IDENTIFIER="lilical"))
     except ImportError:
         pass

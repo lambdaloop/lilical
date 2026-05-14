@@ -1,4 +1,3 @@
-
 from lilical.models.event import Event
 
 
@@ -24,6 +23,7 @@ def test_event_creation() -> None:
 def test_event_is_immutable() -> None:
     e = Event(uid="e1", calendar_id="cal-1", summary="Original")
     import dataclasses
+
     e2 = dataclasses.replace(e, summary="Changed")
     assert e.summary == "Original"
     assert e2.summary == "Changed"

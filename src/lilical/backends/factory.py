@@ -8,8 +8,18 @@ from lilical.storage.secrets import SecretsStore
 def build_backend_factory(secrets: SecretsStore):
     def factory(account: Account) -> Backend:
         secret = secrets.get(account.id) or {}
+
+        def _save_google_token(token_json: str) -> None:
+            secrets.set(account.id, {"token": token_json})
+
+        def _save_graph_cache(cache_json: str) -> None:
+            current = secrets.get(account.id) or {}
+            current["msal_cache"] = cache_json
+            secrets.set(account.id, current)
+
         if account.kind == "caldav":
             from lilical.backends.caldav import CalDavBackend
+
             return CalDavBackend(
                 account_id=account.id,
                 server_url=account.server_url or "",
@@ -18,15 +28,20 @@ def build_backend_factory(secrets: SecretsStore):
             )
         if account.kind == "google":
             from lilical.backends.google import GoogleBackend
+
             return GoogleBackend(
                 account_id=account.id,
                 token_json=secret.get("token"),
+                on_token_refreshed=_save_google_token,
             )
         if account.kind == "graph":
             from lilical.backends.graph import GraphBackend
+
             return GraphBackend(
                 account_id=account.id,
-                token_json=secret.get("token"),
+                token_cache_json=secret.get("msal_cache"),
+                on_token_refreshed=_save_graph_cache,
             )
         raise NotImplementedError(f"Backend for {account.kind} not yet implemented")
+
     return factory

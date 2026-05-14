@@ -27,14 +27,13 @@ def _next_backoff(prev: int) -> int:
 
 class SyncEngine(QObject):
     sync_started = Signal(str)
+    sync_progress = Signal(str, str, int)  # account_id, calendar_label, events_so_far
     sync_finished = Signal(str, int)
     sync_failed = Signal(str, str)
     auth_expired = Signal(str)
     conflict_detected = Signal(str)
 
-    def __init__(
-        self, store: EventStore, secrets: SecretsStore, factory
-    ) -> None:
+    def __init__(self, store: EventStore, secrets: SecretsStore, factory) -> None:
         super().__init__()
         self._store = store
         self._secrets = secrets
@@ -44,62 +43,90 @@ class SyncEngine(QObject):
 
     async def start_all(self) -> None:
         for acc in self._store.list_accounts(enabled_only=True):
-            self._tasks[acc.id] = asyncio.create_task(self._run_account(acc))
+            if acc.id not in self._tasks:
+                self._tasks[acc.id] = asyncio.create_task(self._run_account(acc))
+
+    async def start_account(self, account_id: str) -> None:
+        if account_id in self._tasks:
+            return
+        acc = self._store.get_account(account_id)
+        if acc is None:
+            return
+        self._wake_events[account_id] = asyncio.Event()
+        self._tasks[account_id] = asyncio.create_task(self._run_account(acc))
 
     async def stop_all(self) -> None:
         for t in self._tasks.values():
             t.cancel()
         await asyncio.gather(*self._tasks.values(), return_exceptions=True)
 
+    async def stop_account(self, account_id: str) -> None:
+        task = self._tasks.get(account_id)
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        self._tasks.pop(account_id, None)
+        self._wake_events.pop(account_id, None)
+
     def force_refresh(self, account_id: str) -> None:
-        self._wake_events[account_id].set()
+        ev = self._wake_events.get(account_id)
+        if ev is not None:
+            ev.set()
 
     async def _run_account(self, account) -> None:
         backend = self._factory(account)
         wake = self._wake_events[account.id] = asyncio.Event()
         delay = 0
-        while True:
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(wake.wait(), timeout=delay or 1e-9)
-            wake.clear()
-            try:
-                await self._tick(account, backend)
-                delay = 300
-            except CursorExpired as e:
-                await self._full_resync(account, backend, e.calendar_id)
-                delay = 5
-            except AuthExpired:
-                self.auth_expired.emit(account.id)
-                return
-            except TransientError as e:
-                delay = _next_backoff(delay)
-                self.sync_failed.emit(account.id, str(e))
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log.exception("sync tick crashed for %s", account.id)
-                delay = 300
-                self.sync_failed.emit(account.id, str(e))
+        try:
+            while True:
+                if delay:
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(wake.wait(), timeout=delay)
+                else:
+                    await asyncio.sleep(0)
+                wake.clear()
+                try:
+                    await self._tick(account, backend)
+                    delay = 300
+                except CursorExpired as e:
+                    await self._full_resync(account, backend, e.calendar_id)
+                    delay = 5
+                except AuthExpired:
+                    self.auth_expired.emit(account.id)
+                    return
+                except TransientError as e:
+                    delay = _next_backoff(delay)
+                    self.sync_failed.emit(account.id, str(e))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.exception("sync tick crashed for %s", account.id)
+                    delay = 300
+                    self.sync_failed.emit(account.id, str(e))
+        finally:
+            self._tasks.pop(account.id, None)
+            self._wake_events.pop(account.id, None)
 
-    async def _apply_pending_op(
-        self, backend, op
-    ) -> None:
+    async def _apply_pending_op(self, backend, op) -> None:
         event = _event_from_payload(op.payload)
         if op.op == "create":
             canonical = await backend.create_event(op.calendar_id, event)
             self._store.queue_update(canonical, prev_etag=None)
         elif op.op == "update":
-            await backend.update_event(
-                op.calendar_id, event, if_match=op.if_match
-            )
+            await backend.update_event(op.calendar_id, event, if_match=op.if_match)
         elif op.op == "delete":
-            await backend.delete_event(
-                op.calendar_id, op.uid, if_match=op.if_match
-            )
+            await backend.delete_event(op.calendar_id, op.uid, if_match=op.if_match)
 
     async def _tick(self, account, backend) -> None:
         self.sync_started.emit(account.id)
         n_changes = 0
+
+        # 0) Discover/reconcile calendars (replaces the bootstrap placeholder
+        # row with real provider IDs from the backend; picks up new calendars).
+        remote_cals = await backend.list_calendars()
+        self._store.upsert_calendars(account.id, remote_cals)
 
         # 1) Drain pending writes
         for op in self._store.list_pending_ops(account.id):
@@ -119,32 +146,56 @@ class SyncEngine(QObject):
                 json.loads(cal.sync_cursor) if cal.sync_cursor else None
             )
             if cursor is None:
+                cal_count = 0
                 async for changes, new_cur in backend.initial_sync(cal.provider_id):
-                    n_changes += self._store.apply_remote_changes(
+                    applied = self._store.apply_remote_changes(
                         cal.id,
                         changes,
                         json.dumps(new_cur.to_json()),
                     )
+                    n_changes += applied
+                    cal_count += applied
+                    self.sync_progress.emit(account.id, cal.display_name, cal_count)
             else:
                 changes, new_cur = await backend.incremental_sync(
                     cal.provider_id, cursor
                 )
-                n_changes += self._store.apply_remote_changes(
+                applied = self._store.apply_remote_changes(
                     cal.id,
                     changes,
                     json.dumps(new_cur.to_json()),
                 )
+                n_changes += applied
+                if applied:
+                    self.sync_progress.emit(account.id, cal.display_name, applied)
 
         self.sync_finished.emit(account.id, n_changes)
 
     async def _full_resync(self, account, backend, calendar_id: str) -> None:
         log.info("full resync for %s / %s", account.id, calendar_id)
+        self.sync_started.emit(account.id)
+        remote_cals = await backend.list_calendars()
+        self._store.upsert_calendars(account.id, remote_cals)
+        cals = self._store.list_calendars(account.id, visible_only=False)
+        for cal in cals:
+            if calendar_id and cal.provider_id != calendar_id:
+                continue
+            cal_count = 0
+            async for changes, new_cur in backend.initial_sync(cal.provider_id):
+                applied = self._store.apply_remote_changes(
+                    cal.id,
+                    changes,
+                    json.dumps(new_cur.to_json()),
+                )
+                cal_count += applied
+                self.sync_progress.emit(account.id, cal.display_name, cal_count)
 
 
 def _event_from_payload(payload: str | None):
     import json
 
     from lilical.models.event import Event
+
     if not payload:
         return Event(uid="", calendar_id="")
     data = json.loads(payload)

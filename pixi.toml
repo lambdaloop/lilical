@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "lilical"
 version = "0.1.0"
 description = "Linux calendar app — Google, Outlook, CalDAV"
@@ -22,12 +22,11 @@ dateparser = "*"
 qasync = ">=0.28"
 recurring-ical-events = ">=2.2"
 desktop-notifier = "*"
+msal = "*"
+httpx = ">=0.27,<1.0"
 
 [pypi-options]
 prerelease-mode = "allow"
-
-[feature.graph.pypi-dependencies]
-msgraph-sdk = "*"
 
 [feature.dev.dependencies]
 ruff = "*"
@@ -43,7 +42,6 @@ pytest-recording = "*"
 [environments]
 default = { features = [], solve-group = "main" }
 dev = { features = ["dev"], solve-group = "main" }
-full = { features = ["dev", "graph"], solve-group = "main" }
 
 [tasks]
 run        = { cmd = "python -m lilical", env = { PYTHONPATH = "src" } }
