@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.lilical.Lilical</id>
+  <name>lilical</name>
+  <summary>Calendar for Google, Outlook, and CalDAV</summary>
+  <developer_name>lilical contributors</developer_name>
+  <project_license>GPL-3.0-or-later</project_license>
+  <url type="homepage">https://github.com/lilical/lilical</url>
+  <content_rating type="oars-1.1"/>
+</component>
