@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
@@ -42,6 +43,43 @@ def _local_midnight(d: date) -> datetime:
     return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
 
 
+def _build_agenda_plan(
+    store,
+    start: date,
+    end: date,
+    current_snapshot: frozenset,
+    snapshot_start: "date | None",
+) -> dict | None:
+    """Off-thread: query DB and check snapshot. Returns None if unchanged/error."""
+    start_dt = _local_midnight(start)
+    end_dt = _local_midnight(end)
+    try:
+        instances = store.list_instances(
+            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+        )
+    except Exception:
+        log.exception("AgendaView: failed to query instances")
+        return None
+    new_snapshot = frozenset(
+        (i.uid, i.dtstart_local, i.calendar_id) for i in instances
+    )
+    if new_snapshot == current_snapshot and snapshot_start == start:
+        return None
+    events = store.events_for_instances(instances)
+    cal_info: dict[str, tuple[str, str | None]] = {}
+    for acc in store.list_accounts():
+        for cal in store.list_calendars(acc.id, visible_only=False):
+            cal_info[cal.id] = (cal.display_name, cal.color)
+    return {
+        "instances": instances,
+        "events": events,
+        "cal_info": cal_info,
+        "snapshot": new_snapshot,
+        "start": start,
+        "end": end,
+    }
+
+
 class AgendaView(QWidget):
     def __init__(self, store: EventStore) -> None:
         super().__init__()
@@ -49,6 +87,7 @@ class AgendaView(QWidget):
         self._start = date.today()
         self._snapshot: frozenset[tuple] = frozenset()
         self._snapshot_start: "date | None" = None
+        self._refresh_task: asyncio.Task | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -89,36 +128,42 @@ class AgendaView(QWidget):
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
 
     def refresh(self) -> None:
-        end = self._start + timedelta(days=_DAYS_AHEAD)
-        start_dt = _local_midnight(self._start)
-        end_dt = _local_midnight(end)
-
-        try:
-            instances = self._store.list_instances(
-                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
-            )
-        except Exception:
-            log.exception("AgendaView: failed to query instances")
-            return
-
-        # Skip full tree rebuild when the displayed data is unchanged.
-        new_snapshot = frozenset(
-            (i.uid, i.dtstart_local, i.calendar_id) for i in instances
+        if self._refresh_task and not self._refresh_task.done():
+            self._refresh_task.cancel()
+        start = self._start
+        end = start + timedelta(days=_DAYS_AHEAD)
+        self._refresh_task = asyncio.ensure_future(
+            self._refresh_async(start, end, self._snapshot, self._snapshot_start)
         )
-        if new_snapshot == self._snapshot and self._snapshot_start == self._start:
+
+    async def _refresh_async(
+        self,
+        start: date,
+        end: date,
+        snapshot: frozenset,
+        snapshot_start: "date | None",
+    ) -> None:
+        try:
+            plan = await asyncio.to_thread(
+                _build_agenda_plan, self._store, start, end, snapshot, snapshot_start
+            )
+        except asyncio.CancelledError:
             return
-        self._snapshot = new_snapshot
-        self._snapshot_start = self._start
+        if plan is None:
+            return
+        self._apply_plan(plan)
+
+    def _apply_plan(self, plan: dict) -> None:
+        instances = plan["instances"]
+        events = plan["events"]
+        cal_info: dict[str, tuple[str, str | None]] = plan["cal_info"]
+        start: date = plan["start"]
+        end: date = plan["end"]
+
+        self._snapshot = plan["snapshot"]
+        self._snapshot_start = start
 
         self._tree.clear()
-
-        events = self._store.events_for_instances(instances)
-
-        # Build calendar-id → (display_name, color) once for the whole refresh.
-        cal_info: dict[str, tuple[str, str | None]] = {}
-        for acc in self._store.list_accounts():
-            for cal in self._store.list_calendars(acc.id, visible_only=False):
-                cal_info[cal.id] = (cal.display_name, cal.color)
 
         by_day: dict[date, list[tuple[datetime, object]]] = {}
         for inst in instances:
@@ -127,7 +172,7 @@ class AgendaView(QWidget):
             except (ValueError, TypeError):
                 continue
             d = t.date()
-            if d < self._start or d >= end:
+            if d < start or d >= end:
                 continue
             by_day.setdefault(d, []).append((t, inst))
 

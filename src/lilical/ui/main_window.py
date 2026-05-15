@@ -211,39 +211,13 @@ class MainWindow(QMainWindow):
         self._view_stack_layout = QVBoxLayout(self._view_container)
         self._view_stack_layout.setContentsMargins(0, 0, 0, 0)
 
-        saved_dc = int(self._settings.value("week_day_count", 7) or 7)  # type: ignore[reportArgumentType]
-        if saved_dc not in VALID_DAY_COUNTS:
-            saved_dc = 7
-        saved_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
-        initial_mode = ChipMode.TEXT if saved_chip_mode == "text" else ChipMode.BARS
-        self._views: dict[str, QWidget] = {
-            "Month": MonthView(event_store),
-            "Week": WeekView(event_store, day_count=saved_dc),
-            "Day": DayView(event_store),
-            "Agenda": AgendaView(event_store),
-        }
-        # Apply persisted Bars/Text mode to every view that supports it.
-        for v in self._views.values():
-            if hasattr(v, "set_chip_mode"):
-                v.set_chip_mode(initial_mode)  # type: ignore[reportAttributeAccessIssue]
-        saved_time_format = str(self._settings.value("time_format", "24h") or "24h")
-        for v in self._views.values():
-            if hasattr(v, "set_time_format"):
-                v.set_time_format(saved_time_format)  # type: ignore[reportAttributeAccessIssue]
         saved_snap = int(self._settings.value("snap_minutes", 15) or 15)  # type: ignore[reportArgumentType]
         if saved_snap not in (5, 10, 15, 30, 60):
             saved_snap = 15
         self._snap_minutes: int = saved_snap
-        for v in self._views.values():
-            if hasattr(v, "set_snap_minutes"):
-                v.set_snap_minutes(saved_snap)  # type: ignore[reportAttributeAccessIssue]
-        month_view = self._views["Month"]
-        if isinstance(month_view, MonthView):
-            month_view.day_activated.connect(self._on_month_day_activated)
-            month_view.new_event_requested.connect(self._on_month_new_event_requested)
-        for view in self._views.values():
-            self._view_stack_layout.addWidget(view)
-            view.hide()
+        # Views are constructed lazily on first switch; only the default view
+        # is built at startup.
+        self._views: dict[str, QWidget] = {}
 
         right_layout.addWidget(self._view_container, 1)
 
@@ -558,10 +532,10 @@ class MainWindow(QMainWindow):
 
     def _on_month_day_activated(self, d) -> None:
         """User clicked '+N more' in Month view: switch to Day view of that date."""
+        self._switch_view("Day")
         day_view = self._views.get("Day")
         if isinstance(day_view, DayView):
             day_view.set_day(d)
-        self._switch_view("Day")
 
     def _on_month_new_event_requested(self, d) -> None:
         """User double-clicked empty day cell in Month view: open new-event dialog."""
@@ -573,11 +547,51 @@ class MainWindow(QMainWindow):
 
     # ── View switching ─────────────────────────────────────────────────────
 
+    def _construct_view(self, name: str) -> QWidget:
+        saved_dc = int(self._settings.value("week_day_count", 7) or 7)  # type: ignore[reportArgumentType]
+        if saved_dc not in VALID_DAY_COUNTS:
+            saved_dc = 7
+        saved_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
+        initial_mode = ChipMode.TEXT if saved_chip_mode == "text" else ChipMode.BARS
+        saved_time_format = str(self._settings.value("time_format", "24h") or "24h")
+        saved_snap = int(self._settings.value("snap_minutes", 15) or 15)  # type: ignore[reportArgumentType]
+        if saved_snap not in (5, 10, 15, 30, 60):
+            saved_snap = 15
+
+        v: QWidget
+        if name == "Month":
+            mv = MonthView(self._store)
+            mv.day_activated.connect(self._on_month_day_activated)
+            mv.new_event_requested.connect(self._on_month_new_event_requested)
+            v = mv
+        elif name == "Week":
+            v = WeekView(self._store, day_count=saved_dc)
+        elif name == "Day":
+            v = DayView(self._store)
+        elif name == "Agenda":
+            v = AgendaView(self._store)
+        else:
+            raise ValueError(f"Unknown view: {name}")
+
+        if hasattr(v, "set_chip_mode"):
+            v.set_chip_mode(initial_mode)  # type: ignore[reportAttributeAccessIssue]
+        if hasattr(v, "set_time_format"):
+            v.set_time_format(saved_time_format)  # type: ignore[reportAttributeAccessIssue]
+        if hasattr(v, "set_snap_minutes"):
+            v.set_snap_minutes(saved_snap)  # type: ignore[reportAttributeAccessIssue]
+
+        self._view_stack_layout.addWidget(v)
+        v.hide()
+        return v
+
     def _switch_view(self, name: str) -> None:
         if self._current_view is not None:
             self._current_view.hide()
         self._current_view_name = name
-        view = self._views[name]
+        view = self._views.get(name)
+        if view is None:
+            view = self._construct_view(name)
+            self._views[name] = view
         self._current_view = view
         view.show()
         if hasattr(view, "refresh"):
@@ -704,7 +718,7 @@ class MainWindow(QMainWindow):
                 log.exception("Failed to apply theme '%s'", name)
                 self._theme_qss_cache[name] = ""
         qss = self._theme_qss_cache.get(name, "")
-        if qss:
+        if qss and qss != self.styleSheet():
             self.setStyleSheet(qss)
         # Repaint all custom-drawn views with the new palette.
         for v in self._views.values():

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
@@ -303,6 +304,150 @@ class _StickyHeader(QGraphicsItem):
             )
 
 
+def _build_week_plan(
+    store, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float
+) -> dict | None:
+    """Off-thread: query DB and compute chip placements for the week view."""
+    start_dt = _local_midnight(start)
+    end_dt = _local_midnight(start + timedelta(days=day_count))
+    try:
+        instances = store.list_instances(
+            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+        )
+    except Exception:
+        log.exception("WeekView: failed to query instances")
+        return None
+
+    events = store.events_for_instances(instances)
+    cal_color: dict[str, str | None] = {
+        cal.id: cal.color
+        for acc in store.list_accounts()
+        for cal in store.list_calendars(acc.id, visible_only=False)
+    }
+
+    all_day_rows_per_col = [0] * day_count
+    first_event_minutes: int | None = None
+    for inst in instances:
+        if not inst.all_day:
+            try:
+                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+                day_offset = (t.date() - start).days
+                if 0 <= day_offset < day_count:
+                    m = t.hour * 60 + t.minute
+                    if first_event_minutes is None or m < first_event_minutes:
+                        first_event_minutes = m
+            except (ValueError, TypeError):
+                pass
+            continue
+        try:
+            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+        except (ValueError, TypeError):
+            continue
+        day_offset = (t.date() - start).days
+        if 0 <= day_offset < day_count:
+            all_day_rows_per_col[day_offset] += 1
+
+    max_rows = max(all_day_rows_per_col, default=0)
+    if max_rows == 0:
+        band_h = ALL_DAY_BAND_MIN
+    else:
+        rows_shown = min(max_rows, ALL_DAY_MAX_ROWS)
+        band_h = 4 + rows_shown * ALL_DAY_ROW_H
+    body_top = DAY_HEADER_H + band_h
+
+    per_col_all_day_idx = [0] * day_count
+    timed_by_day: list[list[tuple]] = [[] for _ in range(day_count)]
+    new_placements: dict[tuple, dict] = {}
+
+    for inst in instances:
+        event = events.get(id(inst))
+        if event is None:
+            continue
+        try:
+            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+        except (ValueError, TypeError):
+            continue
+        day_offset = (t.date() - start).days
+        if day_offset < 0 or day_offset >= day_count:
+            continue
+        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
+        if inst.all_day:
+            row = per_col_all_day_idx[day_offset]
+            per_col_all_day_idx[day_offset] += 1
+            if row >= ALL_DAY_MAX_ROWS:
+                continue
+            x = TIME_AXIS_WIDTH + day_offset * col_w
+            y = DAY_HEADER_H + 2 + row * ALL_DAY_ROW_H
+            h = ALL_DAY_ROW_H - 2
+            new_placements[key] = {
+                "rect": QRectF(x + 1, y, col_w - 2, h),
+                "calendar_color": cal_color.get(inst.calendar_id),
+                "show_time_prefix": False,
+                "time_prefix": None,
+                "continues_left": False,
+                "continues_right": False,
+                "overlap_cols": 1,
+                "instance_dtstart": t,
+                "is_sticky": True,
+                "event": event,
+            }
+            continue
+        try:
+            end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
+        except (ValueError, TypeError):
+            end_t = t
+        start_min = t.hour * 60 + t.minute
+        end_min = end_t.hour * 60 + end_t.minute
+        if end_min <= start_min:
+            end_min = start_min + 15
+        timed_by_day[day_offset].append((
+            float(start_min), float(end_min),
+            {"event": event, "start_dt": t, "cal_color": cal_color.get(inst.calendar_id),
+             "instance_dtstart": t, "key": key},
+        ))
+
+    _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
+    for day_offset, bucket in enumerate(timed_by_day):
+        if not bucket:
+            continue
+        packed = pack_overlapping(bucket)
+        day_x = TIME_AXIS_WIDTH + day_offset * col_w
+        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(packed, bucket, strict=True):
+            sub_w = (col_w - 2) / cols
+            chip_x = day_x + 1 + col_i * sub_w
+            chip_w = max(8.0, xspan * sub_w)
+            chip_y = body_top + start_min * px_per_hour / 60
+            chip_h = max(14.0, (end_min - start_min) * px_per_hour / 60)
+            new_placements[payload["key"]] = {
+                "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
+                "calendar_color": payload["cal_color"],
+                "show_time_prefix": True,
+                "time_prefix": payload["start_dt"].strftime(_tfmt),
+                "continues_left": False,
+                "continues_right": False,
+                "overlap_cols": cols,
+                "instance_dtstart": payload["instance_dtstart"],
+                "is_sticky": False,
+                "event": payload["event"],
+            }
+
+    more_markers: list[tuple[QRectF, str]] = []
+    for col, count in enumerate(all_day_rows_per_col):
+        hidden = count - ALL_DAY_MAX_ROWS
+        if hidden <= 0:
+            continue
+        x = TIME_AXIS_WIDTH + col * col_w
+        y = DAY_HEADER_H + 2 + (ALL_DAY_MAX_ROWS - 1) * ALL_DAY_ROW_H
+        more_markers.append((QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2), f"+{hidden} more"))
+
+    return {
+        "new_placements": new_placements,
+        "band_h": float(band_h),
+        "more_markers": more_markers,
+        "first_event_minutes": first_event_minutes,
+    }
+
+
 class WeekView(QGraphicsView):
     def __init__(self, store: EventStore, day_count: int = 7) -> None:
         super().__init__()
@@ -312,6 +457,8 @@ class WeekView(QGraphicsView):
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
         self._chips: dict[tuple[str, str, str], EventChip] = {}
+        self._refresh_task: asyncio.Task | None = None
+        self._needs_scroll: bool = True
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
         # Active drag (either originated on empty grid or on a chip)
@@ -361,9 +508,6 @@ class WeekView(QGraphicsView):
         # Pin the sticky header to the viewport top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
 
-        # Defer to the next tick so the viewport has a real size by then.
-        QTimer.singleShot(0, self._scroll_to_first_event)
-
     # ── Geometry helpers ─────────────────────────────────────────────────
 
     def _rebuild_grid(self) -> None:
@@ -390,7 +534,7 @@ class WeekView(QGraphicsView):
         self._grid.set_width(w)
         self._sticky.set_width(w)
         self._scene.setSceneRect(0, 0, w, self._grid.grid_height())
-        self._reposition_chips()
+        self.refresh()
 
     def _on_v_scroll(self, value: int) -> None:
         self._sticky.setY(float(value))
@@ -413,8 +557,8 @@ class WeekView(QGraphicsView):
             return
         self._day_count = n
         self._rebuild_grid()
+        self._needs_scroll = True
         self.refresh()
-        QTimer.singleShot(0, self._scroll_to_first_event)
 
     def set_chip_mode(self, mode: ChipMode) -> None:
         if mode is self._chip_mode:
@@ -452,7 +596,7 @@ class WeekView(QGraphicsView):
         self._px_per_hour = px
         self._grid.set_px_per_hour(px)
         self._scene.setSceneRect(self._grid.boundingRect())
-        self._reposition_chips()
+        self.refresh()
 
     def zoom_in(self) -> None:
         self.set_px_per_hour(self._px_per_hour + 8)
@@ -462,46 +606,6 @@ class WeekView(QGraphicsView):
 
     def zoom_reset(self) -> None:
         self.set_px_per_hour(DEFAULT_PX_PER_HOUR)
-
-    # ── Auto-scroll to first event ──────────────────────────────────────
-
-    def _scroll_to_first_event(self) -> None:
-        """Scroll so the earliest timed event of the visible range sits just
-        below the sticky header. Falls back to the work-day start when there
-        are no timed events visible."""
-        start_dt = _local_midnight(self._start)
-        end_dt = _local_midnight(self._start + timedelta(days=self._day_count))
-        earliest: int | None = None
-        try:
-            instances = self._store.list_instances(
-                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
-            )
-        except Exception:
-            log.exception("WeekView: failed to query instances for autoscroll")
-            return
-        for inst in instances:
-            if inst.all_day:
-                continue
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-            except (ValueError, TypeError):
-                continue
-            if not (
-                self._start <= t.date() < self._start + timedelta(days=self._day_count)
-            ):
-                continue
-            m = t.hour * 60 + t.minute
-            if earliest is None or m < earliest:
-                earliest = m
-        target_minutes = earliest if earliest is not None else WORK_START_HOUR * 60
-        # Scrollbar value is measured in scene Y. The viewport top sits at
-        # scene Y = scrollbar.value(). The sticky header pins the first
-        # header_h pixels of the viewport, so the first body row visible is
-        # at scene Y = scrollbar.value() + header_h. Placing the target event
-        # one body_top below scrollbar.value() puts it just under the header.
-        target_y = target_minutes * self._px_per_hour / 60
-        sb = self.verticalScrollBar()
-        sb.setValue(max(0, min(sb.maximum(), int(target_y - 8))))
 
     # ── Wheel zoom (Ctrl+scroll) ─────────────────────────────────────────
 
@@ -521,15 +625,15 @@ class WeekView(QGraphicsView):
     def navigate(self, weeks: int) -> None:
         self._start = self._start + timedelta(weeks=weeks)
         self._rebuild_grid()
+        self._needs_scroll = True
         self.refresh()
-        QTimer.singleShot(0, self._scroll_to_first_event)
 
     def go_today(self) -> None:
         today = date.today()
         self._start = today - timedelta(days=today.weekday())
         self._rebuild_grid()
+        self._needs_scroll = True
         self.refresh()
-        QTimer.singleShot(0, self._scroll_to_first_event)
 
     def refresh_theme(self) -> None:
         self._scene.update()
@@ -538,8 +642,8 @@ class WeekView(QGraphicsView):
     def go_to_date(self, d: date) -> None:
         self._start = d - timedelta(days=d.weekday())
         self._rebuild_grid()
+        self._needs_scroll = True
         self.refresh()
-        QTimer.singleShot(0, self._scroll_to_first_event)
 
     def range_label(self) -> str:
         end = self._start + timedelta(days=self._day_count - 1)
@@ -548,12 +652,33 @@ class WeekView(QGraphicsView):
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
 
     def refresh(self) -> None:
-        # _reposition_chips() already clears its own state — just call it.
-        self._reposition_chips()
+        if self._refresh_task and not self._refresh_task.done():
+            self._refresh_task.cancel()
+        start = self._start
+        day_count = self._day_count
+        px_per_hour = self._px_per_hour
+        time_format = self._time_format
+        col_w = max(20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / day_count)
+        self._refresh_task = asyncio.ensure_future(
+            self._refresh_async(start, day_count, px_per_hour, time_format, col_w)
+        )
+
+    async def _refresh_async(
+        self, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float
+    ) -> None:
+        try:
+            plan = await asyncio.to_thread(
+                _build_week_plan, self._store, start, day_count, px_per_hour, time_format, col_w
+            )
+        except asyncio.CancelledError:
+            return
+        if plan is None:
+            return
+        self._apply_plan(plan)
 
     # ── Chip placement ───────────────────────────────────────────────────
 
-    def _reposition_chips(self) -> None:
+    def _apply_plan(self, plan: dict) -> None:
         # _MoreMarker items are not tracked in self._chips — always rebuild them.
         for child in list(self._sticky.childItems()):
             if isinstance(child, _MoreMarker):
@@ -564,147 +689,15 @@ class WeekView(QGraphicsView):
             if isinstance(item, _MoreMarker):
                 self._scene.removeItem(item)
 
-        start_dt = _local_midnight(self._start)
-        end_dt = _local_midnight(self._start + timedelta(days=self._day_count))
-        col_w = max(
-            20, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
-        )
-
-        try:
-            instances = self._store.list_instances(
-                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
-            )
-        except Exception:
-            log.exception("WeekView: failed to query instances")
-            return
-
-        events = self._store.events_for_instances(instances)
-        cal_color: dict[str, str | None] = {
-            cal.id: cal.color
-            for acc in self._store.list_accounts()
-            for cal in self._store.list_calendars(acc.id, visible_only=False)
-        }
-        # First pass: count all-day-per-day to size the all-day band.
-        all_day_rows_per_col = [0] * self._day_count
-        for inst in instances:
-            if not inst.all_day:
-                continue
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-            except (ValueError, TypeError):
-                continue
-            day_offset = (t.date() - self._start).days
-            if 0 <= day_offset < self._day_count:
-                all_day_rows_per_col[day_offset] += 1
-        max_rows = max(all_day_rows_per_col, default=0)
-        if max_rows == 0:
-            band_h = ALL_DAY_BAND_MIN
-        else:
-            rows_shown = min(max_rows, ALL_DAY_MAX_ROWS)
-            band_h = 4 + rows_shown * ALL_DAY_ROW_H
+        band_h = plan["band_h"]
         if abs(band_h - self._grid.all_day_band_h) > 0.5:
             self._grid.set_all_day_band_h(band_h)
             self._sticky.set_all_day_band_h(band_h)
             self._scene.setSceneRect(self._grid.boundingRect())
         else:
-            # Keep sticky header band height in sync even when grid didn't change.
             self._sticky.set_all_day_band_h(band_h)
 
-        body_top = self._grid.hour_top()
-        per_col_all_day_idx = [0] * self._day_count
-        # Timed events bucketed per day_offset; we lay them out after this
-        # pass via the cascade packer so that overlaps render side-by-side.
-        timed_by_day: list[list[tuple[float, float, dict[str, object]]]] = [
-            [] for _ in range(self._day_count)
-        ]
-        # new_placements: chip key → placement info dict
-        new_placements: dict[tuple[str, str, str], dict] = {}
-
-        for inst in instances:
-            event = events.get(id(inst))
-            if event is None:
-                continue
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-            except (ValueError, TypeError):
-                continue
-            day_offset = (t.date() - self._start).days
-            if day_offset < 0 or day_offset >= self._day_count:
-                continue
-
-            key = (inst.calendar_id, inst.uid, inst.dtstart_local)
-
-            if inst.all_day:
-                row = per_col_all_day_idx[day_offset]
-                per_col_all_day_idx[day_offset] += 1
-                if row >= ALL_DAY_MAX_ROWS:
-                    continue
-                x = TIME_AXIS_WIDTH + day_offset * col_w
-                y = DAY_HEADER_H + 2 + row * ALL_DAY_ROW_H
-                h = ALL_DAY_ROW_H - 2
-                new_placements[key] = {
-                    "rect": QRectF(x + 1, y, col_w - 2, h),
-                    "calendar_color": cal_color.get(inst.calendar_id),
-                    "show_time_prefix": False,
-                    "time_prefix": None,
-                    "continues_left": False,
-                    "continues_right": False,
-                    "overlap_cols": 1,
-                    "instance_dtstart": t,
-                    "is_sticky": True,
-                    "event": event,
-                }
-                continue
-
-            # Timed: bucket it for cascade layout below.
-            try:
-                end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
-            except (ValueError, TypeError):
-                end_t = t
-            start_min = t.hour * 60 + t.minute
-            end_min = end_t.hour * 60 + end_t.minute
-            # Force at least a 15-min visual extent so back-to-back zero-
-            # length events still get laid out and aren't treated as point
-            # events when packing.
-            if end_min <= start_min:
-                end_min = start_min + 15
-            timed_by_day[day_offset].append(
-                (
-                    float(start_min),
-                    float(end_min),
-                    {"event": event, "inst": inst, "start_dt": t, "cal_color": cal_color.get(inst.calendar_id), "instance_dtstart": t, "key": key},
-                )
-            )
-
-        # Cascade-pack and emit chips per day column.
-        _tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
-        for day_offset, bucket in enumerate(timed_by_day):
-            if not bucket:
-                continue
-            packed = pack_overlapping(bucket)
-            day_x = TIME_AXIS_WIDTH + day_offset * col_w
-            for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(
-                packed, bucket, strict=True
-            ):
-                sub_w = (col_w - 2) / cols
-                chip_x = day_x + 1 + col_i * sub_w
-                chip_w = max(8.0, xspan * sub_w)
-                chip_y = body_top + start_min * self._px_per_hour / 60
-                chip_h = max(14.0, (end_min - start_min) * self._px_per_hour / 60)
-                new_placements[payload["key"]] = {
-                    "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
-                    "calendar_color": payload["cal_color"],
-                    "show_time_prefix": True,
-                    "time_prefix": payload["start_dt"].strftime(_tfmt),
-                    "continues_left": False,
-                    "continues_right": False,
-                    "overlap_cols": cols,
-                    "instance_dtstart": payload["instance_dtstart"],
-                    "is_sticky": False,
-                    "event": payload["event"],
-                }
-
-        # Diff: remove vanished chips, update existing, create new.
+        new_placements = plan["new_placements"]
         old_chips = self._chips
         new_chips: dict[tuple[str, str, str], EventChip] = {}
         for key, chip in old_chips.items():
@@ -753,19 +746,17 @@ class WeekView(QGraphicsView):
             new_chips[key] = chip
         self._chips = new_chips
 
-        # All-day overflow marker per column. Parented to the sticky header
-        # so it pins with the all-day chips.
-        for col, count in enumerate(all_day_rows_per_col):
-            hidden = count - ALL_DAY_MAX_ROWS
-            if hidden <= 0:
-                continue
-            x = TIME_AXIS_WIDTH + col * col_w
-            y = DAY_HEADER_H + 2 + (ALL_DAY_MAX_ROWS - 1) * ALL_DAY_ROW_H
-            marker = _MoreMarker(
-                QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2),
-                f"+{hidden} more",
-            )
+        for rect, label in plan["more_markers"]:
+            marker = _MoreMarker(rect, label)
             marker.setParentItem(self._sticky)
+
+        if self._needs_scroll:
+            self._needs_scroll = False
+            first_min = plan["first_event_minutes"]
+            target_minutes = first_min if first_min is not None else WORK_START_HOUR * 60
+            target_y = target_minutes * self._px_per_hour / 60
+            sb = self.verticalScrollBar()
+            sb.setValue(max(0, min(sb.maximum(), int(target_y - 8))))
 
     def _on_details_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_details_dialog

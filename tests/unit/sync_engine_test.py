@@ -110,7 +110,7 @@ async def test_tick_runs_initial_sync_and_applies_remote_changes() -> None:
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
-    assert store.visible_only_args == [False]
+    assert store.visible_only_args == [True]
     assert backend.initial_sync_calendar_ids == ["provider-cal-1"]
     assert len(store.applied) == 1
     calendar_id, changes, cursor = store.applied[0]

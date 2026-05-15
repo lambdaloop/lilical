@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from typing import override
@@ -186,6 +187,26 @@ class _OverflowChip(QGraphicsItem):
             super().mousePressEvent(event)
 
 
+def _build_month_plan(store, grid_start: date, end_day: date) -> dict | None:
+    """Off-thread: query DB for the month range."""
+    start_dt = _local_midnight(grid_start)
+    end_dt = _local_midnight(end_day)
+    try:
+        instances = store.list_instances(
+            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+        )
+    except Exception:
+        log.exception("MonthView: failed to query instances")
+        return None
+    events = store.events_for_instances(instances)
+    cal_color: dict[str, str | None] = {
+        cal.id: cal.color
+        for acc in store.list_accounts()
+        for cal in store.list_calendars(acc.id, visible_only=False)
+    }
+    return {"instances": instances, "events": events, "cal_color": cal_color, "grid_start": grid_start}
+
+
 class MonthView(QGraphicsView):
     day_activated = Signal(object)  # emits date — for switching to Day view
     new_event_requested = Signal(object)  # emits date — double-click to create
@@ -196,6 +217,7 @@ class MonthView(QGraphicsView):
         self._chip_mode: ChipMode = ChipMode.BARS
         self._chips: list[QGraphicsItem] = []
         self._event_chips: dict[tuple, EventChip] = {}
+        self._refresh_task: asyncio.Task | None = None
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -284,6 +306,34 @@ class MonthView(QGraphicsView):
         return self._chip_mode
 
     def refresh(self) -> None:
+        if self._refresh_task and not self._refresh_task.done():
+            self._refresh_task.cancel()
+        grid_start = self._grid.grid_start
+        end_day = grid_start + timedelta(days=42)
+        self._refresh_task = asyncio.ensure_future(
+            self._refresh_async(grid_start, end_day)
+        )
+
+    async def _refresh_async(self, grid_start: date, end_day: date) -> None:
+        try:
+            plan = await asyncio.to_thread(
+                _build_month_plan, self._store, grid_start, end_day
+            )
+        except asyncio.CancelledError:
+            return
+        if plan is None:
+            for chip in self._event_chips.values():
+                self._scene.removeItem(chip)
+            self._event_chips = {}
+            return
+        self._apply_plan(plan)
+
+    def _apply_plan(self, plan: dict) -> None:
+        instances = plan["instances"]
+        events = plan["events"]
+        cal_color: dict[str, str | None] = plan["cal_color"]
+        grid_start: date = plan["grid_start"]
+
         # Remove only _OverflowChip items (rebuilt every refresh); EventChip
         # items are diffed below via self._event_chips so they survive unchanged.
         for item in self._chips:
@@ -295,37 +345,10 @@ class MonthView(QGraphicsView):
         old_event_chips = self._event_chips
         new_event_chips: dict[tuple, EventChip] = {}
 
-        grid_start = self._grid.grid_start
-        end_day = grid_start + timedelta(days=42)
-        start_dt = _local_midnight(grid_start)
-        end_dt = _local_midnight(end_day)
-
-        try:
-            instances = self._store.list_instances(
-                start_dt, end_dt, calendar_ids=self._store.visible_calendar_ids()
-            )
-        except Exception:
-            log.exception("MonthView: failed to query instances")
-            # Remove chips that can no longer be placed.
-            for chip in old_event_chips.values():
-                self._scene.removeItem(chip)
-            self._event_chips = {}
-            return
-
-        events = self._store.events_for_instances(instances)
-        # Pre-fetch calendar colours once for the whole refresh.
-        cal_color: dict[str, str | None] = {
-            cal.id: cal.color
-            for acc in self._store.list_accounts()
-            for cal in self._store.list_calendars(acc.id, visible_only=False)
-        }
-
         # Build per-day buckets, distinguishing multi-day from single-day.
         # An instance is "multi-day" when its end-date (exclusive at midnight)
         # is on a strictly later local date than its start.
-        from typing import Any
-
-        single_by_day: dict[date, list[tuple[datetime, Any]]] = {}
+        single_by_day: dict[date, list[tuple[datetime, object]]] = {}
         multi_spans: list[
             tuple[date, date, object]
         ] = []  # (start, end_inclusive, inst)
