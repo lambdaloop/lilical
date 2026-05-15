@@ -47,6 +47,8 @@ class AgendaView(QWidget):
         super().__init__()
         self._store = store
         self._start = date.today()
+        self._snapshot: frozenset[tuple] = frozenset()
+        self._snapshot_start: "date | None" = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -78,6 +80,8 @@ class AgendaView(QWidget):
         self.refresh()
 
     def refresh_theme(self) -> None:
+        # Force full rebuild on theme change to repaint day-header backgrounds.
+        self._snapshot_start = None
         self.refresh()
 
     def range_label(self) -> str:
@@ -85,8 +89,6 @@ class AgendaView(QWidget):
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
 
     def refresh(self) -> None:
-        self._tree.clear()
-
         end = self._start + timedelta(days=_DAYS_AHEAD)
         start_dt = _local_midnight(self._start)
         end_dt = _local_midnight(end)
@@ -98,6 +100,17 @@ class AgendaView(QWidget):
         except Exception:
             log.exception("AgendaView: failed to query instances")
             return
+
+        # Skip full tree rebuild when the displayed data is unchanged.
+        new_snapshot = frozenset(
+            (i.uid, i.dtstart_local, i.calendar_id) for i in instances
+        )
+        if new_snapshot == self._snapshot and self._snapshot_start == self._start:
+            return
+        self._snapshot = new_snapshot
+        self._snapshot_start = self._start
+
+        self._tree.clear()
 
         events = self._store.events_for_instances(instances)
 

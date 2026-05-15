@@ -311,7 +311,7 @@ class WeekView(QGraphicsView):
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
-        self._chips: list[EventChip] = []
+        self._chips: dict[tuple[str, str, str], EventChip] = {}
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
         # Active drag (either originated on empty grid or on a chip)
@@ -554,17 +554,7 @@ class WeekView(QGraphicsView):
     # ── Chip placement ───────────────────────────────────────────────────
 
     def _reposition_chips(self) -> None:
-        # Clear any previously-placed chips/markers; this method is called from
-        # both refresh() and resizeEvent(), and must be idempotent. Chips that
-        # were parented to the sticky header don't show up in scene.items(),
-        # so we walk both top-level scene items and sticky-header children.
-        for chip in self._chips:
-            parent = chip.parentItem()
-            if parent is not None:  # type: ignore[reportUnnecessaryComparison]
-                chip.setParentItem(None)  # type: ignore[reportArgumentType]
-            if chip.scene() is self._scene:
-                self._scene.removeItem(chip)
-        self._chips.clear()
+        # _MoreMarker items are not tracked in self._chips — always rebuild them.
         for child in list(self._sticky.childItems()):
             if isinstance(child, _MoreMarker):
                 child.setParentItem(None)  # type: ignore[reportArgumentType]
@@ -627,6 +617,8 @@ class WeekView(QGraphicsView):
         timed_by_day: list[list[tuple[float, float, dict[str, object]]]] = [
             [] for _ in range(self._day_count)
         ]
+        # new_placements: chip key → placement info dict
+        new_placements: dict[tuple[str, str, str], dict] = {}
 
         for inst in instances:
             event = events.get(id(inst))
@@ -640,6 +632,8 @@ class WeekView(QGraphicsView):
             if day_offset < 0 or day_offset >= self._day_count:
                 continue
 
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local)
+
             if inst.all_day:
                 row = per_col_all_day_idx[day_offset]
                 per_col_all_day_idx[day_offset] += 1
@@ -648,17 +642,18 @@ class WeekView(QGraphicsView):
                 x = TIME_AXIS_WIDTH + day_offset * col_w
                 y = DAY_HEADER_H + 2 + row * ALL_DAY_ROW_H
                 h = ALL_DAY_ROW_H - 2
-                chip = EventChip(
-                    event,
-                    QRectF(x + 1, y, col_w - 2, h),
-                    calendar_color=cal_color[inst.calendar_id],
-                    mode=self._chip_mode,
-                    show_time_prefix=False,
-                    instance_dtstart=t,
-                )
-                self._wire_chip_signals(chip)
-                chip.setParentItem(self._sticky)
-                self._chips.append(chip)
+                new_placements[key] = {
+                    "rect": QRectF(x + 1, y, col_w - 2, h),
+                    "calendar_color": cal_color.get(inst.calendar_id),
+                    "show_time_prefix": False,
+                    "time_prefix": None,
+                    "continues_left": False,
+                    "continues_right": False,
+                    "overlap_cols": 1,
+                    "instance_dtstart": t,
+                    "is_sticky": True,
+                    "event": event,
+                }
                 continue
 
             # Timed: bucket it for cascade layout below.
@@ -677,17 +672,12 @@ class WeekView(QGraphicsView):
                 (
                     float(start_min),
                     float(end_min),
-                    {
-                        "event": event,
-                        "inst": inst,
-                        "start_dt": t,
-                        "cal_color": cal_color[inst.calendar_id],
-                        "instance_dtstart": t,
-                    },
+                    {"event": event, "inst": inst, "start_dt": t, "cal_color": cal_color.get(inst.calendar_id), "instance_dtstart": t, "key": key},
                 )
             )
 
         # Cascade-pack and emit chips per day column.
+        _tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
         for day_offset, bucket in enumerate(timed_by_day):
             if not bucket:
                 continue
@@ -701,21 +691,67 @@ class WeekView(QGraphicsView):
                 chip_w = max(8.0, xspan * sub_w)
                 chip_y = body_top + start_min * self._px_per_hour / 60
                 chip_h = max(14.0, (end_min - start_min) * self._px_per_hour / 60)
-                _tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
+                new_placements[payload["key"]] = {
+                    "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
+                    "calendar_color": payload["cal_color"],
+                    "show_time_prefix": True,
+                    "time_prefix": payload["start_dt"].strftime(_tfmt),
+                    "continues_left": False,
+                    "continues_right": False,
+                    "overlap_cols": cols,
+                    "instance_dtstart": payload["instance_dtstart"],
+                    "is_sticky": False,
+                    "event": payload["event"],
+                }
+
+        # Diff: remove vanished chips, update existing, create new.
+        old_chips = self._chips
+        new_chips: dict[tuple[str, str, str], EventChip] = {}
+        for key, chip in old_chips.items():
+            if key not in new_placements:
+                p = chip.parentItem()
+                if p is not None:  # type: ignore[reportUnnecessaryComparison]
+                    chip.setParentItem(None)  # type: ignore[reportArgumentType]
+                if chip.scene() is self._scene:
+                    self._scene.removeItem(chip)
+        for key, pl in new_placements.items():
+            is_sticky = pl["is_sticky"]
+            if key in old_chips:
+                chip = old_chips[key]
+                chip.update_event_data(pl["event"])
+                chip.update_layout(
+                    pl["rect"],
+                    calendar_color=pl["calendar_color"],
+                    time_prefix=pl["time_prefix"],
+                    show_time_prefix=pl["show_time_prefix"],
+                    overlap_cols=pl["overlap_cols"],
+                    instance_dtstart=pl["instance_dtstart"],
+                )
+                if is_sticky and chip.scene() is self._scene:
+                    self._scene.removeItem(chip)
+                    chip.setParentItem(self._sticky)
+                elif not is_sticky and chip.parentItem() is not None:
+                    chip.setParentItem(None)  # type: ignore[reportArgumentType]
+                    self._scene.addItem(chip)
+            else:
                 chip = EventChip(
-                    payload["event"],
-                    QRectF(chip_x, chip_y, chip_w, chip_h),
-                    calendar_color=payload["cal_color"],
+                    pl["event"],
+                    pl["rect"],
+                    calendar_color=pl["calendar_color"],
                     mode=self._chip_mode,
-                    time_prefix=payload["start_dt"].strftime(_tfmt),
+                    show_time_prefix=pl["show_time_prefix"],
+                    time_prefix=pl["time_prefix"],
                     time_format=self._time_format,
-                    show_time_prefix=True,
-                    overlap_cols=cols,
-                    instance_dtstart=payload.get("instance_dtstart"),
+                    overlap_cols=pl["overlap_cols"],
+                    instance_dtstart=pl["instance_dtstart"],
                 )
                 self._wire_chip_signals(chip)
-                self._scene.addItem(chip)
-                self._chips.append(chip)
+                if is_sticky:
+                    chip.setParentItem(self._sticky)
+                else:
+                    self._scene.addItem(chip)
+            new_chips[key] = chip
+        self._chips = new_chips
 
         # All-day overflow marker per column. Parented to the sticky header
         # so it pins with the all-day chips.
@@ -993,7 +1029,7 @@ class WeekView(QGraphicsView):
                 event.accept()
                 return
             if self._drag_chip_event is not None:
-                for chip in self._chips:
+                for chip in self._chips.values():
                     if chip._event is self._drag_chip_event:  # type: ignore[reportPrivateUsage]
                         chip.cancel_drag()
                         break
@@ -1015,7 +1051,7 @@ class WeekView(QGraphicsView):
         if self._drag_chip_event is None:
             self._drag_chip_event = event
             self._drag_chip_mode = mode
-            for chip in self._chips:
+            for chip in self._chips.values():
                 if chip._event is event:  # type: ignore[reportPrivateUsage]
                     r = chip.sceneBoundingRect()
                     self._press_scene_pos = chip._press_scene_pos  # type: ignore[reportPrivateUsage]

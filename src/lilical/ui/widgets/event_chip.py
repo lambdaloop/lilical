@@ -255,6 +255,40 @@ class EventChip(QGraphicsObject):
         """The specific occurrence's start time, used for 'edit this occurrence'."""
         return self._instance_dtstart
 
+    def update_layout(
+        self,
+        rect: QRectF,
+        *,
+        calendar_color: str | None,
+        time_prefix: str | None,
+        show_time_prefix: bool,
+        continues_left: bool = False,
+        continues_right: bool = False,
+        overlap_cols: int = 1,
+        instance_dtstart: datetime | None,
+    ) -> None:
+        """Update geometry and layout properties in place — avoids chip reallocation."""
+        if rect != self._rect:
+            self.prepareGeometryChange()
+            self._rect = rect
+        self._calendar_color = calendar_color
+        self._time_prefix = time_prefix
+        self._show_time_prefix = show_time_prefix
+        self._continues_left = continues_left
+        self._continues_right = continues_right
+        self._overlap_cols = overlap_cols
+        self._instance_dtstart = instance_dtstart
+        self.setToolTip(self._build_tooltip())
+        self.update()
+
+    def update_event_data(self, event: "Event") -> None:
+        """Refresh event data without changing geometry; skipped if chip is mid-drag."""
+        if self._drag_mode is not None:
+            return
+        self._event = event
+        self.setToolTip(self._build_tooltip())
+        self.update()
+
     @override
     def boundingRect(self) -> QRectF:
         return self._rect

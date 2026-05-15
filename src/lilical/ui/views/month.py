@@ -195,6 +195,7 @@ class MonthView(QGraphicsView):
         self._store = store
         self._chip_mode: ChipMode = ChipMode.BARS
         self._chips: list[QGraphicsItem] = []
+        self._event_chips: dict[tuple, EventChip] = {}
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -283,9 +284,16 @@ class MonthView(QGraphicsView):
         return self._chip_mode
 
     def refresh(self) -> None:
+        # Remove only _OverflowChip items (rebuilt every refresh); EventChip
+        # items are diffed below via self._event_chips so they survive unchanged.
         for item in self._chips:
-            self._scene.removeItem(item)
+            if not isinstance(item, EventChip):
+                self._scene.removeItem(item)
         self._chips.clear()
+
+        # Diff state for EventChip reuse.
+        old_event_chips = self._event_chips
+        new_event_chips: dict[tuple, EventChip] = {}
 
         grid_start = self._grid.grid_start
         end_day = grid_start + timedelta(days=42)
@@ -298,6 +306,10 @@ class MonthView(QGraphicsView):
             )
         except Exception:
             log.exception("MonthView: failed to query instances")
+            # Remove chips that can no longer be placed.
+            for chip in old_event_chips.values():
+                self._scene.removeItem(chip)
+            self._event_chips = {}
             return
 
         events = self._store.events_for_instances(instances)
@@ -417,7 +429,7 @@ class MonthView(QGraphicsView):
                             hidden_per_cell.get((row, cc), 0) + 1
                         )
                 else:
-                    # Render the span chip.
+                    # Render the span chip (reuse if key matches).
                     cell = self._grid.cell_rect(d)
                     if cell is None:
                         d = seg_end + timedelta(days=1)
@@ -430,33 +442,20 @@ class MonthView(QGraphicsView):
                         + 22
                         + placed_track * (CHIP_H + CHIP_GAP)
                     )
-                    chip = EventChip(
+                    _chip_key = (inst.calendar_id, inst.uid, inst.dtstart_local, "multi", row, col)  # type: ignore[reportAttributeAccessIssue]
+                    self._place_event_chip(
+                        _chip_key,
                         event,
                         QRectF(x, y, w, CHIP_H),
-                        calendar_color=cal_color[inst.calendar_id],  # type: ignore[reportAttributeAccessIssue]
-                        mode=self._chip_mode,
+                        calendar_color=cal_color.get(inst.calendar_id),  # type: ignore[reportAttributeAccessIssue]
                         show_time_prefix=False,
+                        time_prefix=None,
                         continues_left=(s_day < grid_start + timedelta(days=row * 7)),
                         continues_right=(e_day > row_end_day),
                         instance_dtstart=inst_t,
+                        old_chips=old_event_chips,
+                        new_chips=new_event_chips,
                     )
-                    chip.details_requested.connect(
-                        lambda ev, c=chip: self._on_details_requested(
-                            ev, c.instance_dtstart
-                        )
-                    )
-                    chip.edit_requested.connect(
-                        lambda ev, c=chip: self._on_edit_requested(
-                            ev, c.instance_dtstart
-                        )
-                    )
-                    chip.delete_requested.connect(
-                        lambda ev, c=chip: self._on_delete_requested(
-                            ev, c.instance_dtstart
-                        )
-                    )
-                    self._scene.addItem(chip)
-                    self._chips.append(chip)
 
                     # Mark these cells as occupied at this track.
                     for cc in range(col, seg_end_col + 1):
@@ -496,26 +495,18 @@ class MonthView(QGraphicsView):
                 time_prefix = None
                 if not inst.all_day:
                     time_prefix = start_dt2.strftime("%H:%M")
-                chip = EventChip(
+                _chip_key = (inst.calendar_id, inst.uid, inst.dtstart_local, "single")
+                self._place_event_chip(
+                    _chip_key,
                     event,
                     QRectF(x, y, CELL_W - 4, CHIP_H),
-                    calendar_color=cal_color[inst.calendar_id],
-                    mode=self._chip_mode,
+                    calendar_color=cal_color.get(inst.calendar_id),
                     show_time_prefix=not inst.all_day,
                     time_prefix=time_prefix,
                     instance_dtstart=start_dt2,
+                    old_chips=old_event_chips,
+                    new_chips=new_event_chips,
                 )
-                chip.details_requested.connect(
-                    lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
-                )
-                chip.edit_requested.connect(
-                    lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
-                )
-                chip.delete_requested.connect(
-                    lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
-                )
-                self._scene.addItem(chip)
-                self._chips.append(chip)
 
             hidden_singles = max(0, len(items) - shown)
             total_hidden = hidden_singles + hidden_per_cell.get((row, col), 0)
@@ -551,6 +542,67 @@ class MonthView(QGraphicsView):
             )
             self._scene.addItem(marker)
             self._chips.append(marker)
+
+        # Remove event chips that no longer appear in the layout.
+        for key, chip in old_event_chips.items():
+            if key not in new_event_chips:
+                self._scene.removeItem(chip)
+        self._event_chips = new_event_chips
+
+    def _place_event_chip(
+        self,
+        key: tuple,
+        event,
+        rect: "QRectF",
+        *,
+        calendar_color,
+        show_time_prefix: bool,
+        time_prefix,
+        continues_left: bool = False,
+        continues_right: bool = False,
+        instance_dtstart,
+        old_chips: dict,
+        new_chips: dict,
+    ) -> EventChip:
+        if key in old_chips:
+            chip = old_chips[key]
+            chip.update_event_data(event)
+            chip.update_layout(
+                rect,
+                calendar_color=calendar_color,
+                time_prefix=time_prefix,
+                show_time_prefix=show_time_prefix,
+                continues_left=continues_left,
+                continues_right=continues_right,
+                instance_dtstart=instance_dtstart,
+            )
+            if chip.scene() is not self._scene:
+                self._scene.addItem(chip)
+        else:
+            chip = EventChip(
+                event,
+                rect,
+                calendar_color=calendar_color,
+                mode=self._chip_mode,
+                show_time_prefix=show_time_prefix,
+                time_prefix=time_prefix,
+                continues_left=continues_left,
+                continues_right=continues_right,
+                instance_dtstart=instance_dtstart,
+            )
+            chip.details_requested.connect(
+                lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
+            )
+            chip.edit_requested.connect(
+                lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+            )
+            chip.delete_requested.connect(
+                lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+            )
+            self._scene.addItem(chip)
+        new_chips[key] = chip
+        self._chips.append(chip)
+        return chip
 
     def _cell_of(self, rect: QRectF) -> tuple[int, int]:
         col = int(rect.x() // CELL_W)
