@@ -119,6 +119,15 @@ class _ElidedLabel(QLabel):
         )
 
 
+def _is_inside(widget: QWidget, ancestor: QWidget) -> bool:
+    p = widget.parent()
+    while p is not None:
+        if p is ancestor:
+            return True
+        p = p.parent()
+    return False
+
+
 class Sidebar(QWidget):
     rename_account_requested = Signal(str)
     reauth_account_requested = Signal(str)
@@ -196,6 +205,8 @@ class Sidebar(QWidget):
 
         self._chips: dict[str, _CalendarChip] = {}
         self._account_widgets: list[QWidget] = []
+        self._account_widget_map: dict[str, QWidget] = {}  # account_id → group widget
+        self._cal_snapshot: list[tuple] = []
         self.refresh()
 
     # ── Mini-month navigation ──────────────────────────────────────────────
@@ -232,11 +243,30 @@ class Sidebar(QWidget):
 
     # ── Calendar list ──────────────────────────────────────────────────────
 
+    def _build_snapshot(self) -> list[tuple]:
+        return [
+            (
+                acc.id,
+                acc.display_name,
+                tuple(
+                    (c.id, c.display_name, c.color, c.is_visible)
+                    for c in self._store.list_calendars(acc.id, visible_only=False)
+                ),
+            )
+            for acc in self._store.list_accounts()
+        ]
+
     def refresh(self) -> None:
+        new_snapshot = self._build_snapshot()
+        if new_snapshot == self._cal_snapshot:
+            return
+        self._cal_snapshot = new_snapshot
+
         for w in self._account_widgets:
             w.setParent(None)
             w.deleteLater()
         self._account_widgets.clear()
+        self._account_widget_map.clear()
         self._chips.clear()
 
         # Stretch item is always last; insert account groups before it.
@@ -247,6 +277,35 @@ class Sidebar(QWidget):
             self._cal_layout.insertWidget(insert_at, group)
             insert_at += 1
             self._account_widgets.append(group)
+            self._account_widget_map[acc.id] = group
+
+    def refresh_for_account(self, account_id: str) -> None:
+        """Rebuild only one account's calendar group; skip if nothing changed."""
+        new_snapshot = self._build_snapshot()
+        if new_snapshot == self._cal_snapshot:
+            return
+        self._cal_snapshot = new_snapshot
+
+        acc = self._store.get_account(account_id)
+        old_widget = self._account_widget_map.get(account_id)
+        if acc is None or old_widget is None:
+            self.refresh()
+            return
+
+        # Remove stale chips for this account.
+        for cid in list(self._chips):
+            if self._chips[cid].parent() is old_widget or _is_inside(self._chips[cid], old_widget):
+                del self._chips[cid]
+
+        insert_at = self._cal_layout.indexOf(old_widget)
+        old_widget.setParent(None)  # type: ignore[call-arg]
+        old_widget.deleteLater()
+        self._account_widgets.remove(old_widget)
+
+        new_group = self._build_account_group(acc)
+        self._cal_layout.insertWidget(insert_at, new_group)
+        self._account_widgets.insert(insert_at, new_group)
+        self._account_widget_map[account_id] = new_group
 
     def _build_account_group(self, account) -> QWidget:
         container = QWidget()
