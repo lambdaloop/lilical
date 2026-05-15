@@ -3,8 +3,18 @@
   <id>io.github.lilical.Lilical</id>
   <name>lilical</name>
   <summary>Calendar for Google, Outlook, and CalDAV</summary>
-  <developer_name>lilical contributors</developer_name>
+  <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      lilical is a Linux calendar app that syncs with Google Calendar,
+      Microsoft Outlook (via Microsoft Graph), and CalDAV servers.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.lilical.Lilical.desktop</launchable>
   <url type="homepage">https://github.com/lilical/lilical</url>
+  <developer id="io.github.lilical">
+    <name>lilical contributors</name>
+  </developer>
   <content_rating type="oars-1.1"/>
 </component>

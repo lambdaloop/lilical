@@ -23,10 +23,23 @@ modules:
   - name: lilical
     buildsystem: simple
     build-commands:
-      - pip3 install --no-deps --prefix=${FLATPAK_DEST} .
+      - python3 tools/generate_oauth_embedded.py
+      - pip3 install --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
+      - install -Dm644 alembic.ini ${FLATPAK_DEST}/share/lilical/alembic.ini
+      - cp -r migrations ${FLATPAK_DEST}/share/lilical/migrations
       - install -Dm644 data/io.github.lilical.Lilical.desktop ${FLATPAK_DEST}/share/applications/io.github.lilical.Lilical.desktop
       - install -Dm644 data/io.github.lilical.Lilical.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.lilical.Lilical.metainfo.xml
       - install -Dm644 data/io.github.lilical.Lilical.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.lilical.Lilical.svg
     sources:
       - type: dir
         path: ..
+        skip:
+          - .git
+          - .pixi
+          - .pytest_cache
+          - __pycache__
+          - flatpak/build-dir
+          - flatpak/repo
+          - flatpak/.flatpak-builder
+          - dist
+          - build

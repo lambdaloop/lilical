@@ -1,0 +1,14 @@
+sqlalchemy>=2.0
+alembic
+google-api-python-client
+google-auth-oauthlib
+caldav>=1.3
+icalendar>=5.0
+keyring
+tzdata
+dateparser
+qasync==0.28.0
+recurring-ical-events>=2.2
+desktop-notifier
+msal
+httpx>=0.27,<1.0

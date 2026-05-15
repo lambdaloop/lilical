@@ -1,0 +1,7 @@
+tools/
+build/
+dist/
+AppDir/
+squashfs-root/
+*.AppImage
+__pycache__/
