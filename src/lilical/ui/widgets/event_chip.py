@@ -286,7 +286,7 @@ class EventChip(QGraphicsObject):
                 painter.setFont(pf)
                 pfm = QFontMetricsF(pf)
                 pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.8)
+                pen_color.setAlphaF(0.85)
                 painter.setPen(pen_color)
                 painter.drawText(
                     QRectF(text_x, cursor_y, text_w, pfm.height()),
@@ -340,7 +340,7 @@ class EventChip(QGraphicsObject):
                 painter.setFont(loc_font)
                 loc_fm = QFontMetricsF(loc_font)
                 loc_color = QColor(text_color)
-                loc_color.setAlphaF(0.7)
+                loc_color.setAlphaF(0.80)
                 painter.setPen(loc_color)
                 loc_y = self._rect.bottom() - loc_reserved
                 if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
@@ -371,7 +371,7 @@ class EventChip(QGraphicsObject):
                 prefix_str = prefix + "  "
                 prefix_px = pfm.horizontalAdvance(prefix_str)
                 pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.8)
+                pen_color.setAlphaF(0.85)
                 painter.setFont(pf)
                 painter.setPen(pen_color)
                 painter.drawText(
@@ -451,7 +451,7 @@ class EventChip(QGraphicsObject):
                 painter.setFont(pf)
                 pfm = QFontMetricsF(pf)
                 pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.7)
+                pen_color.setAlphaF(0.85)
                 painter.setPen(pen_color)
                 painter.drawText(
                     QRectF(text_x, cursor_y, text_w, pfm.height()),
@@ -506,7 +506,7 @@ class EventChip(QGraphicsObject):
                 painter.setFont(loc_font)
                 loc_fm = QFontMetricsF(loc_font)
                 loc_color = QColor(text_color)
-                loc_color.setAlphaF(0.65)
+                loc_color.setAlphaF(0.80)
                 painter.setPen(loc_color)
                 loc_y = self._rect.bottom() - loc_reserved
                 if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
@@ -537,7 +537,7 @@ class EventChip(QGraphicsObject):
                 prefix_str = prefix + "  "
                 prefix_px = pfm.horizontalAdvance(prefix_str)
                 pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.7)
+                pen_color.setAlphaF(0.85)
                 painter.setFont(pf)
                 painter.setPen(pen_color)
                 painter.drawText(
@@ -623,7 +623,7 @@ class EventChip(QGraphicsObject):
         h = self._rect.height()
         if h < theme.CHIP_MIN_TITLE_H or self._rect.width() < 18:
             return
-        glyph_font = QFont(theme.FONT_FAMILY, 7)
+        glyph_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX)
         painter.setFont(glyph_font)
         fm = QFontMetricsF(glyph_font)
         glyph = "↻"
@@ -631,7 +631,7 @@ class EventChip(QGraphicsObject):
         gx = self._rect.right() - gw - 2
         gy = self._rect.bottom() - fm.height() - 1
         color = QColor(text_color)
-        color.setAlphaF(0.55)
+        color.setAlphaF(0.70)
         painter.setPen(color)
         painter.setClipping(False)
         painter.drawText(
@@ -645,7 +645,7 @@ class EventChip(QGraphicsObject):
         if self._overlap_cols <= 1 or self._rect.width() >= _BADGE_CHIP_MAX_W:
             return
         badge_text = f"+{self._overlap_cols - 1}"
-        badge_font = QFont(theme.FONT_FAMILY, 7, QFont.Weight.Bold)
+        badge_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold)
         painter.setFont(badge_font)
         fm = QFontMetricsF(badge_font)
         bw = fm.horizontalAdvance(badge_text) + 4

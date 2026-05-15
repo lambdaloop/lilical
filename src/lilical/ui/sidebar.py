@@ -124,7 +124,7 @@ class Sidebar(QWidget):
 
         # ── Calendars label ────────────────────────────────────────────────
         cal_title = QLabel("Calendars")
-        cal_title.setStyleSheet("font-weight: bold; font-size: 11px; padding: 2px 4px;")
+        cal_title.setStyleSheet("font-weight: bold; padding: 2px 4px;")
         layout.addWidget(cal_title)
 
         # ── Calendar list (scrollable) ─────────────────────────────────────

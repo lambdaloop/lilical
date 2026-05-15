@@ -979,7 +979,7 @@ class DayView(QWidget):
             f"border-top: 1px solid {theme.BORDER_STRONG};"
         )
         self._mini_label.setFont(
-            QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION, QFont.Weight.Bold)
+            QFont(theme.FONT_FAMILY, theme.FONT_TIME_AXIS, QFont.Weight.Bold)
         )
         layout.addWidget(self._mini_label)
 

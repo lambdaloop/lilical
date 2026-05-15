@@ -85,7 +85,7 @@ class MiniMonthGrid(QGraphicsView):
         a_end = self._active_end
 
         # Day-of-week header row
-        dow_font = QFont("sans-serif", 7)
+        dow_font = QFont(theme.FONT_FAMILY, 8)
         for i, label in enumerate(_DOW_LABELS):
             item = self._scene.addText(label, dow_font)
             item.setDefaultTextColor(QColor(theme.TEXT_DISABLED))
@@ -116,7 +116,7 @@ class MiniMonthGrid(QGraphicsView):
             if cur == self._selected and not in_range:
                 self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT_FILL)))
 
-            item = self._scene.addText(str(cur.day), QFont("sans-serif", 8))
+            item = self._scene.addText(str(cur.day), QFont(theme.FONT_FAMILY, 9))
             item.setPos(x + max(3, (cw - 16) // 2), y + 3)
             if cur == today:
                 item.setDefaultTextColor(QColor(theme.ACCENT))
