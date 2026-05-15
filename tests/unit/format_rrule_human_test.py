@@ -82,3 +82,10 @@ def test_unknown_freq_falls_back(fmt):
 def test_garbage_falls_back(fmt):
     raw = "not-a-valid-rrule"
     assert fmt(raw) == raw
+
+
+def test_malformed_until_date_does_not_crash(fmt):
+    """An invalid date in UNTIL (e.g. Feb 30) is silently ignored."""
+    result = fmt("FREQ=DAILY;UNTIL=20260230T000000Z")
+    assert "until" not in result
+    assert "Daily" in result

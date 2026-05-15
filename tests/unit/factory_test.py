@@ -102,3 +102,42 @@ def test_factory_sets_refresh_callback_for_graph() -> None:
     backend = factory(_account("graph"))
     assert isinstance(backend, GraphBackend)
     assert callable(backend._on_token_refreshed)
+
+
+def test_save_google_token_persists_to_secrets() -> None:
+    """The _save_google_token closure writes to the secrets store."""
+    secrets = MagicMock()
+    secrets.get.return_value = {}
+    factory = build_backend_factory(secrets)
+    backend = factory(_account("google"))
+    from lilical.backends.google import GoogleBackend
+    assert isinstance(backend, GoogleBackend)
+    backend._on_token_refreshed('{"access_token": "new-tok"}')
+    secrets.set.assert_called_once_with("acc-test", {"token": '{"access_token": "new-tok"}'})
+
+
+def test_save_graph_cache_persists_to_secrets() -> None:
+    """The _save_graph_cache closure merges into existing secrets."""
+    secrets = MagicMock()
+    secrets.get.return_value = {"msal_cache": "{}"}
+    factory = build_backend_factory(secrets)
+    backend = factory(_account("graph"))
+    from lilical.backends.graph import GraphBackend
+    assert isinstance(backend, GraphBackend)
+    backend._on_token_refreshed('{"AccessToken": {}}')
+    expected_cache = secrets.set.call_args[0][1]["msal_cache"]
+    assert expected_cache == '{"AccessToken": {}}'
+
+
+def test_save_graph_cache_creates_secrets_when_missing() -> None:
+    """When no secrets exist yet, _save_graph_cache creates the dict."""
+    secrets = MagicMock()
+    secrets.get.return_value = None
+    factory = build_backend_factory(secrets)
+    backend = factory(_account("graph"))
+    from lilical.backends.graph import GraphBackend
+    assert isinstance(backend, GraphBackend)
+    backend._on_token_refreshed('{"AccessToken": {}}')
+    secrets.set.assert_called_once()
+    saved = secrets.set.call_args[0][1]
+    assert saved["msal_cache"] == '{"AccessToken": {}}'

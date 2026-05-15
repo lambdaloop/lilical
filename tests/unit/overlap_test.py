@@ -85,3 +85,20 @@ def test_xspan_stretches_into_free_columns() -> None:
     assert by_payload["b"][0] == 1  # b is in col 1
     # a's xspan: col 1 is occupied by b during a's time → xspan == 1
     assert by_payload["a"][2] == 1
+
+
+def test_placed_into_existing_column() -> None:
+    """Items can be placed into an existing column (not the first brand-new
+    column) when the column's last item ends before the new item starts."""
+    items = [
+        (0, 60, "a"),      # col 0 (first in cluster)
+        (30, 90, "b"),     # col 1 (overlaps a, new column)
+        (40, 100, "c"),    # col 2 (overlaps both)
+        (70, 120, "d"),    # col 0 (a ended at 60, d starts at 70 → fits)
+    ]
+    result = pack_overlapping(items)
+    by_payload = {p: col for col, _cols, _xspan, p in result}
+    assert by_payload["d"] == 0
+    assert by_payload["a"] == 0
+    assert by_payload["b"] == 1
+    assert by_payload["c"] == 2

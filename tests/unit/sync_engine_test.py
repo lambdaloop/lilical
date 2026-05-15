@@ -1076,3 +1076,322 @@ async def test_update_op_refreshes_etag() -> None:
     assert last_call["uid"] == "u-upd"
     assert last_call["canonical_uid"] == "u-upd"
     assert last_call["provider_event_id"] == "pid-u-upd"
+
+
+# -- start_all / stop_all lifecycle ----------------------------------------------
+
+
+class _MultiAccountStore:
+    def __init__(self) -> None:
+        self.applied: list = []
+
+    def list_pending_ops(self, account_id: str) -> list:
+        return []
+
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
+        return []
+
+    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+        return 0
+
+    def upsert_calendars(self, account_id: str, calendars: list) -> None:
+        pass
+
+    def list_accounts(self, enabled_only: bool = True) -> list:
+        return [
+            SimpleNamespace(id="acc-a"),
+            SimpleNamespace(id="acc-b"),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_start_all_spawns_tasks_for_all_accounts() -> None:
+    store = _MultiAccountStore()
+    engine = SyncEngine(
+        store=store,
+        secrets=None,
+        factory=lambda account: MagicMock(),
+    )
+    run_called: list[str] = []
+
+    async def fake_run(account):
+        run_called.append(account.id)
+        await asyncio.Event().wait()
+
+    engine._run_account = fake_run  # type: ignore[method-assign]
+
+    await engine.start_all()
+    await asyncio.sleep(0)
+
+    assert set(engine._tasks.keys()) == {"acc-a", "acc-b"}
+    assert set(run_called) == {"acc-a", "acc-b"}
+
+    for t in engine._tasks.values():
+        t.cancel()
+    await asyncio.gather(*engine._tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_start_all_skips_existing_tasks() -> None:
+    engine = SyncEngine(
+        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+    )
+    engine._tasks["acc-a"] = asyncio.create_task(asyncio.sleep(999))
+    engine._store.list_accounts = MagicMock(
+        return_value=[SimpleNamespace(id="acc-a"), SimpleNamespace(id="acc-b")]
+    )
+    run_called: list[str] = []
+
+    async def fake_run(account):
+        run_called.append(account.id)
+        await asyncio.Event().wait()
+
+    engine._run_account = fake_run  # type: ignore[method-assign]
+
+    await engine.start_all()
+    await asyncio.sleep(0)
+
+    assert run_called == ["acc-b"]
+
+    for t in engine._tasks.values():
+        t.cancel()
+    await asyncio.gather(*engine._tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stop_all_cancels_all_tasks() -> None:
+    engine = SyncEngine(
+        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+    )
+    async def hang(name: str) -> None:
+        await asyncio.sleep(999)
+
+    engine._tasks["a"] = asyncio.create_task(hang("a"))
+    engine._tasks["b"] = asyncio.create_task(hang("b"))
+
+    await engine.stop_all()
+
+    assert engine._tasks["a"].cancelled()
+    assert engine._tasks["b"].cancelled()
+
+
+@pytest.mark.asyncio
+async def test_start_account_nonexistent_is_noop() -> None:
+    engine = SyncEngine(
+        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+    )
+    engine._store.get_account = MagicMock(return_value=None)
+
+    await engine.start_account("ghost")
+
+    assert "ghost" not in engine._tasks
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_mid_teardown_is_noop() -> None:
+    engine = SyncEngine(
+        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+    )
+    engine._tasks["acc-1"] = asyncio.create_task(asyncio.sleep(999))
+    engine.force_refresh("acc-1")
+    assert "acc-1" in engine._tasks
+    engine._tasks["acc-1"].cancel()
+
+
+@pytest.mark.asyncio
+async def test_resurrect_account_deleted_from_db_is_noop() -> None:
+    engine = SyncEngine(
+        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+    )
+    engine._store.get_account = MagicMock(return_value=None)
+
+    await engine._resurrect_account("ghost")
+    assert "ghost" not in engine._tasks
+
+
+# -- tick bare Exception handler -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_bare_exception_emits_sync_failed() -> None:
+    class _CrashBackend:
+        async def list_calendars(self) -> list:
+            raise RuntimeError("unexpected crash")
+        async def initial_sync(self, _):
+            yield
+
+    store = FakeStore()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: _CrashBackend())
+
+    failed: list[tuple[str, str]] = []
+    engine.sync_failed.connect(lambda acc, msg: failed.append((acc, msg)))
+
+    engine._wake_events["acc-1"] = asyncio.Event()
+    task = asyncio.create_task(engine._run_account(SimpleNamespace(id="acc-1")))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert any(acc == "acc-1" for acc, _ in failed)
+
+
+# -- incremental_sync path (non-None cursor) --------------------------------------
+
+
+class _IncrementalBackend:
+    def __init__(self) -> None:
+        self.incremental_sync_called = False
+
+    async def list_calendars(self) -> list:
+        return []
+
+    async def incremental_sync(self, calendar_id: str, cursor):
+        self.incremental_sync_called = True
+        class _Cur:
+            def to_json(self) -> dict:
+                return {"type": "fake", "token": "next"}
+        return [], _Cur()
+
+
+class _IncrementalStore:
+    def __init__(self) -> None:
+        self.applied: list = []
+
+    def list_pending_ops(self, account_id: str) -> list:
+        return []
+
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
+        return [
+            SimpleNamespace(
+                id="cal-inc", provider_id="provider-cal-inc",
+                sync_cursor='{"_type": "google", "sync_token": "old"}',
+                display_name="Incremental Cal",
+            )
+        ]
+
+    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+        self.applied.append((calendar_id, changes, new_cursor))
+        return 0
+
+    def upsert_calendars(self, account_id: str, calendars: list) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_tick_runs_incremental_sync_when_cursor_present() -> None:
+    store = _IncrementalStore()
+    backend = _IncrementalBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert backend.incremental_sync_called
+
+
+# -- _initial_sync_cal exception during prefetch ---------------------------------
+
+
+class _FailingSecondPageBackend:
+    async def list_calendars(self) -> list:
+        return []
+
+    async def initial_sync(self, calendar_id: str):
+        event = Event(uid="e1", calendar_id="cal-1")
+        yield [EventChange(kind="upsert", event=event, uid="e1")], FakeCursor()
+        raise TransientError("second page failed")
+
+
+@pytest.mark.asyncio
+async def test_initial_sync_cal_propagates_reraise() -> None:
+    store = FakeStore()
+    backend = _FailingSecondPageBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    with pytest.raises(TransientError):
+        await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+
+# -- parallel sync: one calendar fails, exception re-raised ----------------------
+
+
+class _FailingCalStore:
+    def __init__(self) -> None:
+        self.applied: list = []
+        self.calendars = [
+            SimpleNamespace(id="cal-ok", provider_id="cal-ok",
+                            sync_cursor=None, display_name="OK"),
+            SimpleNamespace(id="cal-fail", provider_id="cal-fail",
+                            sync_cursor=None, display_name="Fail"),
+        ]
+
+    def list_pending_ops(self, account_id: str) -> list:
+        return []
+
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
+        return self.calendars
+
+    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+        self.applied.append((calendar_id, changes, new_cursor))
+        return len(changes)
+
+    def upsert_calendars(self, account_id: str, calendars: list) -> None:
+        pass
+
+
+class _FailingCalBackend:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def list_calendars(self) -> list:
+        return []
+
+    async def initial_sync(self, calendar_id: str):
+        self.call_count += 1
+        if calendar_id == "cal-fail":
+            raise TransientError("sync failed")
+        event = Event(uid="ok", calendar_id="cal-ok")
+        yield [EventChange(kind="upsert", event=event, uid="ok")], FakeCursor()
+
+
+@pytest.mark.asyncio
+async def test_tick_re_raises_exception_from_parallel_sync() -> None:
+    store = _FailingCalStore()
+    backend = _FailingCalBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    with pytest.raises(TransientError):
+        await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert backend.call_count == 2
+    assert len(store.applied) == 1
+
+
+# -- _event_from_payload edge cases ----------------------------------------------
+
+
+def test_event_from_payload_invalid_iso_datetime() -> None:
+    import json
+    from lilical.sync.engine import _event_from_payload
+
+    payload = json.dumps({
+        "uid": "u-bad-dt", "calendar_id": "cal-1",
+        "dtstart": "not-a-date", "dtend": "also-not-a-date",
+    })
+    event = _event_from_payload(payload)
+    assert event.dtstart is None
+    assert event.dtend is None
+
+
+def test_event_from_payload_list_to_tuple_conversion() -> None:
+    import json
+    from lilical.sync.engine import _event_from_payload
+
+    payload = json.dumps({
+        "uid": "u-list", "calendar_id": "cal-1",
+        "categories": ["work", "personal"],
+        "attendees": ["a@b.com"],
+    })
+    event = _event_from_payload(payload)
+    assert event.categories == ("work", "personal")
+    assert event.attendees == ("a@b.com",)

@@ -39,3 +39,32 @@ def test_same_sequence_older_loses() -> None:
     local = _event("e1", sequence=1, last_modified=may12)
     remote = _event("e1", sequence=1, last_modified=may13)
     assert resolve_conflict(local, remote) == "remote"
+
+
+def test_equal_sequence_no_last_modified_remote_wins() -> None:
+    """Equal sequences, falsy last_modified on both → remote wins."""
+    local = Event(
+        uid="e1",
+        calendar_id="cal-1",
+        sequence=1,
+        last_modified=None,
+    )
+    remote = Event(
+        uid="e1",
+        calendar_id="cal-1",
+        sequence=1,
+        last_modified=None,
+    )
+    assert resolve_conflict(local, remote) == "remote"
+
+
+def test_equal_sequence_local_no_last_modified_remote_wins() -> None:
+    """Equal sequences, local lacks last_modified → remote wins."""
+    local = Event(
+        uid="e1",
+        calendar_id="cal-1",
+        sequence=1,
+        last_modified=None,
+    )
+    remote = _event("e1", sequence=1)
+    assert resolve_conflict(local, remote) == "remote"

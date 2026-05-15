@@ -113,3 +113,42 @@ def test_secrets_get_returns_none_when_keyring_raises(mock_get) -> None:
 def test_secrets_get_returns_none_on_malformed_payload(mock_get) -> None:
     store = SecretsStore.open(Config())
     assert store.get("acc-a") is None
+
+
+@patch.dict("sys.modules", {"keyring": None})
+def test_secrets_get_returns_none_when_keyring_not_installed() -> None:
+    """When keyring cannot be imported, get() returns None."""
+    store = SecretsStore()
+    assert store.get("acc-1") is None
+
+
+@patch("keyring.set_password", side_effect=RuntimeError("keyring broken"))
+@patch("keyring.get_password", return_value=None)
+@patch("keyring.delete_password")
+def test_secrets_set_handles_keyring_write_failure(
+    mock_delete, mock_get, mock_set
+) -> None:
+    """When keyring.set_password raises, set() does not crash."""
+    store = SecretsStore()
+    store.set("acc-1", {"token": "abc"})
+    assert store.get("acc-1") == {"token": "abc"}
+
+
+@patch("keyring.set_password")
+@patch("keyring.get_password", return_value=None)
+@patch("keyring.delete_password", side_effect=RuntimeError("keyring broken"))
+def test_secrets_delete_handles_keyring_delete_failure(
+    mock_delete, mock_get, mock_set
+) -> None:
+    """When keyring.delete_password raises, delete() does not crash."""
+    store = SecretsStore(data={"acc-1": {"token": "abc"}})
+    store.delete("acc-1")
+    assert store.get("acc-1") is None
+
+
+@patch.dict("sys.modules", {"keyring": None})
+def test_secrets_delete_handles_keyring_import_error() -> None:
+    """When keyring cannot be imported, delete() does not crash."""
+    store = SecretsStore(data={"acc-1": {"token": "abc"}})
+    store.delete("acc-1")
+    assert store.get("acc-1") is None

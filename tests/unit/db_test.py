@@ -60,3 +60,24 @@ def test_ensure_schema_is_idempotent(tmp_path: Path) -> None:
     ensure_schema(engine)
     tables = inspect(engine).get_table_names()
     assert "events" in tables
+
+
+def test_project_root_pyinstaller() -> None:
+    """When sys has _MEIPASS, _project_root returns that path."""
+    import sys
+    from unittest.mock import patch
+
+    from lilical.storage.db import _project_root
+
+    with patch.object(sys, "_MEIPASS", "/tmp/bundle", create=True):
+        root = _project_root()
+        assert str(root) == "/tmp/bundle"
+
+
+def test_project_root_flatpak(monkeypatch) -> None:
+    """When FLATPAK_ID is set, _project_root returns /app/share/lilical."""
+    from lilical.storage.db import _project_root
+
+    monkeypatch.setenv("FLATPAK_ID", "lilical")
+    root = _project_root()
+    assert str(root) == "/app/share/lilical"

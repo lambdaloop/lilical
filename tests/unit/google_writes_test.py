@@ -89,6 +89,62 @@ def test_serializer_no_color_no_color_id():
     assert "colorId" not in body
 
 
+def test_serializer_rdate():
+    """RDATE entries produce RDATE: lines in recurrence array."""
+    rdate = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+    event = Event(
+        uid="uid-rdate",
+        calendar_id="cal-1",
+        summary="With RDATE",
+        dtstart=datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc),
+        rrule="FREQ=WEEKLY;COUNT=2",
+        rdates=(rdate,),
+    )
+    body = event_to_google_body(event)
+    lines = body["recurrence"]
+    assert any(line.startswith("RDATE:") for line in lines)
+
+
+def test_serializer_recurring_event_id():
+    """Override events get recurringEventId set."""
+    event = Event(
+        uid="uid-master",
+        calendar_id="cal-1",
+        summary="Moved occurrence",
+        recurrence_id=datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc),
+        dtstart=datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    body = event_to_google_body(event)
+    assert body["recurringEventId"] == "uid-master"
+
+
+def test_serializer_dt_to_google_none():
+    """_dt_to_google(None) returns an empty dict."""
+    from lilical.backends._google_serializer import _dt_to_google
+    assert _dt_to_google(None, "UTC", False) == {}
+
+
+def test_serializer_exdate_non_utc_tz():
+    """EXDATE with non-UTC timezone includes TZID parameter."""
+    from lilical.backends._google_serializer import _format_exdate
+    dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+    result = _format_exdate(dt, "America/New_York")
+    assert "TZID=America/New_York" in result
+    # UTC path still works
+    result_utc = _format_exdate(dt, "UTC")
+    assert "TZID=UTC" not in result_utc
+    assert result_utc.endswith("Z")
+
+
+def test_serializer_exdate_none_tz():
+    """EXDATE with tz_name=None falls back to UTC format."""
+    from lilical.backends._google_serializer import _format_exdate
+    dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
+    result = _format_exdate(dt, None)
+    assert "TZID" not in result
+    assert result.endswith("Z")
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

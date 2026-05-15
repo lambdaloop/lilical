@@ -163,3 +163,91 @@ def test_dispatch_delete_following_calls_truncate(qapp):
     assert until_dt == instance_dt
 
     parent.deleteLater()
+
+
+def test_dispatch_edit_occurrence_with_recurrence_id(qapp):
+    from PySide6.QtWidgets import QWidget
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
+
+    store = _FakeStore()
+    parent = QWidget()
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(recurrence_id=rid)
+    edited = _make_event(summary="Edited via rid")
+
+    _dispatch_edit(parent, store, event, None, edited, "occurrence")
+
+    assert len(store.update_instance_calls) == 1
+    uid, cal_id, rid_call, ed = store.update_instance_calls[0]
+    assert rid_call == rid
+    parent.deleteLater()
+
+
+def test_dispatch_edit_following_with_recurrence_id(qapp):
+    from PySide6.QtWidgets import QWidget
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
+
+    store = _FakeStore()
+    parent = QWidget()
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(recurrence_id=rid)
+    edited = _make_event(summary="Split via rid")
+
+    _dispatch_edit(parent, store, event, None, edited, "following")
+
+    assert len(store.split_series_calls) == 1
+    parent.deleteLater()
+
+
+def test_dispatch_edit_series_with_recurrence_id_looks_up_master(qapp):
+    from PySide6.QtWidgets import QWidget
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
+
+    class _MasterLookupStore(_FakeStore):
+        def get_event(self, uid, calendar_id):
+            return _make_event(etag='"master-etag"')
+
+    store = _MasterLookupStore()
+    parent = QWidget()
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(recurrence_id=rid)
+    edited = _make_event(summary="Series edit via rid")
+
+    _dispatch_edit(parent, store, event, None, edited, "series")
+
+    assert len(store.update_calls) == 1
+    parent.deleteLater()
+
+
+def test_dispatch_delete_occurrence_with_recurrence_id(qapp):
+    from PySide6.QtWidgets import QWidget
+    from lilical.ui.views._recurrence_actions import _dispatch_delete
+
+    store = _FakeStore()
+    parent = QWidget()
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(recurrence_id=rid)
+
+    _dispatch_delete(parent, store, event, None, "occurrence")
+
+    assert len(store.delete_instance_calls) == 1
+    parent.deleteLater()
+
+
+def test_dispatch_delete_following_with_recurrence_id(qapp):
+    from PySide6.QtWidgets import QWidget
+    from lilical.ui.views._recurrence_actions import _dispatch_delete
+
+    class _MasterLookupStore(_FakeStore):
+        def get_event(self, uid, calendar_id):
+            return _make_event()
+
+    store = _MasterLookupStore()
+    parent = QWidget()
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(recurrence_id=rid)
+
+    _dispatch_delete(parent, store, event, None, "following")
+
+    assert len(store.truncate_calls) == 1
+    parent.deleteLater()

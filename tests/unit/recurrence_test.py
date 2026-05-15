@@ -331,6 +331,75 @@ def test_expander_excludes_overrides_outside_window(
     assert results[0]["dtstart"] == datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
 
 
+def test_dt_to_utc_with_naive_datetime() -> None:
+    """_dt_to_utc handles naive datetime by assuming UTC."""
+    from lilical.recurrence.expander import _dt_to_utc
+
+    naive = datetime(2026, 5, 13, 9, 0)
+    result = _dt_to_utc(naive)
+    assert result.tzinfo is not None
+    assert result == datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+
+
+def test_expander_skips_override_without_recurrence_id(
+    expander: RecurrenceExpander,
+) -> None:
+    """An override missing recurrence_id is skipped (continue)."""
+    master = Event(
+        uid="skip-override",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=2",
+        dtstart=datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    override_no_rid = Event(
+        uid="skip-override",
+        calendar_id="cal-1",
+        recurrence_id=None,
+        dtstart=datetime(2026, 6, 8, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 8, 10, 0, tzinfo=timezone.utc),
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(
+        master, start, end, overrides=[override_no_rid]
+    )
+    assert len(results) == 2
+    assert all(not r.get("is_override") for r in results)
+    assert {r["dtstart"] for r in results} == {
+        datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
+        datetime(2026, 6, 8, 9, 0, tzinfo=timezone.utc),
+    }
+
+
+def test_expander_skips_override_without_dtstart(
+    expander: RecurrenceExpander,
+) -> None:
+    """An override with recurrence_id but no dtstart is skipped (continue).
+    The original rrule occurrence is still suppressed (by recurrence_id),
+    but no replacement override is added."""
+    master = Event(
+        uid="skip-dtstart",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=2",
+        dtstart=datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    override_no_dtstart = Event(
+        uid="skip-dtstart",
+        calendar_id="cal-1",
+        recurrence_id=datetime(2026, 6, 8, 9, 0, tzinfo=timezone.utc),
+        dtstart=None,
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(
+        master, start, end, overrides=[override_no_dtstart]
+    )
+    assert len(results) == 1
+    assert results[0]["dtstart"] == datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
+
+
 def test_expander_cache_invalidates_on_override_change(
     expander: RecurrenceExpander,
 ) -> None:

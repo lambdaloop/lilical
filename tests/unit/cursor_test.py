@@ -92,3 +92,8 @@ def test_empty_dict_returns_none() -> None:
 
 def test_unknown_type_returns_none() -> None:
     assert cursor_from_json({"_type": "unknown", "foo": "bar"}) is None
+
+
+def test_cursor_to_json_none() -> None:
+    """cursor_to_json(None) returns None."""
+    assert cursor_to_json(None) is None

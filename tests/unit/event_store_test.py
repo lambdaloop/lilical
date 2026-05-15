@@ -1404,3 +1404,700 @@ def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
             f"Expected July 4 but got {parsed.astimezone().date()} "
             f"(dtstart_local={inst.dtstart_local!r})"
         )
+
+
+# ── _ensure_aware_dt edge cases ───────────────────────────────────────────────
+
+
+def test_ensure_aware_dt_with_date(engine) -> None:
+    """_ensure_aware_dt wraps a date into a UTC-midnight datetime."""
+    from datetime import date as _date_cls
+    d = _date_cls(2026, 7, 4)
+    result = EventStore._ensure_aware_dt(d)
+    assert isinstance(result, datetime)
+    assert result.tzinfo == timezone.utc
+    assert result.date() == d
+
+
+def test_ensure_aware_dt_with_naive_datetime(engine) -> None:
+    """_ensure_aware_dt treats naive datetimes as UTC."""
+    naive = datetime(2026, 7, 4, 9, 0)
+    result = EventStore._ensure_aware_dt(naive)
+    assert result.tzinfo == timezone.utc
+    assert result.hour == 9
+
+
+def test_ensure_aware_dt_aware_passthrough(engine) -> None:
+    """_ensure_aware_dt passes through aware datetimes unchanged."""
+    aware = datetime(2026, 7, 4, 9, 0, tzinfo=timezone.utc)
+    result = EventStore._ensure_aware_dt(aware)
+    assert result is aware
+
+
+def test_ensure_aware_dt_non_datetime_passthrough(engine) -> None:
+    """_ensure_aware_dt returns non-datetime values as-is."""
+    result = EventStore._ensure_aware_dt(None)
+    assert result is None
+
+
+# ── _json_dumps None branch ────────────────────────────────────────────────────
+
+
+def test_json_dumps_none(engine) -> None:
+    """_json_dumps(None) returns None."""
+    from lilical.storage.event_store import _json_dumps
+    assert _json_dumps(None) is None
+    assert _json_dumps(["a"]) == '["a"]'
+
+
+# ── queue_move ─────────────────────────────────────────────────────────────────
+
+
+def test_queue_move_between_calendars(engine) -> None:
+    """Move an event from cal-1 to a new cal-2."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    # Create target calendar
+    with Session(engine) as s, s.begin():
+        s.add(
+            Calendar(
+                id="cal-2",
+                account_id="acc-1",
+                provider_id="provider-cal-2",
+                display_name="Target Calendar",
+                color="#ff0000",
+                access_role="owner",
+            )
+        )
+
+    new_uid = store.queue_move(
+        "event-1", "cal-1", "cal-2",
+        _event(summary="Moved to cal-2", rrule=None),
+    )
+
+    with Session(engine) as s:
+        old_rows = (
+            s.query(EventRow)
+            .filter_by(uid="event-1", calendar_id="cal-1")
+            .all()
+        )
+        new_rows = (
+            s.query(EventRow)
+            .filter_by(uid=new_uid, calendar_id="cal-2")
+            .all()
+        )
+        ops = s.query(PendingOpRow).all()
+
+    assert len(old_rows) == 1
+    assert old_rows[0].deleted_locally == 1
+    assert old_rows[0].local_dirty == 1
+
+    assert len(new_rows) == 1
+    assert new_rows[0].summary == "Moved to cal-2"
+    assert new_rows[0].local_dirty == 1
+
+    op_types = {(op.op, op.calendar_id) for op in ops}
+    assert ("delete", "cal-1") in op_types
+    assert ("create", "cal-2") in op_types
+
+
+
+
+
+def test_queue_move_nonexistent_old_event(engine) -> None:
+    """Move of a nonexistent event doesn't crash."""
+    from sqlalchemy.orm import Session
+
+    store = EventStore(engine)
+    with Session(engine) as s, s.begin():
+        s.add(
+            Calendar(
+                id="cal-move2",
+                account_id="acc-1",
+                provider_id="cal-move2",
+                display_name="Target",
+                color="#000",
+                access_role="owner",
+            )
+        )
+
+    ev = _event(uid="ghost")
+    new_uid = store.queue_move("ghost", "cal-1", "cal-move2", ev)
+    with Session(engine) as s:
+        new_rows = (
+            s.query(EventRow).filter_by(uid=new_uid, calendar_id="cal-move2").all()
+        )
+    assert len(new_rows) == 1
+
+
+# ── events_for_instances ──────────────────────────────────────────────────────
+
+
+def test_events_for_instances_returns_mapping(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    with Session(engine) as s:
+        instance = s.query(EventInstanceRow).one()
+
+    mapping = store.events_for_instances([instance])
+    assert id(instance) in mapping
+    assert mapping[id(instance)].uid == "event-1"
+
+
+def test_events_for_instances_empty(engine) -> None:
+    store = EventStore(engine)
+    assert store.events_for_instances([]) == {}
+
+
+def test_events_for_instances_prefers_override(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    rid_iso = "2026-05-20T09:00:00+00:00"
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-evi",
+                calendar_id="cal-1",
+                recurrence_id="",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Master",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-evi",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+                dtstart="2026-05-20T10:00:00+00:00",
+                dtend="2026-05-20T10:30:00+00:00",
+                tz="UTC",
+                summary="Override",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventInstanceRow(
+                uid="series-evi",
+                calendar_id="cal-1",
+                dtstart_utc=1000000,
+                dtend_utc=1000060,
+                dtstart_local="2026-05-20T10:00:00+00:00",
+                dtend_local="2026-05-20T10:30:00+00:00",
+                is_override=1,
+                recurrence_id=rid_iso,
+            )
+        )
+        s.add(
+            EventInstanceRow(
+                uid="series-evi",
+                calendar_id="cal-1",
+                dtstart_utc=900000,
+                dtend_utc=900060,
+                dtstart_local="2026-05-13T09:00:00+00:00",
+                dtend_local="2026-05-13T09:30:00+00:00",
+                recurrence_id="",
+            )
+        )
+
+    store = EventStore(engine)
+    with Session(engine) as s:
+        instances = s.query(EventInstanceRow).all()
+
+    mapping = store.events_for_instances(instances)
+    assert len(mapping) == 2
+
+    for inst in instances:
+        ev = mapping[id(inst)]
+        if inst.recurrence_id:
+            assert ev.summary == "Override"
+        else:
+            assert ev.summary == "Master"
+
+
+# ── list_events_in_range ──────────────────────────────────────────────────────
+
+
+def test_list_events_in_range_returns_matching(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    results = store.list_events_in_range(start, end)
+    assert len(results) == 1
+    assert results[0].uid == "event-1"
+
+
+def test_list_events_in_range_excludes_outside(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    results = store.list_events_in_range(start, end)
+    assert len(results) == 0
+
+
+def test_list_events_in_range_filters_by_calendar_ids(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    results = store.list_events_in_range(start, end, calendar_ids={"cal-1"})
+    assert len(results) == 1
+    results = store.list_events_in_range(start, end, calendar_ids={"other"})
+    assert len(results) == 0
+
+
+# ── apply_remote_changes delete ────────────────────────────────────────────────
+
+
+def test_apply_remote_changes_delete_removes_row(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    count = store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="delete", uid="event-1")],
+        "{}",
+    )
+
+    with Session(engine) as s:
+        rows = s.query(EventRow).all()
+    assert count == 1
+    assert len(rows) == 0
+
+
+def test_apply_remote_changes_delete_missing_is_safe(engine) -> None:
+    store = EventStore(engine)
+    count = store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="delete", uid="nonexistent")],
+        "{}",
+    )
+    assert count == 1  # still counted as processed
+
+
+# ── queue_update_instance update existing override ────────────────────────────
+
+
+def test_queue_update_instance_updates_existing_override(engine) -> None:
+    """queue_update_instance on an existing override row updates in-place."""
+    rid_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    rid_iso = rid_dt.isoformat()
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-upd-existing",
+                calendar_id="cal-1",
+                recurrence_id="",
+                provider_event_id="AAMk-upd-e",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Master",
+                rrule="FREQ=WEEKLY;COUNT=4",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-upd-existing",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+                dtstart="2026-05-20T09:00:00+00:00",
+                dtend="2026-05-20T09:30:00+00:00",
+                tz="UTC",
+                summary="Old override",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    edited = Event(
+        uid="series-upd-existing",
+        calendar_id="cal-1",
+        summary="Updated override",
+        dtstart=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc),
+        tz="UTC",
+    )
+    store.queue_update_instance("series-upd-existing", "cal-1", rid_dt, edited)
+
+    with Session(engine) as s:
+        override_row = (
+            s.query(EventRow)
+            .filter_by(
+                uid="series-upd-existing",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+            )
+            .first()
+        )
+    assert override_row is not None
+    assert override_row.summary == "Updated override"
+    assert override_row.local_dirty == 1
+    assert override_row.dtstart == "2026-05-20T10:00:00+00:00"
+
+
+# ── queue_delete_instance with existing override row ──────────────────────────
+
+
+def test_queue_delete_instance_marks_existing_override(engine) -> None:
+    """queue_delete_instance also marks an existing override row as deleted."""
+    rid_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    rid_iso = rid_dt.isoformat()
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-del-ov",
+                calendar_id="cal-1",
+                recurrence_id="",
+                provider_event_id="AAMk-del-ov",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Master",
+                rrule="FREQ=WEEKLY;COUNT=4",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-del-ov",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+                dtstart="2026-05-20T10:00:00+00:00",
+                dtend="2026-05-20T10:30:00+00:00",
+                tz="UTC",
+                summary="Override to delete",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    store.queue_delete_instance("series-del-ov", "cal-1", rid_dt)
+
+    with Session(engine) as s:
+        override_row = (
+            s.query(EventRow)
+            .filter_by(
+                uid="series-del-ov",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+            )
+            .first()
+        )
+    assert override_row is not None
+    assert override_row.deleted_locally == 1
+    assert override_row.local_dirty == 1
+    master_exdates = json.loads(
+        s.query(EventRow)
+        .filter_by(uid="series-del-ov", calendar_id="cal-1", recurrence_id="")
+        .first()
+        .exdates or "[]"
+    )
+    assert rid_iso in master_exdates
+
+
+# ── get_event edge cases ──────────────────────────────────────────────────────
+
+
+def test_get_event_nonexistent_uid_returns_none(engine) -> None:
+    store = EventStore(engine)
+    assert store.get_event("nonexistent", "cal-1") is None
+
+
+def test_get_event_falls_back_to_override_row(engine) -> None:
+    """When only an override row exists (no master), get_event finds it."""
+    rid_iso = "2026-05-20T09:00:00+00:00"
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="override-only",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+                dtstart="2026-05-20T10:00:00+00:00",
+                dtend="2026-05-20T10:30:00+00:00",
+                tz="UTC",
+                summary="Only override",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    event = store.get_event("override-only", "cal-1")
+    assert event is not None
+    assert event.summary == "Only override"
+    assert event.recurrence_id is not None
+
+
+# ── _rebuild_instances_for early return ────────────────────────────────────────
+
+
+def test_rebuild_instances_for_no_dtstart(engine) -> None:
+    """_rebuild_instances_for returns early when dtstart is None."""
+    from lilical.models.event import Event as _Event
+    from lilical.storage.event_store import EventStore as _ES
+
+    store = EventStore(engine)
+    event = _Event(uid="no-dt", calendar_id="cal-1")
+    # This must not raise despite dtstart being None.
+    with Session(engine) as s, s.begin():
+        store._rebuild_instances_for(s, event)
+
+
+# ── recurring all-day _anchor_all_day ──────────────────────────────────────────
+
+
+def test_recurring_all_day_event_calls_anchor(engine) -> None:
+    """A recurring all-day event triggers _anchor_all_day in instance building."""
+    from lilical.models.event import EventInstanceRow
+
+    ny_zone = ZoneInfo("America/New_York")
+    event = Event(
+        uid="rec-allday",
+        calendar_id="cal-1",
+        provider_event_id="rec-allday-pid",
+        dtstart=datetime(2026, 7, 4, 0, 0, tzinfo=ny_zone),
+        dtend=datetime(2026, 7, 5, 0, 0, tzinfo=ny_zone),
+        tz="America/New_York",
+        all_day=True,
+        summary="All-day recurring",
+        rrule="FREQ=DAILY;COUNT=3",
+    )
+    store = EventStore(engine)
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=event, uid="rec-allday")],
+        "{}",
+    )
+
+    with Session(engine) as s:
+        instances = (
+            s.query(EventInstanceRow)
+            .filter_by(uid="rec-allday")
+            .all()
+        )
+    assert len(instances) == 3
+    for inst in instances:
+        assert inst.all_day == 1
+
+
+# ── list_pending_ops / delete_pending_op / get_pending_op ──────────────────────
+
+
+def test_list_pending_ops_returns_ops_for_account(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    ops = store.list_pending_ops("acc-1")
+    assert len(ops) == 1
+    assert ops[0].uid == "event-1"
+    assert ops[0].op == "create"
+
+
+def test_list_pending_ops_empty_for_unknown_account(engine) -> None:
+    store = EventStore(engine)
+    assert store.list_pending_ops("no-such-acc") == []
+
+
+def test_delete_pending_op_removes_op(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    with Session(engine) as s:
+        op = s.query(PendingOpRow).one()
+        op_id = op.id
+
+    store.delete_pending_op(op_id)
+
+    with Session(engine) as s:
+        assert s.query(PendingOpRow).count() == 0
+
+
+def test_get_pending_op_returns_op(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    with Session(engine) as s:
+        op_id = s.query(PendingOpRow).one().id
+
+    fetched = store.get_pending_op(op_id)
+    assert fetched is not None
+    assert fetched.id == op_id
+
+
+def test_get_pending_op_nonexistent(engine) -> None:
+    store = EventStore(engine)
+    assert store.get_pending_op(99999) is None
+
+
+# ── remove_event ──────────────────────────────────────────────────────────────
+
+
+def test_remove_event_deletes_rows(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    with Session(engine) as s:
+        assert s.query(EventRow).count() == 1
+        assert s.query(EventInstanceRow).count() >= 1
+
+    store.remove_event("event-1", "cal-1")
+
+    with Session(engine) as s:
+        assert s.query(EventRow).count() == 0
+        assert s.query(EventInstanceRow).count() == 0
+
+
+# ── list_accounts ─────────────────────────────────────────────────────────────
+
+
+def test_list_accounts_returns_enabled(engine) -> None:
+    store = EventStore(engine)
+    accounts = store.list_accounts(enabled_only=True)
+    assert len(accounts) == 1
+    assert accounts[0].id == "acc-1"
+
+
+def test_list_accounts_all_includes_disabled(engine) -> None:
+    from sqlalchemy.orm import Session
+
+    store = EventStore(engine)
+    with Session(engine) as s, s.begin():
+        acc = s.query(Account).filter(Account.id == "acc-1").one()
+        acc.enabled = 0
+
+    accounts = store.list_accounts(enabled_only=False)
+    assert len(accounts) == 1
+    assert accounts[0].enabled == 0
+
+
+# ── set_account_orders ────────────────────────────────────────────────────────
+
+
+def test_set_account_orders_updates_sort_order(engine) -> None:
+    store = EventStore(engine)
+    store.set_account_orders([("acc-1", 42)])
+
+    acc = store.get_account("acc-1")
+    assert acc.sort_order == 42
+
+
+def test_set_account_orders_ignores_missing(engine) -> None:
+    store = EventStore(engine)
+    store.set_account_orders([("no-such", 100)])  # must not raise
+
+
+# ── set_calendar_inclusion ────────────────────────────────────────────────────
+
+
+def test_set_calendar_inclusion_toggles_flag(engine) -> None:
+    store = EventStore(engine)
+    cals_before = store.list_calendars("acc-1", included_only=False)
+    assert cals_before[0].is_included == 1
+
+    store.set_calendar_inclusion("cal-1", False)
+    cals = store.list_calendars("acc-1", included_only=False)
+    assert cals[0].is_included == 0
+
+    store.set_calendar_inclusion("cal-1", True)
+    cals = store.list_calendars("acc-1", included_only=False)
+    assert cals[0].is_included == 1
+
+
+def test_set_calendar_inclusion_emits_signal(engine) -> None:
+    store = EventStore(engine)
+    captured: list[str] = []
+    store.cal_metadata_changed.connect(lambda cid: captured.append(cid))
+    store.set_calendar_inclusion("cal-1", False)
+    assert "cal-1" in captured
+
+
+# ── set_calendar_orders ────────────────────────────────────────────────────────
+
+
+def test_set_calendar_orders_updates_sort_order(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_orders([("cal-1", 10)])
+
+    cal = store.get_calendar("cal-1")
+    assert cal.sort_order == 10
+
+
+def test_set_calendar_orders_ignores_missing(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_orders([("no-such", 5)])  # must not raise
+
+
+# ── visible_calendar_ids ──────────────────────────────────────────────────────
+
+
+def test_visible_calendar_ids_returns_included_and_visible(engine) -> None:
+    store = EventStore(engine)
+    ids = store.visible_calendar_ids()
+    assert "cal-1" in ids
+
+
+def test_visible_calendar_ids_excludes_hidden(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_visibility("cal-1", False)
+    ids = store.visible_calendar_ids()
+    assert "cal-1" not in ids
+
+
+def test_visible_calendar_ids_excludes_not_included(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_inclusion("cal-1", False)
+    ids = store.visible_calendar_ids()
+    assert "cal-1" not in ids
+
+
+# ── list_calendars included_only filter ────────────────────────────────────────
+
+
+def test_list_calendars_excludes_not_included(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_inclusion("cal-1", False)
+    cals = store.list_calendars("acc-1")
+    assert len(cals) == 0
+
+
+# ── set_calendar_color nonexistent ─────────────────────────────────────────────
+
+
+def test_set_calendar_color_nonexistent_is_safe(engine) -> None:
+    store = EventStore(engine)
+    store.set_calendar_color("no-such", "#000000")  # must not raise
+
+
+# ── queue_split_series / queue_truncate_series missing master ──────────────────
+
+
+def test_queue_split_series_missing_master_raises_value_error(engine) -> None:
+    store = EventStore(engine)
+    split_at = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
+    edited = _recurring_event(summary="New")
+    with pytest.raises(ValueError, match="No master event"):
+        store.queue_split_series("nonexistent", "cal-1", split_at, edited)
+
+
+def test_queue_truncate_series_missing_master_raises_value_error(engine) -> None:
+    store = EventStore(engine)
+    until_dt = datetime(2026, 6, 9, 9, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="No master event"):
+        store.queue_truncate_series("nonexistent", "cal-1", until_dt)
