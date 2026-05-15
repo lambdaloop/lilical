@@ -184,6 +184,7 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar(event_store, add_account_callback=self._add_account)
         self._sidebar.rename_account_requested.connect(self._on_rename_account)
         self._sidebar.reauth_account_requested.connect(self._on_reauth_account)
+        self._sidebar.choose_calendars_requested.connect(self._on_choose_calendars)
         self._sidebar.sync_now_requested.connect(self._on_sync_now_account)
         self._sidebar.delete_account_requested.connect(self._on_delete_account)
         self._sidebar.calendar_visibility_changed.connect(
@@ -927,6 +928,16 @@ class MainWindow(QMainWindow):
         )
         # Clear any auth-expired warning
         self._sync_status.set_ready()
+
+    def _on_choose_calendars(self, account_id: str) -> None:
+        from lilical.ui.widgets.calendar_picker import CalendarPickerDialog
+
+        dlg = CalendarPickerDialog(self, account_id, self._store)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._sidebar.refresh_for_account(account_id)
+        if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            self._current_view.refresh()
 
     def _on_sync_now_account(self, account_id: str) -> None:
         self._sync.force_refresh(account_id)

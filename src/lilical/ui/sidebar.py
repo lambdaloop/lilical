@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from functools import partial
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QPainter
@@ -131,6 +130,7 @@ def _is_inside(widget: QWidget, ancestor: QWidget) -> bool:
 class Sidebar(QWidget):
     rename_account_requested = Signal(str)
     reauth_account_requested = Signal(str)
+    choose_calendars_requested = Signal(str)  # account_id
     sync_now_requested = Signal(str)
     delete_account_requested = Signal(str)
     calendar_visibility_changed = Signal(str, bool)
@@ -250,7 +250,7 @@ class Sidebar(QWidget):
                 acc.display_name,
                 tuple(
                     (c.id, c.display_name, c.color, c.is_visible)
-                    for c in self._store.list_calendars(acc.id, visible_only=False)
+                    for c in self._store.list_calendars(acc.id, visible_only=True)
                 ),
             )
             for acc in self._store.list_accounts()
@@ -344,6 +344,10 @@ class Sidebar(QWidget):
         act_reauth = QAction("Re-authenticate…", menu)
         act_reauth.triggered.connect(_on(self.reauth_account_requested))
         menu.addAction(act_reauth)
+
+        act_calendars = QAction("Choose calendars…", menu)
+        act_calendars.triggered.connect(_on(self.choose_calendars_requested))
+        menu.addAction(act_calendars)
 
         act_sync = QAction("Sync now", menu)
         act_sync.triggered.connect(_on(self.sync_now_requested))

@@ -246,7 +246,7 @@ class SyncEngine(QObject):
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
         # 2) Pull incremental changes per calendar
-        for cal in await asyncio.to_thread(self._store.list_calendars, account.id, False):
+        for cal in await asyncio.to_thread(self._store.list_calendars, account.id, True):
             from lilical.sync.cursor import cursor_from_json
 
             cursor = cursor_from_json(
