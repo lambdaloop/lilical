@@ -907,7 +907,8 @@ class WeekView(QGraphicsView):
             end_date = self._start + timedelta(days=end_off)
             tz = datetime.now().astimezone().tzinfo
             start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=tz)
-            end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, tzinfo=tz)
+            end_day_excl = end_date + timedelta(days=1)
+            end_dt = datetime(end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=True)
@@ -1018,7 +1019,6 @@ class WeekView(QGraphicsView):
 
     def _on_chip_drag_committed(self, event, mode: str, scene_pos: QPointF) -> None:
         import dataclasses
-        import zoneinfo
 
         if self._drag_chip_event is None or self._drag_chip_origin is None:
             self._teardown_preview()
@@ -1073,20 +1073,18 @@ class WeekView(QGraphicsView):
             new_day = origin_day
 
         new_day_date = self._start + timedelta(days=new_day)
-        try:
-            tz = zoneinfo.ZoneInfo(event.tz) if event.tz else datetime.now().astimezone().tzinfo
-        except Exception:
-            tz = datetime.now().astimezone().tzinfo
+        local_tz = datetime.now().astimezone().tzinfo
         new_dtstart = datetime(
             new_day_date.year, new_day_date.month, new_day_date.day,
             new_start // 60, new_start % 60, 0,
-            tzinfo=tz,
+            tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
         updated = dataclasses.replace(
             event,
             dtstart=new_dtstart,
             dtend=new_dtend,
+            tz=str(local_tz),
             sequence=event.sequence + 1,
             local_dirty=True,
         )

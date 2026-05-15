@@ -176,13 +176,13 @@ class EventDialog(QDialog):
         # ── Timezone ───────────────────────────────────────────────────────────
         self._tz_combo = QComboBox()
         self._tz_combo.addItems(_IANA_ZONES)
-        local_name = datetime.now().astimezone().tzname() or "UTC"
-        # Try to find the local zone name; fall back to UTC
-        default_tz = (event.tz if event and event.tz else None) or "UTC"
+        local_tz = datetime.now().astimezone().tzinfo
+        local_iana = getattr(local_tz, "key", None) or "UTC"
+        default_tz = (event.tz if event and event.tz else None) or local_iana
         if default_tz in _IANA_ZONES:
             self._tz_combo.setCurrentText(default_tz)
         else:
-            self._tz_combo.setCurrentText("UTC")
+            self._tz_combo.setCurrentText(local_iana if local_iana in _IANA_ZONES else "UTC")
         self._tz_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         form.addRow("Time zone:", self._tz_combo)
 

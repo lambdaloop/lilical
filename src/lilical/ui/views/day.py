@@ -675,7 +675,8 @@ class _DayCanvas(QGraphicsView):
         else:  # create_allday
             tz = datetime.now().astimezone().tzinfo
             start_dt = datetime(self._day.year, self._day.month, self._day.day, tzinfo=tz)
-            end_dt = datetime(self._day.year, self._day.month, self._day.day, 23, 59, tzinfo=tz)
+            end_day_excl = self._day + timedelta(days=1)
+            end_dt = datetime(end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=True)
@@ -768,7 +769,6 @@ class _DayCanvas(QGraphicsView):
 
     def _on_chip_drag_committed(self, event, mode: str, scene_pos: QPointF) -> None:
         import dataclasses
-        import zoneinfo
 
         if self._drag_chip_event is None or self._drag_chip_origin is None:
             self._teardown_preview()
@@ -803,20 +803,18 @@ class _DayCanvas(QGraphicsView):
             new_end = min(new_end, 1440)
             new_start = origin_start
 
-        try:
-            tz = zoneinfo.ZoneInfo(event.tz) if event.tz else datetime.now().astimezone().tzinfo
-        except Exception:
-            tz = datetime.now().astimezone().tzinfo
+        local_tz = datetime.now().astimezone().tzinfo
         new_dtstart = datetime(
             self._day.year, self._day.month, self._day.day,
             new_start // 60, new_start % 60, 0,
-            tzinfo=tz,
+            tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
         updated = dataclasses.replace(
             event,
             dtstart=new_dtstart,
             dtend=new_dtend,
+            tz=str(local_tz),
             sequence=event.sequence + 1,
             local_dirty=True,
         )
