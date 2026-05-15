@@ -534,11 +534,10 @@ def test_vevent_to_event_attaches_tzid_to_naive_datetime() -> None:
     )
 
 
-def test_events_to_changes_skips_recurrence_overrides() -> None:
+def test_events_to_changes_emits_master_and_override() -> None:
     """A VCALENDAR with a master VEVENT and a RECURRENCE-ID override should
-    emit only the master change. The schema's events table is keyed by
-    (uid, calendar_id) without recurrence_id, so accepting the override
-    would overwrite the master and we'd lose the RRULE."""
+    emit two changes: one for the master (with rrule) and one for the override
+    (with recurrence_id set, rrule=None)."""
     backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
 
     class _FakeEvent:
@@ -553,9 +552,14 @@ def test_events_to_changes_skips_recurrence_overrides() -> None:
         etag="abc",
     )
     changes = backend._events_to_changes([ev], calendar_id="cal-1")
-    assert len(changes) == 1
-    assert changes[0].event.rrule is not None
-    assert "FREQ=WEEKLY" in changes[0].event.rrule
+    assert len(changes) == 2
+    by_kind = {c.event.recurrence_id is None: c for c in changes}
+    master = by_kind[True]
+    override = by_kind[False]
+    assert master.event.rrule is not None
+    assert "FREQ=WEEKLY" in master.event.rrule
+    assert override.event.recurrence_id is not None
+    assert override.event.rrule is None
 
 
 # -- end-to-end: parser → EventStore → event_instances expansion -------------

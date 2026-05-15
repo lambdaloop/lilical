@@ -146,7 +146,8 @@ def _create_test_schema(engine) -> None:
                 dtstart_local TEXT NOT NULL,
                 dtend_local TEXT NOT NULL,
                 all_day INTEGER DEFAULT 0,
-                is_override INTEGER DEFAULT 0
+                is_override INTEGER DEFAULT 0,
+                recurrence_id TEXT NOT NULL DEFAULT ''
             )
             """
         )

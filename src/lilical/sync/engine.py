@@ -131,6 +131,30 @@ class SyncEngine(QObject):
             await backend.update_event(op.calendar_id, event, if_match=op.if_match)
         elif op.op == "delete":
             await backend.delete_event(op.calendar_id, op.uid, if_match=op.if_match)
+        elif op.op == "update_instance":
+            event = _event_from_payload(op.payload)
+            if hasattr(backend, "update_instance") and event.recurrence_id:
+                master = self._store.get_event(op.uid, op.calendar_id)
+                master_pid = master.provider_event_id if master else None
+                if master_pid:
+                    await backend.update_instance(
+                        op.calendar_id, master_pid, event.recurrence_id, event
+                    )
+            else:
+                log.warning("update_instance not supported by backend %s", type(backend).__name__)
+        elif op.op == "delete_instance":
+            import json as _json
+            payload = _json.loads(op.payload or "{}")
+            rid_str = payload.get("recurrence_id")
+            if rid_str and hasattr(backend, "delete_instance"):
+                from datetime import datetime as _dt
+                rid = _dt.fromisoformat(rid_str)
+                master = self._store.get_event(op.uid, op.calendar_id)
+                master_pid = master.provider_event_id if master else None
+                if master_pid:
+                    await backend.delete_instance(op.calendar_id, master_pid, rid)
+            else:
+                log.warning("delete_instance not supported by backend %s", type(backend).__name__)
 
     async def _tick(self, account, backend) -> None:
         self.sync_started.emit(account.id)
@@ -215,10 +239,37 @@ class SyncEngine(QObject):
 
 def _event_from_payload(payload: str | None):
     import json
+    from datetime import datetime as _dt
 
     from lilical.models.event import Event
 
     if not payload:
         return Event(uid="", calendar_id="")
     data = json.loads(payload)
+    # Deserialize ISO-string datetime fields back to datetime objects.
+    for field in ("dtstart", "dtend", "recurrence_id", "last_modified"):
+        raw = data.get(field)
+        if isinstance(raw, str) and raw:
+            try:
+                data[field] = _dt.fromisoformat(raw)
+            except ValueError:
+                data[field] = None
+    # Deserialize datetime tuple fields.
+    for field in ("exdates", "rdates"):
+        raw = data.get(field)
+        if isinstance(raw, list):
+            parsed = []
+            for x in raw:
+                if isinstance(x, str):
+                    try:
+                        parsed.append(_dt.fromisoformat(x))
+                    except ValueError:
+                        pass
+                elif isinstance(x, _dt):
+                    parsed.append(x)
+            data[field] = tuple(parsed)
+    # Ensure other tuple fields are tuples, not lists.
+    for field in ("attendees", "categories", "valarms"):
+        if isinstance(data.get(field), list):
+            data[field] = tuple(data[field])
     return Event(**{k: v for k, v in data.items() if k in Event.__dataclass_fields__})

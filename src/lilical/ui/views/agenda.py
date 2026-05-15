@@ -129,7 +129,7 @@ class AgendaView(QWidget):
             day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
             for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):
-                event = self._store.get_event(inst.uid, inst.calendar_id)
+                event = self._store.get_event_for_instance(inst)
                 if event is None:
                     continue
                 row = QTreeWidgetItem(day_item)
@@ -156,29 +156,57 @@ class AgendaView(QWidget):
                     color_hint = cal.color if cal else None
                 row.setIcon(1, _color_swatch_icon(color_hint))
 
-                row.setData(0, Qt.ItemDataRole.UserRole, (inst.uid, inst.calendar_id))
+                row.setData(0, Qt.ItemDataRole.UserRole, (inst, t))
 
             day_item.setExpanded(True)
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+        import dataclasses
+
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
-        uid, cal_id = data
-        event = self._store.get_event(uid, cal_id)
+        inst, instance_dtstart = data
+        event = self._store.get_event_for_instance(inst)
         if event is None:
             return
 
         from lilical.ui.widgets.event_dialog import EventDialog
 
-        dlg = EventDialog(self, store=self._store, event=event)
-        if dlg.exec():
-            import dataclasses
+        is_recurring = bool(event.rrule or event.recurrence_id is not None)
+        choice = "series"
+        if is_recurring:
+            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
+            rad = RecurrenceActionDialog(self, action="edit")
+            if not rad.exec():
+                return
+            choice = rad.choice or "series"
 
-            updated = dataclasses.replace(
-                dlg.build_event(event.uid),
-                calendar_id=dlg.calendar_id or event.calendar_id,
-                etag=event.etag,
-                sequence=event.sequence + 1,
-            )
-            self._store.queue_update(updated, event.etag)
+        if choice == "occurrence" and instance_dtstart is not None:
+            dlg = EventDialog(self, store=self._store, event=event)
+            if dlg.exec():
+                rid = event.recurrence_id or instance_dtstart
+                edited = dlg.build_event(event.uid)
+                self._store.queue_update_instance(
+                    uid=event.uid,
+                    calendar_id=dlg.calendar_id or event.calendar_id,
+                    recurrence_id_dt=rid,
+                    edited=dataclasses.replace(
+                        edited, calendar_id=dlg.calendar_id or event.calendar_id
+                    ),
+                )
+        else:
+            edit_event = event
+            if event.recurrence_id is not None:
+                master = self._store.get_event(event.uid, event.calendar_id)
+                if master:
+                    edit_event = master
+            dlg = EventDialog(self, store=self._store, event=edit_event)
+            if dlg.exec():
+                updated = dataclasses.replace(
+                    dlg.build_event(edit_event.uid),
+                    calendar_id=dlg.calendar_id or edit_event.calendar_id,
+                    etag=edit_event.etag,
+                    sequence=edit_event.sequence + 1,
+                )
+                self._store.queue_update(updated, edit_event.etag)

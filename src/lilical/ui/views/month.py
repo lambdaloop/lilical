@@ -339,9 +339,13 @@ class MonthView(QGraphicsView):
         multi_spans.sort(key=lambda x: ((x[1] - x[0]).days, x[0]), reverse=True)
 
         for s_day, e_day, inst in multi_spans:
-            event = self._store.get_event(inst.uid, inst.calendar_id)
+            event = self._store.get_event_for_instance(inst)
             if event is None:
                 continue
+            try:
+                inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+            except (ValueError, TypeError):
+                inst_t = None
             if inst.calendar_id not in cal_color:
                 cal = self._store.get_calendar(inst.calendar_id)
                 cal_color[inst.calendar_id] = cal.color if cal else None
@@ -405,9 +409,14 @@ class MonthView(QGraphicsView):
                         show_time_prefix=False,
                         continues_left=(s_day < grid_start + timedelta(days=row * 7)),
                         continues_right=(e_day > row_end_day),
+                        instance_dtstart=inst_t,
                     )
-                    chip.edit_requested.connect(self._on_edit_requested)
-                    chip.delete_requested.connect(self._on_delete_requested)
+                    chip.edit_requested.connect(
+                        lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+                    )
+                    chip.delete_requested.connect(
+                        lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+                    )
                     self._scene.addItem(chip)
                     self._chips.append(chip)
 
@@ -441,7 +450,7 @@ class MonthView(QGraphicsView):
                     break
                 track = free_tracks[shown]
                 shown += 1
-                event = self._store.get_event(inst.uid, inst.calendar_id)
+                event = self._store.get_event_for_instance(inst)
                 if event is None:
                     continue
                 if inst.calendar_id not in cal_color:
@@ -459,9 +468,14 @@ class MonthView(QGraphicsView):
                     mode=self._chip_mode,
                     show_time_prefix=not inst.all_day,
                     time_prefix=time_prefix,
+                    instance_dtstart=start_dt2,
                 )
-                chip.edit_requested.connect(self._on_edit_requested)
-                chip.delete_requested.connect(self._on_delete_requested)
+                chip.edit_requested.connect(
+                    lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+                )
+                chip.delete_requested.connect(
+                    lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+                )
                 self._scene.addItem(chip)
                 self._chips.append(chip)
 
@@ -509,30 +523,74 @@ class MonthView(QGraphicsView):
     def _emit_day_activated(self, d: date) -> None:
         self.day_activated.emit(d)
 
-    def _on_edit_requested(self, event) -> None:
+    def _on_edit_requested(self, event, instance_dtstart=None) -> None:
+        import dataclasses
         from lilical.ui.widgets.event_dialog import EventDialog
 
-        dlg = EventDialog(self.parent(), store=self._store, event=event)
-        if dlg.exec():
-            import dataclasses
+        is_recurring = bool(event.rrule or event.recurrence_id is not None)
+        choice = "series"
+        if is_recurring:
+            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
+            rad = RecurrenceActionDialog(self.parent(), action="edit")
+            if not rad.exec():
+                return
+            choice = rad.choice or "series"
 
-            updated = dataclasses.replace(
-                dlg.build_event(event.uid),
-                calendar_id=dlg.calendar_id or event.calendar_id,
-                etag=event.etag,
-                sequence=event.sequence + 1,
-            )
-            self._store.queue_update(updated, event.etag)
+        if choice == "occurrence" and instance_dtstart is not None:
+            dlg = EventDialog(self.parent(), store=self._store, event=event)
+            if dlg.exec():
+                rid = event.recurrence_id or instance_dtstart
+                edited = dlg.build_event(event.uid)
+                self._store.queue_update_instance(
+                    uid=event.uid,
+                    calendar_id=dlg.calendar_id or event.calendar_id,
+                    recurrence_id_dt=rid,
+                    edited=dataclasses.replace(
+                        edited, calendar_id=dlg.calendar_id or event.calendar_id
+                    ),
+                )
+        else:
+            edit_event = event
+            if event.recurrence_id is not None:
+                master = self._store.get_event(event.uid, event.calendar_id)
+                if master:
+                    edit_event = master
+            dlg = EventDialog(self.parent(), store=self._store, event=edit_event)
+            if dlg.exec():
+                updated = dataclasses.replace(
+                    dlg.build_event(edit_event.uid),
+                    calendar_id=dlg.calendar_id or edit_event.calendar_id,
+                    etag=edit_event.etag,
+                    sequence=edit_event.sequence + 1,
+                )
+                self._store.queue_update(updated, edit_event.etag)
 
-    def _on_delete_requested(self, event) -> None:
+    def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from PySide6.QtWidgets import QMessageBox
 
-        if (
-            QMessageBox.question(
-                self.parent(),
-                "Delete event",
-                f'Delete "{event.summary}"?',
+        is_recurring = bool(event.rrule or event.recurrence_id is not None)
+        choice = "series"
+        if is_recurring:
+            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
+            rad = RecurrenceActionDialog(self.parent(), action="delete")
+            if not rad.exec():
+                return
+            choice = rad.choice or "series"
+
+        if choice == "occurrence" and instance_dtstart is not None:
+            rid = event.recurrence_id or instance_dtstart
+            self._store.queue_delete_instance(
+                uid=event.uid,
+                calendar_id=event.calendar_id,
+                recurrence_id_dt=rid,
             )
-            == QMessageBox.StandardButton.Yes
-        ):
-            self._store.queue_delete(event.uid, event.calendar_id)
+        else:
+            if (
+                QMessageBox.question(
+                    self.parent(),
+                    "Delete event",
+                    f'Delete "{event.summary}"?',
+                )
+                == QMessageBox.StandardButton.Yes
+            ):
+                self._store.queue_delete(event.uid, event.calendar_id)

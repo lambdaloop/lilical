@@ -232,12 +232,50 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
             kind="delete",
             uid=ev_json.get("iCalUID", ev_json.get("id", "")),
         )
-    # Skip recurrence overrides (modified instances of a recurring series).
-    # The storage layer keys events by (uid, calendar_id) and doesn't yet
-    # distinguish overrides — accepting them would clobber the master and we'd
-    # lose the RRULE.
+
+    # Override (modified instance): store under the master's iCalUID so the
+    # expander can find it as a sibling when rebuilding master instances.
     if ev_json.get("recurringEventId"):
-        return None
+        uid = ev_json.get("iCalUID", ev_json.get("id", ""))
+        dtstart, tz_start, all_day = _parse_google_dt(ev_json.get("start"))
+        dtend, _, _ = _parse_google_dt(ev_json.get("end"))
+        original_start_dt, _, _ = _parse_google_dt(ev_json.get("originalStartTime"))
+        g_status = (
+            "CONFIRMED"
+            if status == "confirmed"
+            else (status.upper() if status else "CONFIRMED")
+        )
+        transparency = (
+            "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
+        )
+        last_modified: datetime | None = None
+        updated_raw = ev_json.get("updated")
+        if isinstance(updated_raw, str):
+            try:
+                last_modified = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        override_event = Event(
+            uid=uid,
+            calendar_id=calendar_id,
+            recurrence_id=original_start_dt,
+            provider_event_id=ev_json.get("id"),
+            dtstart=dtstart,
+            dtend=dtend,
+            tz=tz_start,
+            all_day=all_day,
+            summary=ev_json.get("summary", ""),
+            description=ev_json.get("description", ""),
+            location=ev_json.get("location", ""),
+            url=ev_json.get("htmlLink"),
+            rrule=None,
+            status=g_status,
+            transparency=transparency,
+            last_modified=last_modified,
+            etag=ev_json.get("etag"),
+            sequence=ev_json.get("sequence", 0),
+        )
+        return EventChange(kind="upsert", event=override_event, uid=uid)
 
     uid = ev_json.get("iCalUID", ev_json.get("id", ""))
 

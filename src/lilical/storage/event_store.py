@@ -45,6 +45,7 @@ def _row_to_event(row: EventRow) -> Event:
     return Event(
         uid=row.uid,
         calendar_id=row.calendar_id,
+        recurrence_id=_parse_dt(row.recurrence_id) if row.recurrence_id else None,
         provider_event_id=row.provider_event_id,
         dtstart=_parse_dt(row.dtstart),
         dtend=_parse_dt(row.dtend),
@@ -104,6 +105,7 @@ def _event_to_row(event: Event) -> EventRow:
     return EventRow(
         uid=event.uid,
         calendar_id=event.calendar_id,
+        recurrence_id=event.recurrence_id.isoformat() if event.recurrence_id else "",
         provider_event_id=event.provider_event_id,
         dtstart=event.dtstart.isoformat() if event.dtstart else "",
         dtend=event.dtend.isoformat() if event.dtend else "",
@@ -179,6 +181,19 @@ class EventStore(QObject):
             now = datetime.now(timezone.utc)
             window_start = now.replace(year=now.year - self._instances_window_years)
             window_end = now.replace(year=now.year + self._instances_window_years)
+
+        # Override rows belong to the master's instance set; delegate to master.
+        if event.recurrence_id is not None:
+            master_row = (
+                session.query(EventRow)
+                .filter_by(uid=event.uid, calendar_id=event.calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is not None:
+                master_event = _row_to_event(master_row)
+                self._rebuild_instances_for(session, master_event, window_start, window_end)
+            return
+
         session.query(EventInstanceRow).filter(
             EventInstanceRow.uid == event.uid,
             EventInstanceRow.calendar_id == event.calendar_id,
@@ -186,8 +201,21 @@ class EventStore(QObject):
         if event.rrule:
             from lilical.recurrence.expander import RecurrenceExpander
 
+            # Use the current session to fetch overrides so we don't open a
+            # nested session inside this transaction.
+            override_rows = (
+                session.query(EventRow)
+                .filter(
+                    EventRow.uid == event.uid,
+                    EventRow.calendar_id == event.calendar_id,
+                    EventRow.recurrence_id != "",
+                    EventRow.deleted_locally == 0,
+                )
+                .all()
+            )
+            override_events = [_row_to_event(r) for r in override_rows]
             expander = RecurrenceExpander(self)
-            for occ in expander.expand_for_storage(event, window_start, window_end):
+            for occ in expander.expand_for_storage(event, window_start, window_end, overrides=override_events):
                 ds = self._ensure_aware_dt(occ["dtstart"])
                 de = self._ensure_aware_dt(occ["dtend"])
                 session.add(
@@ -200,6 +228,7 @@ class EventStore(QObject):
                         dtend_local=de.isoformat(),
                         all_day=int(occ["all_day"]),
                         is_override=int(occ.get("is_override", False)),
+                        recurrence_id=occ.get("recurrence_id") or "",
                     )
                 )
             return
@@ -214,7 +243,8 @@ class EventStore(QObject):
                 dtstart_local=dtstart.isoformat(),
                 dtend_local=dtend.isoformat(),
                 all_day=int(event.all_day),
-                is_override=1 if event.recurrence_id else 0,
+                is_override=0,
+                recurrence_id="",
             )
         )
 
@@ -235,10 +265,53 @@ class EventStore(QObject):
 
     def get_event(self, uid: str, calendar_id: str) -> Event | None:
         with Session(self._engine) as s:
-            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
+            # Prefer the master row (recurrence_id=""); fall back to any row.
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if row is None:
+                row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
             if row is None:
                 return None
             return _row_to_event(row)
+
+    def get_event_for_instance(self, inst: "EventInstanceRow") -> "Event | None":
+        """Return the Event for a specific instance row.
+
+        For override instances (recurrence_id != ""), returns the override Event
+        so the chip displays the modified title/time. Falls back to the master.
+        """
+        if inst.recurrence_id:
+            with Session(self._engine) as s:
+                row = (
+                    s.query(EventRow)
+                    .filter_by(
+                        uid=inst.uid,
+                        calendar_id=inst.calendar_id,
+                        recurrence_id=inst.recurrence_id,
+                    )
+                    .first()
+                )
+                if row is not None:
+                    return _row_to_event(row)
+        return self.get_event(inst.uid, inst.calendar_id)
+
+    def get_override_events(self, uid: str, calendar_id: str) -> list:
+        """Return all non-deleted override EventRows for a recurring series."""
+        with Session(self._engine) as s:
+            rows = (
+                s.query(EventRow)
+                .filter(
+                    EventRow.uid == uid,
+                    EventRow.calendar_id == calendar_id,
+                    EventRow.recurrence_id != "",
+                    EventRow.deleted_locally == 0,
+                )
+                .all()
+            )
+            return [_row_to_event(r) for r in rows]
 
     def _account_id_for_calendar(self, calendar_id: str) -> str | None:
         with Session(self._engine) as s:
@@ -268,10 +341,17 @@ class EventStore(QObject):
 
     def queue_update(self, event: Event, prev_etag: str | None) -> None:
         account_id = self._account_id_for_calendar(event.calendar_id)
+        recurrence_id_str = (
+            event.recurrence_id.isoformat() if event.recurrence_id else ""
+        )
         with Session(self._engine) as s, s.begin():
             row = (
                 s.query(EventRow)
-                .filter_by(uid=event.uid, calendar_id=event.calendar_id)
+                .filter_by(
+                    uid=event.uid,
+                    calendar_id=event.calendar_id,
+                    recurrence_id=recurrence_id_str,
+                )
                 .first()
             )
             if row is not None:
@@ -300,7 +380,7 @@ class EventStore(QObject):
     def queue_delete(self, uid: str, calendar_id: str) -> None:
         account_id = self._account_id_for_calendar(calendar_id)
         with Session(self._engine) as s, s.begin():
-            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
+            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="").first()
             if row is not None:
                 row.deleted_locally = True
                 row.local_dirty = True
@@ -319,6 +399,107 @@ class EventStore(QObject):
                             created_at=_utc_now(),
                         )
                     )
+        self.events_changed.emit(calendar_id, {uid})
+
+    def queue_update_instance(
+        self,
+        uid: str,
+        calendar_id: str,
+        recurrence_id_dt: datetime,
+        edited: Event,
+    ) -> None:
+        """Update a single instance of a recurring event."""
+        account_id = self._account_id_for_calendar(calendar_id)
+        recurrence_id_str = recurrence_id_dt.isoformat()
+        with Session(self._engine) as s, s.begin():
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str)
+                .first()
+            )
+            override = dataclasses.replace(
+                edited,
+                uid=uid,
+                calendar_id=calendar_id,
+                recurrence_id=recurrence_id_dt,
+                rrule=None,
+                local_dirty=True,
+            )
+            if row is None:
+                s.add(_event_to_row(override))
+            else:
+                updated = _event_to_row(override)
+                _skip = {"uid", "calendar_id", "recurrence_id", "inserted_at"}
+                for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
+                    if col_name in _skip:
+                        continue
+                    setattr(row, col_name, getattr(updated, col_name, None))
+                row.local_dirty = True
+            # Rebuild master's instances (expander will include this override).
+            master_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is not None:
+                self._rebuild_instances_for(s, _row_to_event(master_row))
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        op="update_instance",
+                        payload=_event_to_json(override),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
+        self.events_changed.emit(calendar_id, {uid})
+
+    def queue_delete_instance(
+        self,
+        uid: str,
+        calendar_id: str,
+        recurrence_id_dt: datetime,
+    ) -> None:
+        """Delete a single occurrence of a recurring event."""
+        account_id = self._account_id_for_calendar(calendar_id)
+        recurrence_id_str = recurrence_id_dt.isoformat()
+        with Session(self._engine) as s, s.begin():
+            master_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is not None:
+                master_event = _row_to_event(master_row)
+                new_exdates = master_event.exdates + (recurrence_id_dt,)
+                master_row.exdates = _dt_tuple_to_json(new_exdates)
+                master_row.local_dirty = True
+                updated_master = dataclasses.replace(master_event, exdates=new_exdates)
+                self._rebuild_instances_for(s, updated_master)
+            # If there's an override row at this recurrence_id, mark it deleted too.
+            override_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str)
+                .first()
+            )
+            if override_row is not None:
+                override_row.deleted_locally = True
+                override_row.local_dirty = True
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        op="delete_instance",
+                        payload=json.dumps({"recurrence_id": recurrence_id_str}),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
         self.events_changed.emit(calendar_id, {uid})
 
     def apply_remote_changes(
@@ -340,9 +521,18 @@ class EventStore(QObject):
                     local_event = dataclasses.replace(
                         change.event, calendar_id=calendar_id
                     )
+                    recurrence_id_str = (
+                        local_event.recurrence_id.isoformat()
+                        if local_event.recurrence_id
+                        else ""
+                    )
                     row = (
                         s.query(EventRow)
-                        .filter_by(uid=uid, calendar_id=calendar_id)
+                        .filter_by(
+                            uid=uid,
+                            calendar_id=calendar_id,
+                            recurrence_id=recurrence_id_str,
+                        )
                         .first()
                     )
                     if row is None:

@@ -75,6 +75,7 @@ class EventInstanceRow(Base):
     dtend_local: Mapped[str] = mapped_column(Text, nullable=False)
     all_day: Mapped[int] = mapped_column(Integer, default=0)
     is_override: Mapped[int] = mapped_column(Integer, default=0)
+    recurrence_id: Mapped[str] = mapped_column(Text, default="")
 
 
 @dataclass(frozen=True, slots=True)

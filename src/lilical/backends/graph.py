@@ -431,20 +431,15 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
 
 def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | None:
     # Delta responses mark deletions with an "@removed" key on the otherwise-stub event.
-    # We key local rows on Graph's `id`, not `iCalUId` — calendarView/delta
-    # pre-expands recurring events, so every occurrence shares an iCalUId but
-    # has a distinct id. `id` is also what /me/events/{id} expects for delete.
     if "@removed" in ev_json:
         uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
         return EventChange(kind="delete", uid=uid)
 
     ev_type = str(ev_json.get("type") or "").lower()
-    if ev_type == "seriesmaster":
-        # calendarView/delta returns this master's occurrences as individual
-        # events, each with a unique id. Storing the master row too causes
-        # _rebuild_instances_for to expand its RRULE into N instances on top
-        # of the N per-occurrence instances already produced — duplicating
-        # every recurring event.
+
+    # Pre-expanded occurrences: the seriesMaster's rrule drives instance
+    # generation via the expander — no need to store individual occurrence rows.
+    if ev_type == "occurrence":
         return None
 
     uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
@@ -517,6 +512,25 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
         field="lastModifiedDateTime",
     )
 
+    # Type-specific: seriesMaster carries the RRULE; exception carries a
+    # recurrence_id and links back to its master.
+    rrule: str | None = None
+    recurrence_id: "datetime | None" = None
+    if ev_type == "seriesmaster":
+        rrule = _graph_recurrence_to_rrule(ev_json.get("recurrence"))
+    elif ev_type == "exception":
+        # Override instance: store under the master's uid so the expander can
+        # find it as a sibling when rebuilding master instances.
+        master_id = ev_json.get("seriesMasterId") or ""
+        if master_id:
+            uid = master_id
+        orig_start_obj = ev_json.get("originalStart") or {}
+        orig_tz = str(orig_start_obj.get("timeZone") or "UTC")
+        recurrence_id = _safe(
+            lambda: _parse_graph_dt(orig_start_obj.get("dateTime"), orig_tz),
+            field="originalStart",
+        )
+
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
@@ -529,7 +543,8 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
         description=body.get("content", "") or "",
         location=location.get("displayName", "") or "",
         url=ev_json.get("webLink"),
-        rrule=None,
+        rrule=rrule,
+        recurrence_id=recurrence_id,
         attendees=tuple(attendees),
         categories=categories,
         status=status,
@@ -539,6 +554,109 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
         etag=ev_json.get("@odata.etag"),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
+
+
+_IANA_TO_WINDOWS_TZ: dict[str, str] = {v: k for k, v in _WINDOWS_TZ_TO_IANA.items()}
+
+
+def _rrule_to_graph_recurrence(
+    rrule: str,
+    dtstart: "datetime | None",
+    dtend: "datetime | None",
+) -> dict | None:
+    """Convert an iCal RRULE string back to a Graph recurrence object."""
+    if not rrule:
+        return None
+
+    props: dict[str, str] = {}
+    for part in rrule.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            props[k.upper()] = v
+
+    freq = props.get("FREQ", "").upper()
+    interval = int(props.get("INTERVAL", "1"))
+
+    pattern: dict = {"interval": interval}
+    _RRULE_TO_GRAPH_WEEKDAY = {v: k for k, v in _GRAPH_WEEKDAY_TO_RRULE.items()}
+    _RRULE_TO_GRAPH_INDEX = {v: k for k, v in _GRAPH_INDEX_TO_RRULE.items()}
+
+    if freq == "DAILY":
+        pattern["type"] = "daily"
+    elif freq == "WEEKLY":
+        pattern["type"] = "weekly"
+        byday = props.get("BYDAY", "")
+        days = [_RRULE_TO_GRAPH_WEEKDAY.get(d.strip(), d.strip()) for d in byday.split(",") if d.strip()]
+        if not days and dtstart:
+            day_name = dtstart.strftime("%A").lower()
+            days = [day_name]
+        pattern["daysOfWeek"] = days
+        if dtstart:
+            pattern["firstDayOfWeek"] = "sunday"
+    elif freq == "MONTHLY":
+        byday = props.get("BYDAY", "")
+        if byday and (byday[0].isdigit() or byday[0] == "-"):
+            pattern["type"] = "relativeMonthly"
+            # e.g. "2MO" → index="second", daysOfWeek=["monday"]
+            ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
+            day_code = byday.lstrip("-0123456789")
+            pattern["index"] = _RRULE_TO_GRAPH_INDEX.get(ordinal, "first")
+            pattern["daysOfWeek"] = [_RRULE_TO_GRAPH_WEEKDAY.get(day_code, day_code)]
+        else:
+            pattern["type"] = "absoluteMonthly"
+            dom = props.get("BYMONTHDAY")
+            if dom:
+                pattern["dayOfMonth"] = int(dom)
+            elif dtstart:
+                pattern["dayOfMonth"] = dtstart.day
+    elif freq == "YEARLY":
+        byday = props.get("BYDAY", "")
+        if byday:
+            pattern["type"] = "relativeYearly"
+            ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
+            day_code = byday.lstrip("-0123456789")
+            pattern["index"] = _RRULE_TO_GRAPH_INDEX.get(ordinal, "first")
+            pattern["daysOfWeek"] = [_RRULE_TO_GRAPH_WEEKDAY.get(day_code, day_code)]
+        else:
+            pattern["type"] = "absoluteYearly"
+        month = props.get("BYMONTH")
+        if month:
+            pattern["month"] = int(month)
+        elif dtstart:
+            pattern["month"] = dtstart.month
+        dom = props.get("BYMONTHDAY")
+        if dom:
+            pattern["dayOfMonth"] = int(dom)
+        elif dtstart:
+            pattern["dayOfMonth"] = dtstart.day
+    else:
+        return None
+
+    rng: dict = {}
+    if "COUNT" in props:
+        rng["type"] = "numbered"
+        rng["numberOfOccurrences"] = int(props["COUNT"])
+    elif "UNTIL" in props:
+        rng["type"] = "endDate"
+        until_raw = props["UNTIL"]
+        try:
+            from datetime import datetime as _dt
+            if "T" in until_raw:
+                until_dt = _dt.strptime(until_raw[:15], "%Y%m%dT%H%M%S")
+            else:
+                until_dt = _dt.strptime(until_raw[:8], "%Y%m%d")
+            rng["endDate"] = until_dt.strftime("%Y-%m-%d")
+        except ValueError:
+            rng["type"] = "noEnd"
+    else:
+        rng["type"] = "noEnd"
+
+    if dtstart:
+        rng["startDate"] = dtstart.strftime("%Y-%m-%d")
+        iana = local_iana_tz()
+        rng["recurrenceTimeZone"] = _IANA_TO_WINDOWS_TZ.get(iana, iana)
+
+    return {"pattern": pattern, "range": rng}
 
 
 def _event_to_graph_json(event: Event) -> dict[str, Any]:
@@ -554,6 +672,10 @@ def _event_to_graph_json(event: Event) -> dict[str, Any]:
         body["end"] = _datetime_to_graph(event.dtend, event.tz, event.all_day)
     if event.all_day:
         body["isAllDay"] = True
+    if event.rrule:
+        rec = _rrule_to_graph_recurrence(event.rrule, event.dtstart, event.dtend)
+        if rec:
+            body["recurrence"] = rec
     return body
 
 
@@ -825,6 +947,10 @@ class GraphBackend:
         for ev in events:
             if "@removed" in ev:
                 continue
+            # Skip plain occurrences — they are dropped in _graph_event_to_change;
+            # no need to pay a $batch round-trip just to fill in fields we discard.
+            if str(ev.get("type") or "").lower() == "occurrence":
+                continue
             if not (ev.get("subject") or "").strip():
                 smi = ev.get("seriesMasterId")
                 if smi and smi not in masters_cache:
@@ -912,6 +1038,95 @@ class GraphBackend:
             f"/me/events/{uid}",
             headers=headers,
         )
+
+    @_classify_errors
+    async def update_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: "datetime",
+        event: Event,
+    ) -> None:
+        """Update a single occurrence of a recurring series.
+
+        Resolves the Graph occurrence id by listing instances around the
+        recurrence_id datetime, then PATCHes that specific occurrence.
+        """
+        from datetime import timedelta
+
+        win_start = (recurrence_id_dt - timedelta(minutes=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        win_end = (recurrence_id_dt + timedelta(hours=25)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        resp = await self._request(
+            "GET",
+            f"/me/events/{master_provider_id}/instances"
+            f"?startDateTime={win_start}&endDateTime={win_end}"
+            f"&$select=id,start",
+        )
+        items = resp.json().get("value", [])
+        instance_id: str | None = None
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        for item in items:
+            start_raw = (item.get("start") or {}).get("dateTime", "")
+            try:
+                item_dt = datetime.fromisoformat(start_raw.rstrip("Z"))
+            except ValueError:
+                continue
+            if abs((item_dt - rid_utc).total_seconds()) < 60:
+                instance_id = item.get("id")
+                break
+        if not instance_id:
+            raise PermanentError(
+                f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
+            )
+        await self._request(
+            "PATCH",
+            f"/me/events/{instance_id}",
+            json_body=_event_to_graph_json(event),
+        )
+
+    @_classify_errors
+    async def delete_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: "datetime",
+    ) -> None:
+        """Cancel a single occurrence of a recurring series."""
+        from datetime import timedelta
+
+        win_start = (recurrence_id_dt - timedelta(minutes=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        win_end = (recurrence_id_dt + timedelta(hours=25)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        resp = await self._request(
+            "GET",
+            f"/me/events/{master_provider_id}/instances"
+            f"?startDateTime={win_start}&endDateTime={win_end}"
+            f"&$select=id,start",
+        )
+        items = resp.json().get("value", [])
+        instance_id: str | None = None
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        for item in items:
+            start_raw = (item.get("start") or {}).get("dateTime", "")
+            try:
+                item_dt = datetime.fromisoformat(start_raw.rstrip("Z"))
+            except ValueError:
+                continue
+            if abs((item_dt - rid_utc).total_seconds()) < 60:
+                instance_id = item.get("id")
+                break
+        if not instance_id:
+            raise PermanentError(
+                f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
+            )
+        await self._request("DELETE", f"/me/events/{instance_id}")
 
     async def aclose(self) -> None:
         if self._http is not None:

@@ -349,10 +349,9 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
     assert set(change.event.attendees) == {"alice@example.com", "bob@example.com"}
 
 
-def test_event_to_change_recurring_occurrences_have_distinct_uids() -> None:
-    """calendarView/delta pre-expands recurring events: every occurrence
-    shares one iCalUId but has a distinct `id`. Local uid must come from
-    `id` so apply_remote_changes doesn't collapse them into one row."""
+def test_event_to_change_occurrences_return_none() -> None:
+    """Pre-expanded occurrence rows are dropped at the parser boundary.
+    The seriesMaster's rrule drives instance generation via the expander."""
     occurrences = [
         {
             "id": f"AAMk-occ-{i}",
@@ -370,15 +369,13 @@ def test_event_to_change_recurring_occurrences_have_distinct_uids() -> None:
         }
         for i in range(3)
     ]
-    uids = [_graph_event_to_change(o, "cal-1").uid for o in occurrences]
-    assert uids == ["AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"]
-    assert len(set(uids)) == 3
+    for occ in occurrences:
+        assert _graph_event_to_change(occ, "cal-1") is None
 
 
-def test_event_to_change_series_master_returns_none() -> None:
-    # seriesMaster is dropped: calendarView/delta also returns each occurrence
-    # individually, so accepting the master row would double-count via
-    # _rebuild_instances_for's RRULE expansion.
+def test_event_to_change_series_master_returns_event_with_rrule() -> None:
+    """seriesMaster is kept and its recurrence pattern decoded into an rrule.
+    The expander uses this rrule to generate instance rows."""
     data = {
         "id": "AAMk-master",
         "iCalUId": "uid-master@outlook.com",
@@ -398,7 +395,12 @@ def test_event_to_change_series_master_returns_none() -> None:
             },
         },
     }
-    assert _graph_event_to_change(data, "cal-1") is None
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.event is not None
+    assert change.event.rrule is not None
+    assert "FREQ=WEEKLY" in change.event.rrule
+    assert change.event.summary == "Weekly standup"
 
 
 def test_event_to_change_single_instance_no_rrule() -> None:
@@ -415,9 +417,10 @@ def test_event_to_change_single_instance_no_rrule() -> None:
     assert change.event.rrule is None
 
 
-def test_series_master_is_filtered_from_mixed_batch() -> None:
+def test_series_master_is_kept_occurrences_are_dropped() -> None:
     """A batch containing a seriesMaster alongside its occurrences should
-    produce EventChanges only for the occurrences."""
+    produce exactly one EventChange for the master (with rrule); occurrences
+    are dropped — the expander generates instance rows from the master's rrule."""
     master = {
         "id": "AAMk-master",
         "type": "seriesMaster",
@@ -452,9 +455,10 @@ def test_series_master_is_filtered_from_mixed_batch() -> None:
         for c in (_graph_event_to_change(ev, "cal-1") for ev in [master, *occurrences])
         if c is not None
     ]
-    assert len(batch) == 3
-    uids = [c.uid for c in batch]
-    assert uids == ["AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"]
+    # Only the seriesMaster produces an EventChange; 3 occurrences return None.
+    assert len(batch) == 1
+    assert batch[0].event.rrule is not None
+    assert "FREQ=WEEKLY" in batch[0].event.rrule
 
 
 # -- end-to-end: parser → EventStore → event_instances expansion --------------
@@ -523,9 +527,12 @@ def test_parsed_graph_event_creates_instance_row(tmp_path) -> None:
     )
 
 
-def test_series_master_plus_occurrences_no_duplicate_instances(tmp_path) -> None:
-    """Regression: when a delta batch contains a seriesMaster + N occurrences,
-    apply_remote_changes should produce exactly N EventInstanceRows — not 2N."""
+def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
+    """With the new approach, only the seriesMaster produces an EventChange.
+    apply_remote_changes stores the master with its rrule and the expander
+    generates EventInstanceRows. Occurrences from the API are dropped."""
+    from datetime import timedelta, timezone
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
@@ -561,13 +568,14 @@ def test_series_master_plus_occurrences_no_duplicate_instances(tmp_path) -> None
 
     master_json = {
         "id": "AAMk-master",
+        "iCalUId": "uid-shared@outlook.com",
         "type": "seriesMaster",
         "subject": "Weekly standup",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
         "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
         "recurrence": {
             "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"]},
-            "range": {"type": "noEnd", "startDate": "2026-05-13"},
+            "range": {"type": "numbered", "startDate": "2026-05-13", "numberOfOccurrences": 3},
         },
     }
     occurrence_jsons = [
@@ -595,20 +603,24 @@ def test_series_master_plus_occurrences_no_duplicate_instances(tmp_path) -> None
         for c in (_graph_event_to_change(ev, "cal-1") for ev in all_json)
         if c is not None
     ]
-    assert len(changes) == 3  # master filtered out
+    # Only the master produces a change; 3 occurrences return None.
+    assert len(changes) == 1
+    assert changes[0].event.rrule is not None
 
     store = EventStore(engine)
     store.apply_remote_changes(
         "cal-1", changes, '{"_type": "graph", "delta_link": null}'
     )
 
+    # The expander should produce EventInstanceRows from rrule expansion.
     with Session(engine) as session:
         instances = session.query(EventInstanceRow).all()
-    assert len(instances) == 3, (
-        f"Expected 3 instances (one per occurrence), got {len(instances)}"
+    assert len(instances) >= 1, (
+        f"Expected rrule expansion to produce instances, got {len(instances)}"
     )
-    instance_uids = {inst.uid for inst in instances}
-    assert instance_uids == {"AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"}
+    # All instances share the master's uid.
+    master_uid = changes[0].event.uid
+    assert all(inst.uid == master_uid for inst in instances)
 
 
 # -- _graph_recurrence_to_rrule: pattern.type axis ---------------------------
@@ -748,14 +760,15 @@ def test_recurrence_to_rrule_returns_none_for_missing_subobjects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drain_delta_hydrates_occurrences_from_master() -> None:
-    """calendarView/delta returns recurring occurrences with empty
-    subject/body/location — the real values live on the seriesMaster.
-    `_drain_delta` should fetch each unique master once and merge its
-    fields into the in-place event JSON before parsing."""
+async def test_drain_delta_hydrates_exceptions_from_master() -> None:
+    """calendarView/delta returns exception overrides with empty subject/body —
+    the real values live on the seriesMaster. `_drain_delta` should fetch each
+    unique master once and merge its fields into the exception event JSON.
+    Plain occurrences are dropped and no longer trigger hydration requests."""
     delta_body = {
         "value": [
             {
+                # Plain occurrence — dropped, should NOT trigger a $batch request.
                 "id": "AAMk-occ-1",
                 "iCalUId": "uid-shared@outlook.com",
                 "subject": None,
@@ -773,17 +786,24 @@ async def test_drain_delta_hydrates_occurrences_from_master() -> None:
                 },
             },
             {
-                "id": "AAMk-occ-2",
+                # Exception override with no subject — should trigger hydration.
+                "id": "AAMk-exc-1",
                 "iCalUId": "uid-shared@outlook.com",
                 "subject": "",
-                "type": "occurrence",
+                "body": {"contentType": "html", "content": ""},
+                "location": {"displayName": ""},
+                "type": "exception",
                 "seriesMasterId": "AAMk-master-1",
-                "start": {
+                "originalStart": {
                     "dateTime": "2026-05-20T09:00:00.0000000",
                     "timeZone": "UTC",
                 },
+                "start": {
+                    "dateTime": "2026-05-20T10:00:00.0000000",
+                    "timeZone": "UTC",
+                },
                 "end": {
-                    "dateTime": "2026-05-20T09:30:00.0000000",
+                    "dateTime": "2026-05-20T10:30:00.0000000",
                     "timeZone": "UTC",
                 },
             },
@@ -835,17 +855,21 @@ async def test_drain_delta_hydrates_occurrences_from_master() -> None:
     async for batch, _cursor in backend.initial_sync("cal-1"):
         collected.extend(batch)
 
-    # One $batch call with one request — two occurrences but one unique master.
+    # One $batch call for the exception's master (occurrence is skipped).
     assert len(batch_calls) == 1
     assert len(batch_calls[0]["requests"]) == 1
 
+    # collected has: exception override + singleInstance (occurrence is dropped).
+    assert len(collected) == 2
     by_uid = {c.uid: c.event for c in collected}
-    # Occurrences inherited subject/body/location from the master.
-    assert by_uid["AAMk-occ-1"].summary == "Weekly standup"
-    assert by_uid["AAMk-occ-1"].description == "team standup"
-    assert by_uid["AAMk-occ-1"].location == "Zoom"
-    assert by_uid["AAMk-occ-2"].summary == "Weekly standup"
-    # Single instance with its own subject is untouched.
+    # The exception override inherited subject from master and has recurrence_id.
+    exc_uid = "AAMk-master-1"  # override uid = seriesMasterId
+    assert exc_uid in by_uid
+    assert by_uid[exc_uid].summary == "Weekly standup"
+    assert by_uid[exc_uid].description == "team standup"
+    assert by_uid[exc_uid].location == "Zoom"
+    assert by_uid[exc_uid].recurrence_id is not None
+    # Single instance with its own subject is untouched (uid comes from "id" field).
     assert by_uid["AAMk-single"].summary == "One-off"
 
 
@@ -892,24 +916,26 @@ async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
 
 @pytest.mark.asyncio
 async def test_drain_delta_cross_page_master_cache() -> None:
-    """The same seriesMasterId appearing on two delta pages should trigger
-    exactly one $batch call total, not one per page."""
+    """The same seriesMasterId appearing on two delta pages (as exceptions)
+    should trigger exactly one $batch call total, not one per page.
+    Plain occurrences are skipped — they don't trigger hydration."""
     import json as _json
 
-    occ = {
+    exc = {
         "iCalUId": "uid-shared@outlook.com",
         "subject": "",
-        "type": "occurrence",
+        "type": "exception",
         "seriesMasterId": "AAMk-master-X",
-        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
-        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+        "originalStart": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "start": {"dateTime": "2026-05-13T10:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T10:30:00.0000000", "timeZone": "UTC"},
     }
     page1 = {
-        "value": [{**occ, "id": "AAMk-occ-p1"}],
+        "value": [{**exc, "id": "AAMk-exc-p1"}],
         "@odata.nextLink": "https://graph.microsoft.com/v1.0/page2",
     }
     page2 = {
-        "value": [{**occ, "id": "AAMk-occ-p2"}],
+        "value": [{**exc, "id": "AAMk-exc-p2", "originalStart": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"}}],
         "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
     }
     master = {
@@ -947,7 +973,8 @@ async def test_drain_delta_cross_page_master_cache() -> None:
     async for _batch, _cursor in backend.initial_sync("cal-1"):
         pass
 
-    # $batch called once (page 1), page 2 reuses the cache — no second call.
+    # $batch called once (page 1 exception triggers hydration), page 2 reuses
+    # the cache — no second $batch call for the same master.
     assert len(batch_calls) == 1
 
 
@@ -1006,13 +1033,12 @@ async def test_initial_sync_uses_calendarview_delta_endpoint() -> None:
     assert "endDateTime=" in captured[0]
 
 
-def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
-    # Renamed / replaced: the old contract (seriesMaster → RRULE → N instances)
-    # was the cause of duplicate events. seriesMaster is now dropped at the
-    # backend boundary; the per-occurrence rows drive instance creation instead.
-    # Full coverage is in test_series_master_plus_occurrences_no_duplicate_instances.
+def test_series_master_creates_instance_rows_via_rrule(tmp_path) -> None:
+    """seriesMaster is kept; its rrule drives EventInstanceRow creation.
+    Full end-to-end coverage is in test_series_master_drives_instance_rows_via_rrule."""
     data = {
         "id": "AAMk-series",
+        "iCalUId": "uid-weekly@outlook.com",
         "type": "seriesMaster",
         "subject": "Weekly standup",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
@@ -1026,7 +1052,11 @@ def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
             },
         },
     }
-    assert _graph_event_to_change(data, "cal-1") is None
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.event.rrule is not None
+    assert "FREQ=WEEKLY" in change.event.rrule
+    assert "COUNT=4" in change.event.rrule
 
 
 # ── write path ────────────────────────────────────────────────────────────────

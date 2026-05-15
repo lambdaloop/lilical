@@ -121,6 +121,7 @@ class EventDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._store = store
+        self._event = event
         self._editing = event is not None
         self.setWindowTitle("Edit event" if event else "New event")
         self.setMinimumWidth(480)
@@ -358,9 +359,19 @@ class EventDialog(QDialog):
         color = self._selected_color() or None
         url = self._url_edit.text().strip() or None
 
+        # Preserve recurrence and identity fields from the source event so that
+        # saving an existing recurring event doesn't strip its RRULE or etag.
+        src = self._event
         return Event(
             uid=uid,
             calendar_id=cal_id,
+            provider_event_id=src.provider_event_id if src else None,
+            recurrence_id=src.recurrence_id if src else None,
+            rrule=src.rrule if src else None,
+            exdates=src.exdates if src else (),
+            rdates=src.rdates if src else (),
+            sequence=src.sequence if src else 0,
+            etag=src.etag if src else None,
             dtstart=start_dt,
             dtend=end_dt,
             tz=tz_name,

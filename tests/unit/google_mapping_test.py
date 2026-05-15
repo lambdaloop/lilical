@@ -107,22 +107,26 @@ def test_recurring_master_extracts_rrule() -> None:
     )
 
 
-def test_recurring_override_is_skipped() -> None:
-    """A modified instance of a recurring series carries `recurringEventId`
-    pointing at the master. Storage doesn't yet key on recurrence_id, so we
-    drop overrides at the change layer — same as CalDAV's RECURRENCE-ID skip
-    — to keep them from clobbering the master."""
+def test_recurring_override_is_stored_with_recurrence_id() -> None:
+    """A modified instance of a recurring series carries `recurringEventId`.
+    It is now stored as an override Event with recurrence_id set (from
+    originalStartTime) and rrule=None, keyed under the master's iCalUID."""
     data = {
         "id": "evt-override",
         "iCalUID": "uid-rec@google.com",
         "recurringEventId": "evt-rec",
         "summary": "Standup (moved)",
         "status": "confirmed",
+        "originalStartTime": {"dateTime": "2026-05-20T09:00:00Z", "timeZone": "UTC"},
         "start": {"dateTime": "2026-05-20T10:00:00Z", "timeZone": "UTC"},
         "end": {"dateTime": "2026-05-20T10:30:00Z", "timeZone": "UTC"},
     }
     change = _google_event_to_change(data, "cal-1")
-    assert change is None
+    assert change is not None
+    assert change.event is not None
+    assert change.event.recurrence_id is not None
+    assert change.event.rrule is None
+    assert change.event.summary == "Standup (moved)"
 
 
 def test_transparent_event_maps_to_transparency() -> None:

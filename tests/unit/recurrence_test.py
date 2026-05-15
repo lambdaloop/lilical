@@ -1,19 +1,55 @@
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import create_engine
 
 from lilical.models.event import Event
 from lilical.recurrence.expander import RecurrenceExpander
 from lilical.storage.event_store import EventStore
 
 
-class FakeEngine:
-    pass
-
-
 @pytest.fixture
 def expander() -> RecurrenceExpander:
-    store = EventStore(FakeEngine())
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE events (
+                uid TEXT NOT NULL,
+                calendar_id TEXT NOT NULL,
+                recurrence_id TEXT NOT NULL DEFAULT '',
+                provider_event_id TEXT,
+                dtstart TEXT NOT NULL,
+                dtend TEXT NOT NULL,
+                tz TEXT NOT NULL DEFAULT 'UTC',
+                all_day INTEGER DEFAULT 0,
+                summary TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                url TEXT,
+                rrule TEXT,
+                exdates TEXT,
+                rdates TEXT,
+                attendees TEXT,
+                categories TEXT,
+                color TEXT,
+                status TEXT DEFAULT 'CONFIRMED',
+                self_response TEXT,
+                transparency TEXT DEFAULT 'OPAQUE',
+                valarms TEXT,
+                etag TEXT,
+                sequence INTEGER DEFAULT 0,
+                last_modified TEXT,
+                local_dirty INTEGER DEFAULT 0,
+                deleted_locally INTEGER DEFAULT 0,
+                conflict_state TEXT,
+                local_modified_at TEXT,
+                inserted_at TEXT,
+                PRIMARY KEY(uid, calendar_id, recurrence_id)
+            )
+            """
+        )
+    store = EventStore(engine)
     return RecurrenceExpander(store)
 
 

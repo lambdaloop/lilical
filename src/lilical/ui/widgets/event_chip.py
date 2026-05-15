@@ -141,6 +141,7 @@ class EventChip(QGraphicsObject):
         continues_left: bool = False,
         continues_right: bool = False,
         overlap_cols: int = 1,
+        instance_dtstart: datetime | None = None,
     ) -> None:
         super().__init__()
         self._event = event
@@ -154,6 +155,7 @@ class EventChip(QGraphicsObject):
         self._continues_right = continues_right
         self._overlap_cols = overlap_cols
         self._hovered = False
+        self._instance_dtstart = instance_dtstart
         # Drag state
         self._drag_mode: str | None = None
         self._press_scene_pos: QPointF | None = None
@@ -198,6 +200,11 @@ class EventChip(QGraphicsObject):
         if sr == "DECLINED":
             return "declined"
         return None
+
+    @property
+    def instance_dtstart(self) -> datetime | None:
+        """The specific occurrence's start time, used for 'edit this occurrence'."""
+        return self._instance_dtstart
 
     @override
     def boundingRect(self) -> QRectF:
@@ -611,7 +618,7 @@ class EventChip(QGraphicsObject):
 
     # ── Recurrence indicator ─────────────────────────────────────────────
     def _draw_recurrence_glyph(self, painter: QPainter, text_color: QColor) -> None:
-        if not self._event.rrule:
+        if not (self._event.rrule or self._event.recurrence_id is not None):
             return
         h = self._rect.height()
         if h < theme.CHIP_MIN_TITLE_H or self._rect.width() < 18:

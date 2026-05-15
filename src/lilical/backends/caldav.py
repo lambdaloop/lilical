@@ -263,6 +263,14 @@ def _vevent_to_event(
                 flat.append(str(it))
         categories = tuple(flat)
 
+    # RECURRENCE-ID identifies an override (exception) VEVENT.
+    rid_prop = ve.get("RECURRENCE-ID")
+    recurrence_id = (
+        _safe(lambda: _prop_dt(rid_prop, tz), field="RECURRENCE-ID")
+        if rid_prop is not None
+        else None
+    )
+
     url_prop = ve.get("URL")
     url = str(url_prop) if url_prop is not None else None
 
@@ -298,6 +306,7 @@ def _vevent_to_event(
     return Event(
         uid=str(ve.get("UID", "")),
         calendar_id=calendar_id,
+        recurrence_id=recurrence_id,
         provider_event_id=href,
         dtstart=dtstart,
         dtend=dtend,
@@ -533,14 +542,6 @@ class CalDavBackend:
                 log.exception("error iterating caldav event data for %s", href)
                 continue
             for ve in vevents:
-                # Skip recurrence overrides: the events table's filter
-                # in apply_remote_changes keys on (uid, calendar_id) so an
-                # override would overwrite the master VEVENT (losing the
-                # RRULE). Until the storage layer keys by recurrence_id
-                # too, drop overrides — instances still expand from the
-                # master and display at their original times.
-                if ve.get("RECURRENCE-ID") is not None:
-                    continue
                 try:
                     event = _vevent_to_event(
                         ve,
@@ -641,8 +642,6 @@ class CalDavBackend:
                 href = str(obj.url) if obj.url is not None else ""
                 etag = obj.etag or ""
                 for ve in vevents:
-                    if ve.get("RECURRENCE-ID") is not None:
-                        continue
                     try:
                         event = _vevent_to_event(
                             ve,
