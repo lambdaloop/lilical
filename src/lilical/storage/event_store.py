@@ -143,6 +143,7 @@ class EventStore(QObject):
     events_changed = Signal(str, set)
     instances_changed = Signal(str, datetime, datetime)
     local_events_changed = Signal()  # fired after any locally-originated mutation
+    cal_metadata_changed = Signal(str)  # calendar_id — color or visibility changed
 
     _instances_window_years = 1
 
@@ -841,6 +842,7 @@ class EventStore(QObject):
             s.query(Calendar).filter(Calendar.id == calendar_id).update(
                 {"is_visible": 1 if is_visible else 0}
             )
+        self.cal_metadata_changed.emit(calendar_id)
 
     def get_calendar(self, calendar_id: str):
         from lilical.models.calendar import Calendar
@@ -859,10 +861,9 @@ class EventStore(QObject):
                 return
             row.color = color
             cal_account_id = row.account_id
-        # No targeted "calendar metadata changed" signal exists yet; piggy-back
-        # on events_changed with an empty UID set to nudge any view watching
-        # this calendar to re-paint.
+        # Piggy-back on events_changed so views that listen to it also re-render.
         self.events_changed.emit(calendar_id, set())
+        self.cal_metadata_changed.emit(calendar_id)
         _ = cal_account_id  # reserved for a future account-level signal
 
     def create_account(

@@ -187,23 +187,20 @@ class _OverflowChip(QGraphicsItem):
             super().mousePressEvent(event)
 
 
-def _build_month_plan(store, grid_start: date, end_day: date) -> dict | None:
+def _query_month_data(store, grid_start: date, end_day: date, cal_info_snap: dict) -> dict | None:
     """Off-thread: query DB for the month range."""
     start_dt = _local_midnight(grid_start)
     end_dt = _local_midnight(end_day)
+    visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+            start_dt, end_dt, calendar_ids=visible_ids
         )
     except Exception:
         log.exception("MonthView: failed to query instances")
         return None
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {
-        cal.id: cal.color
-        for acc in store.list_accounts()
-        for cal in store.list_calendars(acc.id, visible_only=False)
-    }
+    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
     return {"instances": instances, "events": events, "cal_color": cal_color, "grid_start": grid_start}
 
 
@@ -211,9 +208,11 @@ class MonthView(QGraphicsView):
     day_activated = Signal(object)  # emits date — for switching to Day view
     new_event_requested = Signal(object)  # emits date — double-click to create
 
-    def __init__(self, store: EventStore) -> None:
+    def __init__(self, store: EventStore, cal_info_provider=None) -> None:
         super().__init__()
         self._store = store
+        self._cal_info_provider = cal_info_provider or (lambda: {})
+        self._cached_data: dict | None = None
         self._chip_mode: ChipMode = ChipMode.BARS
         self._chips: list[QGraphicsItem] = []
         self._event_chips: dict[tuple, EventChip] = {}
@@ -235,6 +234,13 @@ class MonthView(QGraphicsView):
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self.refresh(data_dirty=False)
+
+    @override
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        if self._cached_data is None:
+            self.refresh()
 
     @override
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
@@ -299,34 +305,39 @@ class MonthView(QGraphicsView):
         if mode is self._chip_mode:
             return
         self._chip_mode = mode
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     @property
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
 
-    def refresh(self) -> None:
+    def refresh(self, *, data_dirty: bool = True) -> None:
+        if not data_dirty and self._cached_data is not None:
+            self._apply_plan(self._cached_data)
+            return
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
         grid_start = self._grid.grid_start
         end_day = grid_start + timedelta(days=42)
+        cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(grid_start, end_day)
+            self._refresh_async(grid_start, end_day, cal_info_snap)
         )
 
-    async def _refresh_async(self, grid_start: date, end_day: date) -> None:
+    async def _refresh_async(self, grid_start: date, end_day: date, cal_info_snap: dict) -> None:
         try:
-            plan = await asyncio.to_thread(
-                _build_month_plan, self._store, grid_start, end_day
+            data = await asyncio.to_thread(
+                _query_month_data, self._store, grid_start, end_day, cal_info_snap
             )
         except asyncio.CancelledError:
             return
-        if plan is None:
+        if data is None:
             for chip in self._event_chips.values():
                 self._scene.removeItem(chip)
             self._event_chips = {}
             return
-        self._apply_plan(plan)
+        self._cached_data = data
+        self._apply_plan(data)
 
     def _apply_plan(self, plan: dict) -> None:
         instances = plan["instances"]

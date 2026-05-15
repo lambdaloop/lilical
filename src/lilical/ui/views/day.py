@@ -252,24 +252,30 @@ class _DayStickyHeader(QGraphicsItem):
         )
 
 
-def _build_day_plan(store, day: date, col_w: float, px_per_hour: int, time_format: str) -> dict | None:
-    """Off-thread: query DB and compute chip placements for the day canvas."""
+def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
+    """Off-thread: query DB for the day view."""
     start_dt = _local_midnight(day)
     end_dt = start_dt + timedelta(hours=28)
+    visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+            start_dt, end_dt, calendar_ids=visible_ids
         )
     except Exception:
         log.exception("DayView: failed to query instances")
         return None
 
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {
-        cal.id: cal.color
-        for acc in store.list_accounts()
-        for cal in store.list_calendars(acc.id, visible_only=False)
-    }
+    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
+    return {"instances": instances, "events": events, "cal_color": cal_color, "day": day}
+
+
+def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_format: str) -> dict:
+    """Pure geometry: compute chip placement rects from raw day data."""
+    instances = data["instances"]
+    events = data["events"]
+    cal_color = data["cal_color"]
+    day = data["day"]
 
     all_day_count = sum(1 for inst in instances if inst.all_day and _is_on(inst, day))
     rows_shown = min(all_day_count, ALL_DAY_MAX_ROWS)
@@ -360,22 +366,19 @@ def _build_day_plan(store, day: date, col_w: float, px_per_hour: int, time_forma
     }
 
 
-def _build_mini_agenda_plan(store, now: datetime, count: int) -> list[dict]:
+def _build_mini_agenda_plan(store, now: datetime, count: int, cal_info_snap: dict) -> list[dict]:
     """Off-thread: query DB and build mini-agenda item data."""
     end = now + timedelta(days=14)
+    visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(
-            now, end, calendar_ids=store.visible_calendar_ids()
+            now, end, calendar_ids=visible_ids
         )
     except Exception:
         log.exception("DayView mini-agenda: failed to query instances")
         return []
 
-    cal_color: dict[str, str | None] = {
-        cal.id: cal.color
-        for acc in store.list_accounts()
-        for cal in store.list_calendars(acc.id, visible_only=False)
-    }
+    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
 
     upcoming: list[tuple[datetime, object]] = []
     for inst in instances:
@@ -414,9 +417,11 @@ def _build_mini_agenda_plan(store, now: datetime, count: int) -> list[dict]:
 class _DayCanvas(QGraphicsView):
     """Graphics canvas portion of the Day view (the time-grid)."""
 
-    def __init__(self, store: EventStore, day: date) -> None:
+    def __init__(self, store: EventStore, day: date, cal_info_provider=None) -> None:
         super().__init__()
         self._store = store
+        self._cal_info_provider = cal_info_provider or (lambda: {})
+        self._cached_data: dict | None = None
         self._day = day
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
@@ -461,7 +466,7 @@ class _DayCanvas(QGraphicsView):
         self._grid.set_width(w)
         self._sticky.set_width(w)
         self._scene.setSceneRect(0, 0, w, self._grid.grid_height())
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     def _on_v_scroll(self, value: int) -> None:
         self._sticky.setY(float(value))
@@ -503,7 +508,7 @@ class _DayCanvas(QGraphicsView):
         self._px_per_hour = px
         self._grid.set_px_per_hour(px)
         self._scene.setSceneRect(self._grid.boundingRect())
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     def zoom_in(self) -> None:
         self.set_px_per_hour(self._px_per_hour + 8)
@@ -518,40 +523,48 @@ class _DayCanvas(QGraphicsView):
         if mode is self._chip_mode:
             return
         self._chip_mode = mode
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     def set_time_format(self, fmt: str) -> None:
         if fmt == self._time_format:
             return
         self._time_format = fmt
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     @property
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
 
-    def refresh(self) -> None:
+    def refresh(self, *, data_dirty: bool = True) -> None:
+        if not data_dirty and self._cached_data is not None:
+            col_w = max(20.0, self._grid.boundingRect().width() - TIME_AXIS_WIDTH)
+            plan = _compute_day_placements(self._cached_data, col_w, self._px_per_hour, self._time_format)
+            self._apply_plan(plan)
+            return
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
         day = self._day
         col_w = max(20.0, self._grid.boundingRect().width() - TIME_AXIS_WIDTH)
         px_per_hour = self._px_per_hour
         time_format = self._time_format
+        cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(day, col_w, px_per_hour, time_format)
+            self._refresh_async(day, col_w, px_per_hour, time_format, cal_info_snap)
         )
 
     async def _refresh_async(
-        self, day: date, col_w: float, px_per_hour: int, time_format: str
+        self, day: date, col_w: float, px_per_hour: int, time_format: str, cal_info_snap: dict
     ) -> None:
         try:
-            plan = await asyncio.to_thread(
-                _build_day_plan, self._store, day, col_w, px_per_hour, time_format
+            data = await asyncio.to_thread(
+                _query_day_data, self._store, day, cal_info_snap
             )
         except asyncio.CancelledError:
             return
-        if plan is None:
+        if data is None:
             return
+        self._cached_data = data
+        plan = _compute_day_placements(data, col_w, px_per_hour, time_format)
         self._apply_plan(plan)
 
     def _apply_plan(self, plan: dict) -> None:
@@ -997,16 +1010,17 @@ class DayView(QWidget):
     MINI_AGENDA_COUNT = 3
     MINI_AGENDA_H = 96
 
-    def __init__(self, store: EventStore, day: date | None = None) -> None:
+    def __init__(self, store: EventStore, day: date | None = None, cal_info_provider=None) -> None:
         super().__init__()
         self._store = store
+        self._cal_info_provider = cal_info_provider or (lambda: {})
         self._day = day or date.today()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._canvas = _DayCanvas(store, self._day)
+        self._canvas = _DayCanvas(store, self._day, cal_info_provider=cal_info_provider)
         layout.addWidget(self._canvas, 1)
 
         # Mini-agenda strip below the time grid.
@@ -1035,28 +1049,31 @@ class DayView(QWidget):
 
     def navigate(self, days: int) -> None:
         self._day = self._day + timedelta(days=days)
-        self._canvas._needs_scroll = True
         self._canvas.set_day(self._day)
         self._refresh_mini_agenda()
 
     def go_today(self) -> None:
         self._day = date.today()
-        self._canvas._needs_scroll = True
         self._canvas.set_day(self._day)
         self._refresh_mini_agenda()
 
     def set_day(self, d: date) -> None:
         self._day = d
-        self._canvas._needs_scroll = True
         self._canvas.set_day(d)
         self._refresh_mini_agenda()
 
     def range_label(self) -> str:
         return self._day.strftime("%A, %B %-d, %Y")
 
-    def refresh(self) -> None:
-        self._canvas.refresh()
+    def refresh(self, *, data_dirty: bool = True) -> None:
+        self._canvas.refresh(data_dirty=data_dirty)
         self._refresh_mini_agenda()
+
+    @override
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        if self._canvas._cached_data is None:
+            self._canvas.refresh()
 
     def refresh_theme(self) -> None:
         self._mini_label.setStyleSheet(
@@ -1095,14 +1112,15 @@ class DayView(QWidget):
         if self._mini_refresh_task and not self._mini_refresh_task.done():
             self._mini_refresh_task.cancel()
         now = datetime.now().astimezone()
+        cal_info_snap = self._cal_info_provider()
         self._mini_refresh_task = asyncio.ensure_future(
-            self._mini_refresh_async(now, self.MINI_AGENDA_COUNT)
+            self._mini_refresh_async(now, self.MINI_AGENDA_COUNT, cal_info_snap)
         )
 
-    async def _mini_refresh_async(self, now: datetime, count: int) -> None:
+    async def _mini_refresh_async(self, now: datetime, count: int, cal_info_snap: dict) -> None:
         try:
             items = await asyncio.to_thread(
-                _build_mini_agenda_plan, self._store, now, count
+                _build_mini_agenda_plan, self._store, now, count, cal_info_snap
             )
         except asyncio.CancelledError:
             return

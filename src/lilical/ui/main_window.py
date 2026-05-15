@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import dataclasses
 import logging
 import uuid
 from datetime import date, timedelta
@@ -50,6 +51,17 @@ log = logging.getLogger(__name__)
 
 _VIEW_NAMES = ["Month", "Week", "Day", "Agenda"]
 _DEFAULT_VIEW = "Week"
+
+
+@dataclasses.dataclass(frozen=True)
+class CalInfo:
+    """Immutable snapshot of a calendar's metadata for use in view builders."""
+
+    id: str
+    display_name: str
+    color: str | None
+    account_id: str
+    visible: bool
 
 
 class _ElidingLabel(QLabel):
@@ -155,9 +167,23 @@ class MainWindow(QMainWindow):
         self._secrets = secrets
         self._current_view: QWidget | None = None
         self._view_actions: dict[str, QAction] = {}
-        self._account_display_names: dict[str, str] = {
-            acc.id: acc.display_name for acc in self._store.list_accounts()
-        }
+        # Account display names for sync-status labels (legacy; kept alongside _account_meta).
+        self._account_display_names: dict[str, str] = {}
+        # Per-account metadata for sidebar tooltips: id → (display_name, identity, kind).
+        self._account_meta: dict[str, tuple[str, str, str]] = {}
+        # Per-calendar metadata snapshot; rebuilt off-thread after sync ticks.
+        self._cal_info: dict[str, CalInfo] = {}
+        for acc in self._store.list_accounts():
+            self._account_display_names[acc.id] = acc.display_name
+            self._account_meta[acc.id] = (acc.display_name, acc.identity, acc.kind)
+            for cal in self._store.list_calendars(acc.id, visible_only=False):
+                self._cal_info[cal.id] = CalInfo(
+                    id=cal.id,
+                    display_name=cal.display_name,
+                    color=cal.color,
+                    account_id=acc.id,
+                    visible=bool(cal.is_visible),
+                )
         self._theme_qss_cache: dict[str, str] = {}
 
         # Persistent prefs. QSettings reads/writes under the org/app names set
@@ -181,7 +207,12 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         # ── Sidebar ────────────────────────────────────────────────────────
-        self._sidebar = Sidebar(event_store, add_account_callback=self._add_account)
+        self._sidebar = Sidebar(
+            event_store,
+            add_account_callback=self._add_account,
+            cal_info_provider=self._cal_info_provider,
+            account_meta_provider=self._account_meta_provider,
+        )
         self._sidebar.rename_account_requested.connect(self._on_rename_account)
         self._sidebar.reauth_account_requested.connect(self._on_reauth_account)
         self._sidebar.choose_calendars_requested.connect(self._on_choose_calendars)
@@ -257,6 +288,7 @@ class MainWindow(QMainWindow):
 
         self._store.events_changed.connect(self._on_events_changed)
         self._store.local_events_changed.connect(self._on_local_events_changed)
+        self._store.cal_metadata_changed.connect(self._on_cal_metadata_changed)
         self._sync.sync_started.connect(self._on_sync_started)
         self._sync.sync_progress.connect(self._on_sync_progress)
         self._sync.sync_finished.connect(self._on_sync_finished)
@@ -532,7 +564,7 @@ class MainWindow(QMainWindow):
 
     def _on_month_day_activated(self, d) -> None:
         """User clicked '+N more' in Month view: switch to Day view of that date."""
-        self._switch_view("Day")
+        self._switch_view("Day", refresh=False)
         day_view = self._views.get("Day")
         if isinstance(day_view, DayView):
             day_view.set_day(d)
@@ -558,18 +590,19 @@ class MainWindow(QMainWindow):
         if saved_snap not in (5, 10, 15, 30, 60):
             saved_snap = 15
 
+        cip = self._cal_info_provider
         v: QWidget
         if name == "Month":
-            mv = MonthView(self._store)
+            mv = MonthView(self._store, cal_info_provider=cip)
             mv.day_activated.connect(self._on_month_day_activated)
             mv.new_event_requested.connect(self._on_month_new_event_requested)
             v = mv
         elif name == "Week":
-            v = WeekView(self._store, day_count=saved_dc)
+            v = WeekView(self._store, day_count=saved_dc, cal_info_provider=cip)
         elif name == "Day":
-            v = DayView(self._store)
+            v = DayView(self._store, cal_info_provider=cip)
         elif name == "Agenda":
-            v = AgendaView(self._store)
+            v = AgendaView(self._store, cal_info_provider=cip)
         else:
             raise ValueError(f"Unknown view: {name}")
 
@@ -584,17 +617,22 @@ class MainWindow(QMainWindow):
         v.hide()
         return v
 
-    def _switch_view(self, name: str) -> None:
+    def _switch_view(self, name: str, *, refresh: bool = True) -> None:
         if self._current_view is not None:
             self._current_view.hide()
         self._current_view_name = name
         view = self._views.get(name)
+        just_constructed = view is None
         if view is None:
             view = self._construct_view(name)
             self._views[name] = view
         self._current_view = view
         view.show()
-        if hasattr(view, "refresh"):
+        # Brand-new view: resizeEvent fires after show() and schedules the
+        # first refresh against the correct viewport size, so skip the
+        # explicit call here. Returning view: refresh to pick up any changes
+        # that occurred while it was hidden.
+        if refresh and not just_constructed and hasattr(view, "refresh"):
             view.refresh()  # type: ignore[reportAttributeAccessIssue]
         # Update toolbar checkmarks
         for n, act in self._view_actions.items():
@@ -805,6 +843,71 @@ class MainWindow(QMainWindow):
     async def _rebuild_instances_async(self) -> None:
         await asyncio.to_thread(self._store.rebuild_all_instances)
 
+    # ── CalInfo cache ─────────────────────────────────────────────────────
+
+    def _cal_info_provider(self) -> dict[str, CalInfo]:
+        return self._cal_info
+
+    def _account_meta_provider(self) -> dict[str, tuple[str, str, str]]:
+        return self._account_meta
+
+    def _build_cal_info_for_account(self, account_id: str):
+        """Off-thread: return (new_cal_info_entries, acc_meta_tuple | None)."""
+        acc = self._store.get_account(account_id)
+        if acc is None:
+            return {}, None
+        acc_meta = (acc.display_name, acc.identity, acc.kind)
+        cals = self._store.list_calendars(account_id, visible_only=False)
+        cal_info = {
+            cal.id: CalInfo(
+                id=cal.id,
+                display_name=cal.display_name,
+                color=cal.color,
+                account_id=account_id,
+                visible=bool(cal.is_visible),
+            )
+            for cal in cals
+        }
+        return cal_info, acc_meta
+
+    async def _rebuild_cal_info_for_account_async(self, account_id: str) -> None:
+        """Rebuild cal_info for one account off-thread, then refresh sidebar + view."""
+        try:
+            new_entries, acc_meta = await asyncio.to_thread(
+                self._build_cal_info_for_account, account_id
+            )
+        except Exception:
+            log.exception("Failed to rebuild cal_info for account %s", account_id)
+            return
+        # Merge on GUI thread: drop old entries for this account, add new ones.
+        updated = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
+        updated.update(new_entries)
+        self._cal_info = updated
+        if acc_meta is not None:
+            self._account_meta = {**self._account_meta, account_id: acc_meta}
+        self._sidebar.refresh_for_account(account_id)
+        if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
+
+    def _on_cal_metadata_changed(self, calendar_id: str) -> None:
+        """Patch _cal_info when a calendar's visibility or color changes in the store."""
+        if calendar_id not in self._cal_info:
+            return
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        old = self._cal_info[calendar_id]
+        self._cal_info = {
+            **self._cal_info,
+            calendar_id: CalInfo(
+                id=old.id,
+                display_name=old.display_name,
+                color=cal.color,
+                account_id=old.account_id,
+                visible=bool(cal.is_visible),
+            ),
+        }
+
     # ── Sync signal handlers ──────────────────────────────────────────────
 
     def _account_label(self, account_id: str) -> str:
@@ -824,7 +927,12 @@ class MainWindow(QMainWindow):
         self._syncing_accounts.discard(account_id)
         label = self._account_label(account_id)
         self._sync_status.set_ok(f"{label} ({n_changes} changes)")
-        self._sidebar.refresh_for_account(account_id)
+        # Rebuild cal_info for this account off-thread; the async helper then
+        # refreshes sidebar and current view with accurate metadata.
+        self._fire_async(
+            self._rebuild_cal_info_for_account_async(account_id),
+            f"rebuild_cal_info/{account_id}",
+        )
 
     def _on_sync_failed(self, account_id: str, message: str) -> None:
         self._syncing_accounts.discard(account_id)
@@ -888,7 +996,9 @@ class MainWindow(QMainWindow):
             calendar_id=calendar_id,
             calendar_display_name=display_name or identity or "Calendar",
         )
-        self._account_display_names[account_id] = display_name or identity or ""
+        label = display_name or identity or ""
+        self._account_display_names[account_id] = label
+        self._account_meta[account_id] = (label, identity, kind)
         self._sidebar.refresh()
         self._fire_async(
             self._sync.start_account(account_id), f"start_account/{account_id}"
@@ -912,6 +1022,9 @@ class MainWindow(QMainWindow):
             return
         self._store.update_account(account_id, display_name=new_name)
         self._account_display_names[account_id] = new_name
+        if account_id in self._account_meta:
+            old = self._account_meta[account_id]
+            self._account_meta[account_id] = (new_name, old[1], old[2])
         self._sidebar.refresh()
 
     def _on_reauth_account(self, account_id: str) -> None:
@@ -949,9 +1062,12 @@ class MainWindow(QMainWindow):
         dlg = CalendarPickerDialog(self, account_id, self._store)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._sidebar.refresh_for_account(account_id)
-        if self._current_view is not None and hasattr(self._current_view, "refresh"):
-            self._current_view.refresh()
+        # Rebuild cal_info off-thread (dialog may have toggled visibility); the
+        # async helper refreshes sidebar + view once the cache is updated.
+        self._fire_async(
+            self._rebuild_cal_info_for_account_async(account_id),
+            f"rebuild_cal_info/{account_id}",
+        )
 
     def _on_sync_now_account(self, account_id: str) -> None:
         self._sync.force_refresh(account_id)
@@ -984,6 +1100,8 @@ class MainWindow(QMainWindow):
         self._secrets.delete(account_id)
         await asyncio.to_thread(self._store.delete_account, account_id)
         self._account_display_names.pop(account_id, None)
+        self._account_meta.pop(account_id, None)
+        self._cal_info = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
         self._sidebar.refresh()
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]

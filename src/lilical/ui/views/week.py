@@ -304,26 +304,41 @@ class _StickyHeader(QGraphicsItem):
             )
 
 
-def _build_week_plan(
-    store, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float
+def _query_week_data(
+    store, start: date, day_count: int, cal_info_snap: dict
 ) -> dict | None:
-    """Off-thread: query DB and compute chip placements for the week view."""
+    """Off-thread: query DB for the week range."""
     start_dt = _local_midnight(start)
     end_dt = _local_midnight(start + timedelta(days=day_count))
+    visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+            start_dt, end_dt, calendar_ids=visible_ids
         )
     except Exception:
         log.exception("WeekView: failed to query instances")
         return None
 
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {
-        cal.id: cal.color
-        for acc in store.list_accounts()
-        for cal in store.list_calendars(acc.id, visible_only=False)
+    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
+    return {
+        "instances": instances,
+        "events": events,
+        "cal_color": cal_color,
+        "start": start,
+        "day_count": day_count,
     }
+
+
+def _compute_week_placements(
+    data: dict, px_per_hour: int, time_format: str, col_w: float
+) -> dict:
+    """Pure geometry: compute chip placement rects from raw week data."""
+    instances = data["instances"]
+    events = data["events"]
+    cal_color = data["cal_color"]
+    start = data["start"]
+    day_count = data["day_count"]
 
     all_day_rows_per_col = [0] * day_count
     first_event_minutes: int | None = None
@@ -431,14 +446,14 @@ def _build_week_plan(
                 "event": payload["event"],
             }
 
-    more_markers: list[tuple[QRectF, str]] = []
+    more_markers: dict[int, tuple[QRectF, str]] = {}
     for col, count in enumerate(all_day_rows_per_col):
         hidden = count - ALL_DAY_MAX_ROWS
         if hidden <= 0:
             continue
         x = TIME_AXIS_WIDTH + col * col_w
         y = DAY_HEADER_H + 2 + (ALL_DAY_MAX_ROWS - 1) * ALL_DAY_ROW_H
-        more_markers.append((QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2), f"+{hidden} more"))
+        more_markers[col] = (QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2), f"+{hidden} more")
 
     return {
         "new_placements": new_placements,
@@ -449,14 +464,17 @@ def _build_week_plan(
 
 
 class WeekView(QGraphicsView):
-    def __init__(self, store: EventStore, day_count: int = 7) -> None:
+    def __init__(self, store: EventStore, day_count: int = 7, cal_info_provider=None) -> None:
         super().__init__()
         self._store = store
+        self._cal_info_provider = cal_info_provider or (lambda: {})
+        self._cached_data: dict | None = None
         self._day_count = day_count if day_count in VALID_DAY_COUNTS else 7
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
         self._chips: dict[tuple[str, str, str], EventChip] = {}
+        self._more_markers: dict[int, _MoreMarker] = {}
         self._refresh_task: asyncio.Task | None = None
         self._needs_scroll: bool = True
         # Drag-to-create / move / resize state
@@ -534,7 +552,13 @@ class WeekView(QGraphicsView):
         self._grid.set_width(w)
         self._sticky.set_width(w)
         self._scene.setSceneRect(0, 0, w, self._grid.grid_height())
-        self.refresh()
+        self.refresh(data_dirty=False)
+
+    @override
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        if self._cached_data is None:
+            self.refresh()
 
     def _on_v_scroll(self, value: int) -> None:
         self._sticky.setY(float(value))
@@ -564,7 +588,7 @@ class WeekView(QGraphicsView):
         if mode is self._chip_mode:
             return
         self._chip_mode = mode
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     @property
     def chip_mode(self) -> ChipMode:
@@ -574,7 +598,7 @@ class WeekView(QGraphicsView):
         if fmt == self._time_format:
             return
         self._time_format = fmt
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     def set_snap_minutes(self, m: int) -> None:
         """Set the snap granularity used by every drag interaction.
@@ -596,7 +620,7 @@ class WeekView(QGraphicsView):
         self._px_per_hour = px
         self._grid.set_px_per_hour(px)
         self._scene.setSceneRect(self._grid.boundingRect())
-        self.refresh()
+        self.refresh(data_dirty=False)
 
     def zoom_in(self) -> None:
         self.set_px_per_hour(self._px_per_hour + 8)
@@ -651,7 +675,12 @@ class WeekView(QGraphicsView):
             return f"{self._start.strftime('%B %-d')}–{end.strftime('%-d, %Y')}"
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
 
-    def refresh(self) -> None:
+    def refresh(self, *, data_dirty: bool = True) -> None:
+        if not data_dirty and self._cached_data is not None:
+            col_w = max(20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+            plan = _compute_week_placements(self._cached_data, self._px_per_hour, self._time_format, col_w)
+            self._apply_plan(plan)
+            return
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
         start = self._start
@@ -659,36 +688,29 @@ class WeekView(QGraphicsView):
         px_per_hour = self._px_per_hour
         time_format = self._time_format
         col_w = max(20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / day_count)
+        cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(start, day_count, px_per_hour, time_format, col_w)
+            self._refresh_async(start, day_count, px_per_hour, time_format, col_w, cal_info_snap)
         )
 
     async def _refresh_async(
-        self, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float
+        self, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float, cal_info_snap: dict
     ) -> None:
         try:
-            plan = await asyncio.to_thread(
-                _build_week_plan, self._store, start, day_count, px_per_hour, time_format, col_w
+            data = await asyncio.to_thread(
+                _query_week_data, self._store, start, day_count, cal_info_snap
             )
         except asyncio.CancelledError:
             return
-        if plan is None:
+        if data is None:
             return
+        self._cached_data = data
+        plan = _compute_week_placements(data, px_per_hour, time_format, col_w)
         self._apply_plan(plan)
 
     # ── Chip placement ───────────────────────────────────────────────────
 
     def _apply_plan(self, plan: dict) -> None:
-        # _MoreMarker items are not tracked in self._chips — always rebuild them.
-        for child in list(self._sticky.childItems()):
-            if isinstance(child, _MoreMarker):
-                child.setParentItem(None)  # type: ignore[reportArgumentType]
-                if child.scene() is self._scene:
-                    self._scene.removeItem(child)
-        for item in list(self._scene.items()):
-            if isinstance(item, _MoreMarker):
-                self._scene.removeItem(item)
-
         band_h = plan["band_h"]
         if abs(band_h - self._grid.all_day_band_h) > 0.5:
             self._grid.set_all_day_band_h(band_h)
@@ -746,9 +768,21 @@ class WeekView(QGraphicsView):
             new_chips[key] = chip
         self._chips = new_chips
 
-        for rect, label in plan["more_markers"]:
-            marker = _MoreMarker(rect, label)
-            marker.setParentItem(self._sticky)
+        plan_markers: dict[int, tuple[QRectF, str]] = plan["more_markers"]
+        old_markers = self._more_markers
+        new_markers: dict[int, _MoreMarker] = {}
+        for col, marker in old_markers.items():
+            if col not in plan_markers:
+                marker.setParentItem(None)  # type: ignore[reportArgumentType]
+        for col, (rect, label) in plan_markers.items():
+            if col in old_markers:
+                old_markers[col].update_data(rect, label)
+                new_markers[col] = old_markers[col]
+            else:
+                m = _MoreMarker(rect, label)
+                m.setParentItem(self._sticky)
+                new_markers[col] = m
+        self._more_markers = new_markers
 
         if self._needs_scroll:
             self._needs_scroll = False
@@ -1252,6 +1286,12 @@ class _MoreMarker(QGraphicsItem):
         super().__init__()
         self._rect = rect
         self._label = label
+
+    def update_data(self, rect: QRectF, label: str) -> None:
+        self.prepareGeometryChange()
+        self._rect = rect
+        self._label = label
+        self.update()
 
     @override
     def boundingRect(self) -> QRectF:

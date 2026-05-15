@@ -43,19 +43,21 @@ def _local_midnight(d: date) -> datetime:
     return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
 
 
-def _build_agenda_plan(
+def _query_agenda_data(
     store,
     start: date,
     end: date,
+    cal_info_snap: dict,
     current_snapshot: frozenset,
     snapshot_start: "date | None",
 ) -> dict | None:
     """Off-thread: query DB and check snapshot. Returns None if unchanged/error."""
     start_dt = _local_midnight(start)
     end_dt = _local_midnight(end)
+    visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=store.visible_calendar_ids()
+            start_dt, end_dt, calendar_ids=visible_ids
         )
     except Exception:
         log.exception("AgendaView: failed to query instances")
@@ -66,10 +68,9 @@ def _build_agenda_plan(
     if new_snapshot == current_snapshot and snapshot_start == start:
         return None
     events = store.events_for_instances(instances)
-    cal_info: dict[str, tuple[str, str | None]] = {}
-    for acc in store.list_accounts():
-        for cal in store.list_calendars(acc.id, visible_only=False):
-            cal_info[cal.id] = (cal.display_name, cal.color)
+    cal_info: dict[str, tuple[str, str | None]] = {
+        ci.id: (ci.display_name, ci.color) for ci in cal_info_snap.values()
+    }
     return {
         "instances": instances,
         "events": events,
@@ -81,9 +82,10 @@ def _build_agenda_plan(
 
 
 class AgendaView(QWidget):
-    def __init__(self, store: EventStore) -> None:
+    def __init__(self, store: EventStore, cal_info_provider=None) -> None:
         super().__init__()
         self._store = store
+        self._cal_info_provider = cal_info_provider or (lambda: {})
         self._start = date.today()
         self._snapshot: frozenset[tuple] = frozenset()
         self._snapshot_start: "date | None" = None
@@ -127,13 +129,16 @@ class AgendaView(QWidget):
         end = self._start + timedelta(days=_DAYS_AHEAD - 1)
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
 
-    def refresh(self) -> None:
+    def refresh(self, *, data_dirty: bool = True) -> None:
+        if not data_dirty:
+            return  # no geometry to recompute
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
         start = self._start
         end = start + timedelta(days=_DAYS_AHEAD)
+        cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(start, end, self._snapshot, self._snapshot_start)
+            self._refresh_async(start, end, self._snapshot, self._snapshot_start, cal_info_snap)
         )
 
     async def _refresh_async(
@@ -142,10 +147,11 @@ class AgendaView(QWidget):
         end: date,
         snapshot: frozenset,
         snapshot_start: "date | None",
+        cal_info_snap: dict,
     ) -> None:
         try:
             plan = await asyncio.to_thread(
-                _build_agenda_plan, self._store, start, end, snapshot, snapshot_start
+                _query_agenda_data, self._store, start, end, cal_info_snap, snapshot, snapshot_start
             )
         except asyncio.CancelledError:
             return

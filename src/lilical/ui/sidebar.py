@@ -141,10 +141,14 @@ class Sidebar(QWidget):
         self,
         store: EventStore,
         add_account_callback=None,
+        cal_info_provider=None,
+        account_meta_provider=None,
     ) -> None:
         super().__init__()
         self._store = store
         self._add_account_callback = add_account_callback
+        self._cal_info_provider = cal_info_provider or (lambda: {})
+        self._account_meta_provider = account_meta_provider or (lambda: {})
         self.setObjectName("sidebar")
         self.setMinimumWidth(180)
         self.setMaximumWidth(420)
@@ -244,17 +248,21 @@ class Sidebar(QWidget):
     # ── Calendar list ──────────────────────────────────────────────────────
 
     def _build_snapshot(self) -> list[tuple]:
-        return [
-            (
-                acc.id,
-                acc.display_name,
-                tuple(
-                    (c.id, c.display_name, c.color, c.is_visible)
-                    for c in self._store.list_calendars(acc.id, visible_only=True)
-                ),
-            )
-            for acc in self._store.list_accounts()
-        ]
+        cal_info = self._cal_info_provider()
+        account_meta = self._account_meta_provider()
+        cals_by_account: dict[str, list] = {}
+        for ci in cal_info.values():
+            cals_by_account.setdefault(ci.account_id, []).append(ci)
+        result = []
+        for acc_id, acc_meta in account_meta.items():
+            display_name = acc_meta[0]
+            cals = cals_by_account.get(acc_id, [])
+            result.append((
+                acc_id,
+                display_name,
+                tuple(sorted((ci.id, ci.display_name, ci.color, ci.visible) for ci in cals)),
+            ))
+        return result
 
     def refresh(self) -> None:
         new_snapshot = self._build_snapshot()
@@ -272,12 +280,15 @@ class Sidebar(QWidget):
         # Stretch item is always last; insert account groups before it.
         insert_at = max(self._cal_layout.count() - 1, 0)
 
-        for acc in self._store.list_accounts():
-            group = self._build_account_group(acc)
+        account_meta = self._account_meta_provider()
+        cal_info = self._cal_info_provider()
+        for acc_id, acc_meta in account_meta.items():
+            cals = [ci for ci in cal_info.values() if ci.account_id == acc_id]
+            group = self._build_account_group_from_data(acc_id, acc_meta, cals)
             self._cal_layout.insertWidget(insert_at, group)
             insert_at += 1
             self._account_widgets.append(group)
-            self._account_widget_map[acc.id] = group
+            self._account_widget_map[acc_id] = group
 
     def refresh_for_account(self, account_id: str) -> None:
         """Rebuild only one account's calendar group; skip if nothing changed."""
@@ -286,9 +297,10 @@ class Sidebar(QWidget):
             return
         self._cal_snapshot = new_snapshot
 
-        acc = self._store.get_account(account_id)
+        account_meta = self._account_meta_provider()
+        acc_meta = account_meta.get(account_id)
         old_widget = self._account_widget_map.get(account_id)
-        if acc is None or old_widget is None:
+        if acc_meta is None or old_widget is None:
             self.refresh()
             return
 
@@ -302,12 +314,20 @@ class Sidebar(QWidget):
         old_widget.deleteLater()
         self._account_widgets.remove(old_widget)
 
-        new_group = self._build_account_group(acc)
+        cal_info = self._cal_info_provider()
+        cals = [ci for ci in cal_info.values() if ci.account_id == account_id]
+        new_group = self._build_account_group_from_data(account_id, acc_meta, cals)
         self._cal_layout.insertWidget(insert_at, new_group)
         self._account_widgets.insert(insert_at, new_group)
         self._account_widget_map[account_id] = new_group
 
-    def _build_account_group(self, account) -> QWidget:
+    def _build_account_group_from_data(self, acc_id: str, acc_meta: tuple, cals: list) -> QWidget:
+        """Build the account group widget from pre-fetched data.
+
+        acc_meta is a (display_name, identity, kind) tuple.
+        cals is a list of CalInfo objects for this account.
+        """
+        display_name, identity, kind = acc_meta
         container = QWidget()
         v = QVBoxLayout(container)
         v.setContentsMargins(0, 10, 0, 6)
@@ -319,9 +339,9 @@ class Sidebar(QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(4)
 
-        label = _ElidedLabel(account.display_name.upper())
+        label = _ElidedLabel(display_name.upper())
         label.setObjectName("account-heading")
-        label.setToolTip(f"{account.identity} ({account.kind})")
+        label.setToolTip(f"{identity} ({kind})")
         h.addWidget(label, 1)
 
         menu_btn = QToolButton()
@@ -332,7 +352,7 @@ class Sidebar(QWidget):
         menu_btn.setToolTip("Account actions")
         menu = QMenu(menu_btn)
 
-        account_id = account.id
+        account_id = acc_id
 
         def _on(sig, aid=account_id):
             return lambda _checked=False: sig.emit(aid)
@@ -363,26 +383,25 @@ class Sidebar(QWidget):
         h.addWidget(menu_btn)
         v.addWidget(header)
 
-        cals = self._store.list_calendars(account.id, visible_only=True)
-        for cal in cals:
+        for ci in cals:
             row = QWidget()
             row.setObjectName("cal-row")
             row_h = QHBoxLayout(row)
             row_h.setContentsMargins(14, 2, 4, 2)
             row_h.setSpacing(8)
 
-            chip = _CalendarChip(cal.id, cal.color or "#5e9fff", cal.is_visible, self._store)
+            chip = _CalendarChip(ci.id, ci.color or "#5e9fff", ci.visible, self._store)
             chip.visibility_changed.connect(
                 lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
             chip.color_changed.connect(self._on_calendar_color_changed)
             row_h.addWidget(chip)
 
-            name_label = _ElidedLabel(cal.display_name)
+            name_label = _ElidedLabel(ci.display_name)
             name_label.setObjectName("cal-name")
             row_h.addWidget(name_label, 1)
             v.addWidget(row)
-            self._chips[cal.id] = chip
+            self._chips[ci.id] = chip
 
         if not cals:
             placeholder = QLabel("(no calendars yet)")
