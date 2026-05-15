@@ -1242,3 +1242,119 @@ def test_event_to_graph_json_omits_recurrence_for_non_recurring() -> None:
     )
     body = _event_to_graph_json(event)
     assert "recurrence" not in body
+
+
+def test_event_to_graph_json_includes_categories() -> None:
+    """categories must appear in the serialized Graph JSON body."""
+    from lilical.backends.graph import _event_to_graph_json
+    from lilical.models.event import Event as _Event
+
+    event = _Event(
+        uid="u@o.c",
+        calendar_id="cal-1",
+        summary="Tagged event",
+        categories=("Work", "Important"),
+    )
+    body = _event_to_graph_json(event)
+    assert "categories" in body
+    assert set(body["categories"]) == {"Work", "Important"}
+
+
+def test_event_to_graph_json_includes_attendees_as_email_address_objects() -> None:
+    """Attendees stored as dicts (email/name) must appear in the Graph body
+    under the emailAddress sub-object format."""
+    from lilical.backends.graph import _event_to_graph_json
+    from lilical.models.event import Event as _Event
+
+    event = _Event(
+        uid="u@o.c",
+        calendar_id="cal-1",
+        summary="Team meeting",
+        attendees=(  # type: ignore[arg-type]
+            {"email": "alice@example.com", "name": "Alice"},
+            {"email": "bob@example.com", "name": "Bob"},
+        ),
+    )
+    body = _event_to_graph_json(event)
+    assert "attendees" in body
+    addresses = {a["emailAddress"]["address"] for a in body["attendees"]}
+    assert addresses == {"alice@example.com", "bob@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_update_instance_matches_occurrence_in_non_utc_timezone() -> None:
+    """update_instance must find the correct instance even when Graph returns
+    start.timeZone in a non-UTC zone — the pre-fix code did a naive comparison
+    that caused false 404s for non-UTC accounts (e.g. America/New_York)."""
+    from lilical.models.event import Event as _Event
+
+    # 09:00 UTC = 05:00 EDT (America/New_York, UTC-4 in May)
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-ny",
+                "start": {
+                    "dateTime": "2026-05-20T05:00:00.0000000",
+                    "timeZone": "America/New_York",
+                },
+            }
+        ]
+    }
+    patch_requests: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "instances" in url:
+            return httpx.Response(200, json=instances_body)
+        if req.method == "PATCH":
+            patch_requests.append(url)
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"error": "not found"})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    event = _Event(
+        uid="u-master@outlook.com",
+        calendar_id="cal-1",
+        summary="Updated standup",
+        dtstart=recurrence_id_dt,
+        dtend=datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc),
+    )
+    # Must not raise PermanentError — the timezone mismatch was the bug being fixed.
+    await backend.update_instance("cal-1", "AAMk-master", recurrence_id_dt, event)
+
+    assert len(patch_requests) == 1, "Expected one PATCH request for the matched occurrence"
+    assert "AAMk-occ-ny" in patch_requests[0]
+
+
+@pytest.mark.asyncio
+async def test_create_event_returns_uid_matching_delta() -> None:
+    """create_event returns uid=data['id'] (not iCalUId) so it matches _graph_event_to_change."""
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            201,
+            json={
+                "id": "AAMk-new",
+                "iCalUId": "uid-new@outlook.com",
+                "@odata.etag": 'W/"etag"',
+            },
+        )
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _handler)
+
+    from lilical.models.event import Event
+    event = Event(
+        uid="local-uuid", calendar_id="cal-A",
+        summary="Test", dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
+    )
+    result = await backend.create_event("cal-A", event)
+
+    # Must use id, not iCalUId — otherwise mark_synced writes the wrong uid
+    # and the next delta can't find the row by (uid, calendar_id).
+    assert result.uid == "AAMk-new", f"Expected uid=AAMk-new (the Graph id), got {result.uid!r}"
+    assert result.provider_event_id == "AAMk-new"

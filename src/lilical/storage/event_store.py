@@ -535,6 +535,31 @@ class EventStore(QObject):
                         )
                         .first()
                     )
+                    if row is None and local_event.provider_event_id:
+                        # Stale local-UUID uid from before mark_synced rewrote
+                        # to canonical. Match on (calendar_id, provider_event_id)
+                        # and adopt the canonical uid.
+                        row = (
+                            s.query(EventRow)
+                            .filter_by(
+                                calendar_id=calendar_id,
+                                provider_event_id=local_event.provider_event_id,
+                                recurrence_id=recurrence_id_str,
+                            )
+                            .first()
+                        )
+                        if row is not None and row.uid != uid:
+                            old_uid = row.uid
+                            row.uid = uid
+                            s.query(EventRow).filter_by(
+                                uid=old_uid, calendar_id=calendar_id
+                            ).update({"uid": uid})
+                            s.query(EventInstanceRow).filter_by(
+                                uid=old_uid, calendar_id=calendar_id
+                            ).update({"uid": uid})
+                            s.query(PendingOpRow).filter_by(
+                                uid=old_uid, calendar_id=calendar_id
+                            ).update({"uid": uid})
                     if row is None:
                         row = _event_to_row(local_event)
                         s.add(row)
@@ -836,27 +861,45 @@ class EventStore(QObject):
 
     def mark_synced(
         self,
-        uid: str,
+        local_uid: str,
         calendar_id: str,
         *,
+        canonical_uid: str | None,
         provider_event_id: str | None,
         etag: str | None,
         sequence: int,
     ) -> None:
-        """Mark a locally-created event as synced without re-queueing an update."""
+        """Mark a locally-created event as synced without re-queueing an update.
+
+        When canonical_uid differs from local_uid (e.g. Graph returns its own
+        id), cascade the uid rewrite to override rows, expanded instances and
+        any pending ops still queued for this event.
+        """
         with Session(self._engine) as s, s.begin():
             row = (
                 s.query(EventRow)
-                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .filter_by(uid=local_uid, calendar_id=calendar_id, recurrence_id="")
                 .first()
             )
-            if row is not None:
-                if provider_event_id is not None:
-                    row.provider_event_id = provider_event_id
-                if etag is not None:
-                    row.etag = etag
-                row.sequence = sequence
-                row.local_dirty = 0
+            if row is None:
+                return
+            if provider_event_id is not None:
+                row.provider_event_id = provider_event_id
+            if etag is not None:
+                row.etag = etag
+            row.sequence = sequence
+            row.local_dirty = 0
+            if canonical_uid and canonical_uid != local_uid:
+                row.uid = canonical_uid
+                s.query(EventRow).filter_by(
+                    uid=local_uid, calendar_id=calendar_id
+                ).update({"uid": canonical_uid})
+                s.query(EventInstanceRow).filter_by(
+                    uid=local_uid, calendar_id=calendar_id
+                ).update({"uid": canonical_uid})
+                s.query(PendingOpRow).filter_by(
+                    uid=local_uid, calendar_id=calendar_id
+                ).update({"uid": canonical_uid})
 
     def queue_split_series(
         self,

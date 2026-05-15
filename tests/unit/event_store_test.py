@@ -1077,6 +1077,7 @@ def test_mark_synced_stores_provider_id_and_clears_dirty(engine) -> None:
     store.mark_synced(
         "ev-ms",
         "cal-1",
+        canonical_uid=None,
         provider_event_id="server-pid",
         etag='"new-etag"',
         sequence=1,
@@ -1103,7 +1104,7 @@ def test_mark_synced_does_not_clobber_dtstart(engine) -> None:
         )
     )
 
-    store.mark_synced("ev-ms2", "cal-1", provider_event_id="pid", etag='"e"', sequence=0)
+    store.mark_synced("ev-ms2", "cal-1", canonical_uid=None, provider_event_id="pid", etag='"e"', sequence=0)
 
     with Session(engine) as s:
         row = s.query(EventRow).filter_by(uid="ev-ms2").one()
@@ -1115,8 +1116,96 @@ def test_mark_synced_does_not_clobber_dtstart(engine) -> None:
 def test_mark_synced_no_op_for_missing_event(engine) -> None:
     """mark_synced on a nonexistent uid must not raise."""
     EventStore(engine).mark_synced(
-        "no-such-uid", "cal-1", provider_event_id="pid", etag=None, sequence=0
+        "no-such-uid", "cal-1", canonical_uid=None, provider_event_id="pid", etag=None, sequence=0
     )
+
+
+def test_mark_synced_rewrites_uid_with_cascade(engine) -> None:
+    """When canonical_uid differs from local_uid, mark_synced cascades to all rows."""
+    store = EventStore(engine)
+    store.queue_create(_event(uid="local-uuid", provider_event_id=None))
+    # Create an override row (recurrence_id set)
+    from lilical.models.event import Event as _Event
+    from datetime import timedelta
+    override = _Event(
+        uid="local-uuid", calendar_id="cal-1",
+        recurrence_id=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+        summary="Override",
+        dtstart=datetime(2026, 6, 1, 11, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        tz="UTC",
+    )
+    with Session(engine) as s, s.begin():
+        from lilical.storage.event_store import _event_to_row
+        s.add(_event_to_row(override))
+        s.add(PendingOpRow(
+            account_id="acc-1", calendar_id="cal-1", uid="local-uuid",
+            op="update", payload="{}", created_at="2026-06-01T00:00:00",
+        ))
+
+    store.mark_synced(
+        "local-uuid", "cal-1",
+        canonical_uid="canonical-uuid",
+        provider_event_id="AAMk-123", etag='"e1"', sequence=1,
+    )
+
+    with Session(engine) as s:
+        rows = s.query(EventRow).filter_by(calendar_id="cal-1").all()
+        ops = s.query(PendingOpRow).filter_by(calendar_id="cal-1").all()
+
+    assert all(r.uid == "canonical-uuid" for r in rows), f"Expected uid=canonical-uuid, got {[(r.uid, r.recurrence_id) for r in rows]}"
+    assert all(o.uid == "canonical-uuid" for o in ops)
+
+
+def test_mark_synced_no_uid_change_when_canonical_matches(engine) -> None:
+    """When canonical_uid == local_uid, no cascade runs."""
+    store = EventStore(engine)
+    store.queue_create(_event(uid="same-uuid", provider_event_id="pid"))
+
+    store.mark_synced(
+        "same-uuid", "cal-1",
+        canonical_uid="same-uuid",
+        provider_event_id="pid", etag='"e2"', sequence=2,
+    )
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="same-uuid").one()
+    assert row.uid == "same-uuid"
+    assert row.local_dirty == 0
+
+
+def test_apply_remote_changes_falls_back_to_provider_event_id(engine) -> None:
+    """apply_remote_changes matches existing rows by provider_event_id when uid differs."""
+    store = EventStore(engine)
+    # Insert a row with a local-UUID uid but with provider_event_id set
+    store.queue_create(_event(
+        uid="local-uuid", provider_event_id="AAMk-graph-id",
+    ))
+    # Clear the pending op so it doesn't interfere
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    # Apply a remote upsert with the canonical uid (Graph id)
+    remote_event = Event(
+        uid="AAMk-graph-id", calendar_id="cal-1",
+        provider_event_id="AAMk-graph-id",
+        summary="Synced summary",
+        dtstart=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 11, 0, tzinfo=timezone.utc),
+        tz="UTC",
+    )
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=remote_event, uid="AAMk-graph-id")],
+        "{}",
+    )
+
+    with Session(engine) as s:
+        rows = s.query(EventRow).filter_by(calendar_id="cal-1").all()
+
+    assert len(rows) == 1
+    assert rows[0].uid == "AAMk-graph-id", f"Expected uid rewrite to AAMk-graph-id, got {rows[0].uid!r}"
+    assert rows[0].summary == "Synced summary"
 
 
 # ── queue_split_series ────────────────────────────────────────────────────────

@@ -687,17 +687,19 @@ class CalDavBackend:
     async def update_event(
         self, calendar_id: str, event: Event, if_match: str | None
     ) -> Event:
+        import dataclasses as _dc
         from lilical.backends._ical_serializer import event_to_vcalendar
 
         ical_data = event_to_vcalendar(event, sequence_bump=True).to_ical().decode()
         href = event.provider_event_id or f"{calendar_id}/{event.uid}.ics"
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=href)
-        headers = {}
+        event_obj.data = ical_data
         if if_match:
-            headers["If-Match"] = if_match
-        await self._run(event_obj.set_data, ical_data)
-        return event
+            event_obj.etag = if_match
+        await self._run(event_obj.save)
+        new_etag = getattr(event_obj, "etag", None)
+        return _dc.replace(event, etag=new_etag)
 
     @_classify_errors
     async def delete_event(

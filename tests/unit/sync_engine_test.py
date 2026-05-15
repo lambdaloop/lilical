@@ -650,11 +650,20 @@ class _PendingOpStore:
     def queue_update(self, event, prev_etag) -> None:
         self.queue_update_calls.append((event, prev_etag))
 
-    def get_event(self, uid: str, calendar_id: str):
-        return None
+    def get_calendar(self, calendar_id: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(provider_id=calendar_id)
 
-    def mark_synced(self, uid: str, calendar_id: str, *, provider_event_id, etag, sequence) -> None:
-        self.mark_synced_calls.append({"uid": uid, "calendar_id": calendar_id,
+    def get_event(self, uid: str, calendar_id: str):
+        from types import SimpleNamespace
+        # Return a minimal row so delete ops (which now require
+        # provider_event_id) reach the backend. Tests that need to
+        # simulate "never synced" override this per-instance.
+        return SimpleNamespace(provider_event_id=uid)
+
+    def mark_synced(self, local_uid: str, calendar_id: str, *, canonical_uid, provider_event_id, etag, sequence) -> None:
+        self.mark_synced_calls.append({"uid": local_uid, "calendar_id": calendar_id,
+                                       "canonical_uid": canonical_uid,
                                        "provider_event_id": provider_event_id,
                                        "etag": etag, "sequence": sequence})
 
@@ -686,10 +695,11 @@ class _WriteBackend:
             raise self._create_raises
         return self._canonical or event
 
-    async def update_event(self, calendar_id: str, event, if_match=None) -> None:
+    async def update_event(self, calendar_id: str, event, if_match=None) -> object:
         self.updates.append((calendar_id, event, if_match))
         if self._update_raises:
             raise self._update_raises
+        return self._canonical or event
 
     async def delete_event(self, calendar_id: str, uid: str, if_match=None) -> None:
         self.deletes.append((calendar_id, uid, if_match))
@@ -799,6 +809,7 @@ async def test_apply_pending_create_marks_synced_with_canonical() -> None:
     assert len(store.mark_synced_calls) == 1
     call = store.mark_synced_calls[0]
     assert call["uid"] == "u-new"
+    assert call["canonical_uid"] == "u-new"
     assert call["provider_event_id"] == "server-id-123"
     assert call["etag"] == '"abc"'
 
@@ -952,3 +963,79 @@ async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
     assert mpid == "AAMk-master"
     assert rid == recurrence_id
     assert 2 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_op_resolves_provider_event_id_from_store() -> None:
+    """Delete op must pass the event's provider_event_id to backend.delete_event,
+    not raw op.uid (which is the iCalUID — wrong for Google/Graph deletes)."""
+    from lilical.models.event import Event
+
+    stored_event = Event(
+        uid="u-del",
+        calendar_id="cal-1",
+        provider_event_id="server-id-del",
+    )
+
+    class _IdResolvingStore(_PendingOpStore):
+        def get_event(self, uid, calendar_id):
+            return stored_event if uid == "u-del" else None
+
+    op = _op("delete", uid="u-del")
+    op.id = 42
+    store = _IdResolvingStore([op])
+    backend = _WriteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.deletes) == 1
+    _, pid, _ = backend.deletes[0]
+    assert pid == "server-id-del", f"Expected provider_event_id, got {pid!r}"
+    assert 42 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_op_skipped_when_no_provider_event_id() -> None:
+    """Engine skips backend.delete_event when the row has no provider_event_id."""
+    op = _op("delete", uid="u-unsynced")
+    op.id = 77
+    store = _PendingOpStore([op])
+    # Override get_event to return a row with no provider_event_id
+    store.get_event = lambda uid, cal: SimpleNamespace(provider_event_id=None)  # type: ignore[method-assign]
+    backend = _WriteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.deletes) == 0
+    assert 77 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_update_op_refreshes_etag() -> None:
+    """Engine calls mark_synced after a successful update, refreshing the etag."""
+    import json
+
+    canonical = Event(
+        uid="u-upd", calendar_id="cal-1", summary="Updated",
+        provider_event_id="pid-u-upd", etag='"new-etag"',
+    )
+    payload = json.dumps({"uid": "u-upd", "calendar_id": "cal-1", "summary": "Updated"})
+    op = SimpleNamespace(
+        id=22, op="update", uid="u-upd", calendar_id="cal-1",
+        payload=payload, if_match='"old-etag"',
+    )
+    store = _PendingOpStore([op])
+    backend = _WriteBackend(canonical_event=canonical)
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    # mark_synced was called with the new etag from the canonical
+    assert len(store.mark_synced_calls) >= 1
+    last_call = store.mark_synced_calls[-1]
+    assert last_call["etag"] == '"new-etag"'
+    assert last_call["uid"] == "u-upd"
+    assert last_call["canonical_uid"] == "u-upd"
+    assert last_call["provider_event_id"] == "pid-u-upd"

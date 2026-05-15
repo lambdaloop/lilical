@@ -1103,3 +1103,171 @@ END:VCALENDAR
     assert event.rdates is not None
     assert len(event.rdates) == 1
     assert event.rdates[0] == datetime(2026, 1, 20, 10, 0, tzinfo=timezone.utc)
+
+
+# ── _ical_serializer: VCALENDAR output assertions ─────────────────────────────
+
+
+def test_event_to_vcalendar_includes_rrule() -> None:
+    """Recurring events must have RRULE in the serialized iCal output."""
+    from lilical.backends._ical_serializer import event_to_vcalendar
+    from lilical.models.event import Event
+
+    event = Event(
+        uid="uid-weekly",
+        calendar_id="cal-1",
+        summary="Standup",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+        rrule="FREQ=WEEKLY;BYDAY=MO,WE",
+    )
+    ical = event_to_vcalendar(event).to_ical().decode()
+    assert "RRULE:" in ical
+    assert "FREQ=WEEKLY" in ical
+    assert "BYDAY=MO,WE" in ical or "BYDAY=WE,MO" in ical
+
+
+def test_event_to_vcalendar_all_day_uses_date_value() -> None:
+    """All-day events must serialize DTSTART as DATE (;VALUE=DATE:YYYYMMDD),
+    not a DATETIME, so CalDAV servers treat them as all-day correctly."""
+    from lilical.backends._ical_serializer import event_to_vcalendar
+    from lilical.models.event import Event
+
+    event = Event(
+        uid="uid-allday",
+        calendar_id="cal-1",
+        summary="Holiday",
+        dtstart=datetime(2026, 7, 4, 0, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc),
+        all_day=True,
+    )
+    ical = event_to_vcalendar(event).to_ical().decode()
+    # The DTSTART line must carry a DATE value, not a DATETIME with a 'T' separator.
+    dtstart_line = next(
+        (line for line in ical.splitlines() if line.startswith("DTSTART")), ""
+    )
+    assert dtstart_line, "DTSTART not found in serialized output"
+    # The value part (after ":") must be a date-only string like "20260704",
+    # not a datetime like "20260704T000000Z".
+    value_part = dtstart_line.split(":")[-1].strip()
+    assert "T" not in value_part, f"Expected DATE, got DATETIME: {dtstart_line!r}"
+    assert "20260704" in value_part
+
+
+def test_event_to_vcalendar_includes_tzid_for_non_utc() -> None:
+    """Non-UTC events must include TZID= on the DTSTART/DTEND property."""
+    from zoneinfo import ZoneInfo
+
+    from lilical.backends._ical_serializer import event_to_vcalendar
+    from lilical.models.event import Event
+
+    ny_tz = ZoneInfo("America/New_York")
+    # Pass a datetime whose tzinfo is genuinely NY (not UTC) — the serializer
+    # checks `dt.tzinfo is timezone.utc` before choosing the TZID path.
+    ny_dt = datetime(2026, 5, 13, 9, 0, tzinfo=ny_tz)
+    event = Event(
+        uid="uid-tz",
+        calendar_id="cal-1",
+        summary="NY Meeting",
+        dtstart=ny_dt,
+        dtend=ny_dt,
+        tz="America/New_York",
+    )
+    ical = event_to_vcalendar(event).to_ical().decode()
+    assert "TZID=America/New_York" in ical
+
+
+def test_event_to_vcalendar_sequence_bump() -> None:
+    """sequence_bump=True must increment SEQUENCE by 1."""
+    from lilical.backends._ical_serializer import event_to_vcalendar
+    from lilical.models.event import Event
+
+    event = Event(
+        uid="uid-seq",
+        calendar_id="cal-1",
+        summary="x",
+        sequence=3,
+    )
+    ical_no_bump = event_to_vcalendar(event, sequence_bump=False).to_ical().decode()
+    ical_bumped = event_to_vcalendar(event, sequence_bump=True).to_ical().decode()
+
+    seq_line_no = next(l for l in ical_no_bump.splitlines() if l.startswith("SEQUENCE"))
+    seq_line_bump = next(l for l in ical_bumped.splitlines() if l.startswith("SEQUENCE"))
+    assert seq_line_no.split(":")[-1].strip() == "3"
+    assert seq_line_bump.split(":")[-1].strip() == "4"
+
+
+# ── delete_event: must use provider_event_id as the resource URL ──────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_event_uses_provider_event_id_as_url() -> None:
+    """delete_event must DELETE the resource at provider_event_id, not the uid."""
+    import caldav as _caldav
+
+    deleted_urls: list[str] = []
+
+    class _FakeResource:
+        def __init__(self, url: str) -> None:
+            self._url = url
+
+        def delete(self) -> None:
+            deleted_urls.append(self._url)
+
+    original = _caldav.CalendarObjectResource
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _caldav.CalendarObjectResource = lambda client, url: _FakeResource(url)  # type: ignore[attr-defined]
+        backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
+        backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+        await backend.delete_event(
+            "https://cal/1/",
+            "https://cal/1/specific-uid.ics",
+            if_match=None,
+        )
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    assert deleted_urls == ["https://cal/1/specific-uid.ics"]
+
+
+@pytest.mark.asyncio
+async def test_update_event_saves_and_returns_etag() -> None:
+    """update_event must call save() (not just set_data) and return the new etag."""
+    import caldav as _caldav
+    from lilical.models.event import Event
+
+    fake_etag = '"new-etag-value"'
+
+    class _FakeResource:
+        def __init__(self) -> None:
+            self.data = ""
+            self.etag = None
+
+        def save(self) -> None:
+            self.etag = fake_etag
+
+    original = _caldav.CalendarObjectResource
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _caldav.CalendarObjectResource = lambda client, url: _FakeResource()  # type: ignore[attr-defined]
+        backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
+        backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+        event = Event(
+            uid="test-upd",
+            calendar_id="cal-1",
+            provider_event_id="https://cal/1/test-upd.ics",
+            summary="Updated event",
+            dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
+        )
+        result = await backend.update_event("cal-1", event, if_match='"old-etag"')
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    assert result.etag == fake_etag
+    # The uid, calendar_id, etc. are preserved from the input event
+    assert result.uid == "test-upd"
+

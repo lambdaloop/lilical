@@ -999,7 +999,7 @@ class GraphBackend:
         )
         data = resp.json()
         return Event(
-            uid=data.get("iCalUId") or event.uid,
+            uid=data.get("id") or event.uid,
             calendar_id=calendar_id,
             provider_event_id=data.get("id"),
             summary=event.summary,

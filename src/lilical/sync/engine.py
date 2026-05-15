@@ -122,12 +122,18 @@ class SyncEngine(QObject):
             self._wake_events.pop(account.id, None)
 
     async def _apply_pending_op(self, backend, op) -> None:
+        # Pending ops store the internal DB calendar_id. Backends need the
+        # provider_id (CalDAV URL, Google calendar ID, Graph calendar ID).
+        cal = self._store.get_calendar(op.calendar_id)
+        provider_cal_id = cal.provider_id if cal else op.calendar_id
+
         if op.op == "create":
             event = _event_from_payload(op.payload)
-            canonical = await backend.create_event(op.calendar_id, event)
+            canonical = await backend.create_event(provider_cal_id, event)
             self._store.mark_synced(
                 event.uid,
                 op.calendar_id,
+                canonical_uid=canonical.uid,
                 provider_event_id=canonical.provider_event_id,
                 etag=canonical.etag,
                 sequence=canonical.sequence if canonical.sequence else 0,
@@ -139,11 +145,23 @@ class SyncEngine(QObject):
             pid = (row.provider_event_id if row else None) or event.provider_event_id
             if pid and pid != event.provider_event_id:
                 event = _dc.replace(event, provider_event_id=pid)
-            await backend.update_event(op.calendar_id, event, if_match=op.if_match)
+            canonical = await backend.update_event(provider_cal_id, event, if_match=op.if_match)
+            if canonical is not None:
+                self._store.mark_synced(
+                    op.uid,
+                    op.calendar_id,
+                    canonical_uid=canonical.uid,
+                    provider_event_id=canonical.provider_event_id,
+                    etag=canonical.etag,
+                    sequence=canonical.sequence or 0,
+                )
         elif op.op == "delete":
             row = self._store.get_event(op.uid, op.calendar_id)
-            pid = (row.provider_event_id if row else None) or op.uid
-            await backend.delete_event(op.calendar_id, pid, if_match=op.if_match)
+            pid = row.provider_event_id if row else None
+            if not pid:
+                log.info("delete op for %s has no provider_event_id; skipping remote call", op.uid)
+                return
+            await backend.delete_event(provider_cal_id, pid, if_match=op.if_match)
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
             if event.recurrence_id:
@@ -151,7 +169,7 @@ class SyncEngine(QObject):
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.update_instance(
-                        op.calendar_id, master_pid, event.recurrence_id, event
+                        provider_cal_id, master_pid, event.recurrence_id, event
                     )
                 else:
                     log.warning("update_instance: no provider_event_id for master %s", op.uid)
@@ -167,7 +185,7 @@ class SyncEngine(QObject):
                 master = self._store.get_event(op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
-                    await backend.delete_instance(op.calendar_id, master_pid, rid)
+                    await backend.delete_instance(provider_cal_id, master_pid, rid)
                 else:
                     log.warning("delete_instance: no provider_event_id for master %s", op.uid)
             else:
