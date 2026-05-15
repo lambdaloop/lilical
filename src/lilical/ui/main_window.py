@@ -212,6 +212,10 @@ class MainWindow(QMainWindow):
         for v in self._views.values():
             if hasattr(v, "set_chip_mode"):
                 v.set_chip_mode(initial_mode)
+        saved_time_format = str(self._settings.value("time_format", "24h") or "24h")
+        for v in self._views.values():
+            if hasattr(v, "set_time_format"):
+                v.set_time_format(saved_time_format)
         saved_snap = int(self._settings.value("snap_minutes", 15) or 15)
         if saved_snap not in (5, 10, 15, 30, 60):
             saved_snap = 15
@@ -600,12 +604,14 @@ class MainWindow(QMainWindow):
         from lilical.ui.widgets.preferences_dialog import PreferencesDialog
 
         current_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
+        current_time_format = str(self._settings.value("time_format", "24h") or "24h")
         dlg = PreferencesDialog(
             self,
             current_theme=self._theme,
             current_default_view=self._default_view_name,
             current_snap_minutes=self._snap_minutes,
             current_chip_mode=current_chip_mode,
+            current_time_format=current_time_format,
         )
         if dlg.exec() == QDialog.Accepted:
             if dlg.theme != self._theme:
@@ -632,6 +638,11 @@ class MainWindow(QMainWindow):
                 for v in self._views.values():
                     if hasattr(v, "set_chip_mode"):
                         v.set_chip_mode(chip_mode_enum)
+            if dlg.time_format != current_time_format:
+                self._settings.setValue("time_format", dlg.time_format)
+                for v in self._views.values():
+                    if hasattr(v, "set_time_format"):
+                        v.set_time_format(dlg.time_format)
 
     def _apply_theme(self, name: str) -> None:
         try:

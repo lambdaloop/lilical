@@ -25,6 +25,11 @@ _CHIP_MODE_OPTIONS: list[tuple[str, str]] = [
     ("Text", "text"),
 ]
 
+_TIME_FORMAT_OPTIONS: list[tuple[str, str]] = [
+    ("24h  (14:30)", "24h"),
+    ("12h  (2:30 PM)", "12h"),
+]
+
 
 class PreferencesDialog(QDialog):
     def __init__(
@@ -36,6 +41,7 @@ class PreferencesDialog(QDialog):
         current_default_view: str = "Month",
         current_snap_minutes: int = 15,
         current_chip_mode: str = "bars",
+        current_time_format: str = "24h",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -73,15 +79,21 @@ class PreferencesDialog(QDialog):
         for label, _ in _CHIP_MODE_OPTIONS:
             self._chip_mode_combo.addItem(label)
         chip_idx = next(
-            (
-                i
-                for i, (_, v) in enumerate(_CHIP_MODE_OPTIONS)
-                if v == current_chip_mode
-            ),
+            (i for i, (_, v) in enumerate(_CHIP_MODE_OPTIONS) if v == current_chip_mode),
             0,
         )
         self._chip_mode_combo.setCurrentIndex(chip_idx)
         form.addRow("Chip style:", self._chip_mode_combo)
+
+        self._time_format_combo = QComboBox()
+        for label, _ in _TIME_FORMAT_OPTIONS:
+            self._time_format_combo.addItem(label)
+        tf_idx = next(
+            (i for i, (_, v) in enumerate(_TIME_FORMAT_OPTIONS) if v == current_time_format),
+            0,
+        )
+        self._time_format_combo.setCurrentIndex(tf_idx)
+        form.addRow("Time format:", self._time_format_combo)
 
         layout.addLayout(form)
 
@@ -117,3 +129,10 @@ class PreferencesDialog(QDialog):
         if 0 <= idx < len(_CHIP_MODE_OPTIONS):
             return _CHIP_MODE_OPTIONS[idx][1]
         return "bars"
+
+    @property
+    def time_format(self) -> str:
+        idx = self._time_format_combo.currentIndex()
+        if 0 <= idx < len(_TIME_FORMAT_OPTIONS):
+            return _TIME_FORMAT_OPTIONS[idx][1]
+        return "24h"

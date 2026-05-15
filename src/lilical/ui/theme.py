@@ -39,16 +39,18 @@ FONT_BASE = 10  # body, default
 FONT_DAY_NUMBER = 13  # month day numbers, week day headers
 FONT_DAY_HEADER = 12  # day-view header (long date)
 FONT_TIME_AXIS = 9  # hour labels
-FONT_CHIP_TITLE = 9  # event chip title
-FONT_CHIP_PREFIX = 8  # event chip time prefix
-FONT_CHIP_LOCATION = 8  # event chip location line
+FONT_CHIP_TITLE = 8  # event chip title
+FONT_CHIP_PREFIX = 7  # event chip time prefix
+FONT_CHIP_LOCATION = 7  # event chip location line
 FONT_MONTH_HEADER = 9  # day-of-week strip above month grid
 
 # ── Chip layout thresholds (pixels) ──────────────────────────────────────
 # Spec §4.2: visibility tiers for event chips.
-CHIP_MIN_TITLE_H = 14  # below this, chip is solid color (tooltip only)
-CHIP_MIN_PREFIX_H = 24  # below this, only title is shown
-CHIP_MIN_LOCATION_H = 38  # below this, location is suppressed
+CHIP_MIN_TITLE_H = 14        # below this, chip is solid color (tooltip only)
+CHIP_MIN_INLINE_TIME_H = 18  # below this (≥14): title only; at/above: time+title inline
+CHIP_MIN_PREFIX_H = 24       # at/above: time on its own row above title
+CHIP_MIN_LOCATION_H = 38     # below this, location is suppressed
+CHIP_MIN_LOCATION_MULTILINE_H = 50  # at/above: location wraps to up to 2 lines
 
 # ── Multi-day continuation glyphs ────────────────────────────────────────
 GLYPH_CONTINUES_RIGHT = "→"

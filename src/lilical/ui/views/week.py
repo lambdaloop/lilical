@@ -305,6 +305,7 @@ class WeekView(QGraphicsView):
         self._day_count = day_count if day_count in VALID_DAY_COUNTS else 7
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
+        self._time_format: str = "24h"
         self._chips: list[EventChip] = []
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
@@ -419,6 +420,12 @@ class WeekView(QGraphicsView):
     @property
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
+
+    def set_time_format(self, fmt: str) -> None:
+        if fmt == self._time_format:
+            return
+        self._time_format = fmt
+        self.refresh()
 
     def set_snap_minutes(self, m: int) -> None:
         """Set the snap granularity used by every drag interaction.
@@ -682,13 +689,16 @@ class WeekView(QGraphicsView):
                 chip_w = max(8.0, xspan * sub_w)
                 chip_y = body_top + start_min * self._px_per_hour / 60
                 chip_h = max(14.0, (end_min - start_min) * self._px_per_hour / 60)
+                _tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
                 chip = EventChip(
                     payload["event"],
                     QRectF(chip_x, chip_y, chip_w, chip_h),
                     calendar_color=payload["cal_color"],
                     mode=self._chip_mode,
-                    time_prefix=payload["start_dt"].strftime("%H:%M"),
+                    time_prefix=payload["start_dt"].strftime(_tfmt),
+                    time_format=self._time_format,
                     show_time_prefix=True,
+                    overlap_cols=cols,
                 )
                 self._wire_chip_signals(chip)
                 self._scene.addItem(chip)

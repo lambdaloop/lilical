@@ -82,7 +82,7 @@ def _coerce_dt(value: object) -> datetime | None:
     return None
 
 
-def _format_time_prefix_from(event: "Event") -> str | None:
+def _format_time_prefix_from(event: "Event", time_format: str = "24h") -> str | None:
     """Fallback time-prefix derived from the master Event (not instance-aware)."""
     if event.all_day:
         return None
@@ -91,8 +91,12 @@ def _format_time_prefix_from(event: "Event") -> str | None:
         return None
     if start.tzinfo is None:
         start = start.replace(tzinfo=local_zoneinfo())
-    s = start.astimezone().strftime("%H:%M")
-    return s
+    fmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
+    return start.astimezone().strftime(fmt)
+
+
+# Width below which the overlap badge is shown.
+_BADGE_CHIP_MAX_W = 44
 
 
 class EventChip(QGraphicsObject):
@@ -100,9 +104,11 @@ class EventChip(QGraphicsObject):
 
     Rendering tiers (height-based, per UI-SPEC §1.5 + §4.2):
         h <  14 px : solid fill, no text (tooltip carries title)
-        h >= 14 px : title only, top-aligned, single line
-        h >= 24 px : time prefix + title (title wraps)
+        h >= 14 px : title only, vertically centred
+        h >= 18 px : time prefix + title on same row, vertically centred
+        h >= 24 px : time prefix on its own row, then title (wraps)
         h >= 38 px : + location (if event.location set)
+        h >= 52 px : location wraps to up to 2 lines
     """
 
     edit_requested = Signal(object)  # emits Event
@@ -131,8 +137,10 @@ class EventChip(QGraphicsObject):
         mode: ChipMode = ChipMode.BARS,
         show_time_prefix: bool = True,
         time_prefix: str | None = None,
+        time_format: str = "24h",
         continues_left: bool = False,
         continues_right: bool = False,
+        overlap_cols: int = 1,
     ) -> None:
         super().__init__()
         self._event = event
@@ -141,8 +149,10 @@ class EventChip(QGraphicsObject):
         self._mode = mode
         self._show_time_prefix = show_time_prefix
         self._time_prefix = time_prefix
+        self._time_format = time_format
         self._continues_left = continues_left
         self._continues_right = continues_right
+        self._overlap_cols = overlap_cols
         self._hovered = False
         # Drag state
         self._drag_mode: str | None = None
@@ -155,7 +165,7 @@ class EventChip(QGraphicsObject):
             return None
         if self._time_prefix is not None:
             return self._time_prefix or None
-        return _format_time_prefix_from(self._event)
+        return _format_time_prefix_from(self._event, self._time_format)
 
     def _build_tooltip(self) -> str:
         parts = [self._event.summary or "(no title)"]
@@ -202,7 +212,7 @@ class EventChip(QGraphicsObject):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Cancelled events + events the user declined are drawn at reduced
-        # opacity. Title also gets a strikethrough (see _make_title_font).
+        # opacity. Title also gets a strikethrough (see title font construction).
         if self._is_dimmed():
             painter.save()
             painter.setOpacity(0.45)
@@ -218,11 +228,15 @@ class EventChip(QGraphicsObject):
         if self._is_dimmed():
             painter.restore()
 
-    def _make_title_font(self) -> QFont:
-        f = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE, QFont.Weight.Medium)
+    def _title_font(self, pt: int) -> QFont:
+        """Build a title font at the given point size, respecting dimmed state."""
+        f = QFont(theme.FONT_FAMILY, pt, QFont.Weight.Medium)
         if self._is_dimmed():
             f.setStrikeOut(True)
         return f
+
+    def _make_title_font(self) -> QFont:
+        return self._title_font(theme.FONT_CHIP_TITLE)
 
     # ── Bars mode ────────────────────────────────────────────────────────
     def _paint_bars_mode(self, painter: QPainter, base: QColor) -> None:
@@ -237,102 +251,157 @@ class EventChip(QGraphicsObject):
         if h < theme.CHIP_MIN_TITLE_H:
             # Tier 0: no text. Tooltip carries info.
             self._draw_continuation_glyphs(painter, text_color)
+            self._draw_overlap_badge(painter)
             return
 
-        # Layout: 3 px left/right padding, 1 px top padding.
+        title_pt = theme.FONT_CHIP_TITLE
+        prefix_pt = theme.FONT_CHIP_PREFIX
+
         pad_l = 3 if not self._continues_left else 10
         pad_r = 3 if not self._continues_right else 10
         text_x = self._rect.x() + pad_l
         text_w = max(8.0, self._rect.width() - pad_l - pad_r)
-        cursor_y = self._rect.y() + 1
+
+        title = self._event.summary or "(no title)"
+        title_font = self._title_font(title_pt)
+        title_fm = QFontMetricsF(title_font)
 
         painter.setPen(text_color)
         painter.setClipRect(QRectF(text_x, self._rect.y(), text_w, h - 1))
 
-        # Time prefix on its own line if we have vertical room.
-        has_prefix = False
         if h >= theme.CHIP_MIN_PREFIX_H:
+            # ── Tier 2/3: time on its own row, then title ──────────────────
+            cursor_y = self._rect.y() + 2
+
             prefix = self._prefix_text()
             if prefix:
-                f = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX)
-                painter.setFont(f)
-                fm = QFontMetricsF(f)
-                # 80% opacity per UI-SPEC §1.3.
+                pf = QFont(theme.FONT_FAMILY, prefix_pt)
+                painter.setFont(pf)
+                pfm = QFontMetricsF(pf)
                 pen_color = QColor(text_color)
                 pen_color.setAlphaF(0.8)
                 painter.setPen(pen_color)
                 painter.drawText(
-                    QRectF(text_x, cursor_y, text_w, fm.height()),
+                    QRectF(text_x, cursor_y, text_w, pfm.height()),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                     _ellipsize(painter, prefix, text_w),
                 )
-                cursor_y += fm.height()
-                has_prefix = True
+                cursor_y += pfm.height()
                 painter.setPen(text_color)
 
-        # Title block — wraps if there's room.
-        title = self._event.summary or "(no title)"
-        title_font = self._make_title_font()
-        painter.setFont(title_font)
-        title_fm = QFontMetricsF(title_font)
+            # Location is only shown if the title fits completely alongside it.
+            available = self._rect.bottom() - cursor_y - 1
+            location = (self._event.location or "").strip()
+            show_location = False
+            loc_reserved = 0.0
+            if location and h >= theme.CHIP_MIN_LOCATION_H:
+                loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+                loc_fm = QFontMetricsF(loc_font)
+                if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
+                    max_loc_h = loc_fm.height() * 2 + 2
+                    bound = loc_fm.boundingRect(
+                        QRectF(0, 0, text_w, max_loc_h),
+                        int(Qt.TextFlag.TextWordWrap),
+                        location,
+                    )
+                    needed_loc = min(bound.height(), max_loc_h) + 1
+                else:
+                    needed_loc = loc_fm.height() + 1
+                title_bound = title_fm.boundingRect(
+                    QRectF(0, 0, text_w, available),
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+                    title,
+                )
+                if title_bound.height() + needed_loc <= available:
+                    show_location = True
+                    loc_reserved = needed_loc
 
-        # Reserve space at the bottom for the location line if it'll fit.
-        loc_reserved = 0.0
-        location = (self._event.location or "").strip()
-        show_location = location and h >= theme.CHIP_MIN_LOCATION_H
-        if show_location:
-            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
-            loc_fm = QFontMetricsF(loc_font)
-            loc_reserved = loc_fm.height() + 1
-
-        title_rect = QRectF(
-            text_x,
-            cursor_y,
-            text_w,
-            max(title_fm.height(), self._rect.bottom() - cursor_y - 2 - loc_reserved),
-        )
-
-        if h < theme.CHIP_MIN_PREFIX_H:
-            # Tier 1 (single-line title): ellipsize, no wrap.
-            painter.drawText(
-                title_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                _ellipsize(painter, title, text_w),
+            title_rect = QRectF(
+                text_x, cursor_y, text_w,
+                max(title_fm.height(), available - loc_reserved),
             )
-        else:
-            # Tier 2/3: wrap; Qt will auto-clip to the rect.
+            painter.setFont(title_font)
             painter.drawText(
                 title_rect,
-                int(
-                    Qt.AlignmentFlag.AlignLeft
-                    | Qt.AlignmentFlag.AlignTop
-                    | Qt.TextFlag.TextWordWrap
-                ),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                    | Qt.TextFlag.TextWordWrap),
                 title,
             )
 
-        # Location line at the bottom.
-        if show_location:
-            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
-            painter.setFont(loc_font)
-            loc_fm = QFontMetricsF(loc_font)
-            loc_color = QColor(text_color)
-            loc_color.setAlphaF(0.7)
-            painter.setPen(loc_color)
-            loc_y = self._rect.bottom() - loc_fm.height() - 1
+            if show_location:
+                loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+                painter.setFont(loc_font)
+                loc_fm = QFontMetricsF(loc_font)
+                loc_color = QColor(text_color)
+                loc_color.setAlphaF(0.7)
+                painter.setPen(loc_color)
+                loc_y = self._rect.bottom() - loc_reserved
+                if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
+                    painter.drawText(
+                        QRectF(text_x, loc_y, text_w, loc_reserved),
+                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                            | Qt.TextFlag.TextWordWrap),
+                        location,
+                    )
+                else:
+                    painter.drawText(
+                        QRectF(text_x, loc_y, text_w, loc_fm.height()),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        _ellipsize(painter, location, text_w),
+                    )
+
+        elif h >= theme.CHIP_MIN_INLINE_TIME_H:
+            # ── Tier 1b: time + title on one row, vertically centred ────────
+            pf = QFont(theme.FONT_FAMILY, prefix_pt)
+            pfm = QFontMetricsF(pf)
+            inline_line_h = max(title_fm.height(), pfm.height())
+            cursor_y = self._rect.y() + max(1.0, (h - inline_line_h) / 2)
+
+            prefix = self._prefix_text()
+            title_x = text_x
+            remaining_w = text_w
+            if prefix:
+                prefix_str = prefix + "  "
+                prefix_px = pfm.horizontalAdvance(prefix_str)
+                pen_color = QColor(text_color)
+                pen_color.setAlphaF(0.8)
+                painter.setFont(pf)
+                painter.setPen(pen_color)
+                painter.drawText(
+                    QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    prefix_str,
+                )
+                title_x = text_x + prefix_px
+                remaining_w = max(0.0, text_w - prefix_px)
+
+            if remaining_w > 4.0:
+                painter.setFont(title_font)
+                painter.setPen(text_color)
+                painter.drawText(
+                    QRectF(title_x, cursor_y, remaining_w, title_fm.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    _ellipsize(painter, title, remaining_w),
+                )
+
+        else:
+            # ── Tier 1a: title only, vertically centred ─────────────────────
+            cursor_y = self._rect.y() + max(1.0, (h - title_fm.height()) / 2)
+            painter.setFont(title_font)
             painter.drawText(
-                QRectF(text_x, loc_y, text_w, loc_fm.height()),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                _ellipsize(painter, location, text_w),
+                QRectF(text_x, cursor_y, text_w,
+                       max(title_fm.height(), self._rect.bottom() - cursor_y - 1)),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                _ellipsize(painter, title, text_w),
             )
 
         painter.setClipping(False)
+        self._draw_recurrence_glyph(painter, text_color)
+        self._draw_overlap_badge(painter)
         self._draw_continuation_glyphs(painter, text_color)
-        _ = has_prefix  # silence unused-var lint
 
     # ── Text mode ─────────────────────────────────────────────────────────
     def _paint_text_mode(self, painter: QPainter, base: QColor) -> None:
-        # Neutral background + left colour bar; same tiered text layout as BARS.
         _BAR_W = 3
         body = self._rect.adjusted(0, 0, -1, -1)
         painter.setBrush(QColor(theme.BG_SURFACE_ALT))
@@ -348,85 +417,154 @@ class EventChip(QGraphicsObject):
         text_color = QColor(theme.TEXT_PRIMARY)
         h = self._rect.height()
         if h < theme.CHIP_MIN_TITLE_H:
+            self._draw_overlap_badge(painter)
             return
+
+        title_pt = theme.FONT_CHIP_TITLE
+        prefix_pt = theme.FONT_CHIP_PREFIX
 
         pad_l = _BAR_W + 5  # bar + 2 px gap + 3 px body pad
         pad_r = 3
         text_x = self._rect.x() + pad_l
         text_w = max(8.0, self._rect.width() - pad_l - pad_r)
-        cursor_y = self._rect.y() + 1
+
+        title = self._event.summary or "(no title)"
+        title_font = self._title_font(title_pt)
+        title_fm = QFontMetricsF(title_font)
 
         painter.setClipRect(QRectF(text_x, self._rect.y(), text_w, h - 1))
 
         if h >= theme.CHIP_MIN_PREFIX_H:
+            # ── Tier 2/3: time on its own row, then title ──────────────────
+            cursor_y = self._rect.y() + 2
+
             prefix = self._prefix_text()
             if prefix:
-                f = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX)
-                painter.setFont(f)
-                fm = QFontMetricsF(f)
+                pf = QFont(theme.FONT_FAMILY, prefix_pt)
+                painter.setFont(pf)
+                pfm = QFontMetricsF(pf)
                 pen_color = QColor(text_color)
                 pen_color.setAlphaF(0.7)
                 painter.setPen(pen_color)
                 painter.drawText(
-                    QRectF(text_x, cursor_y, text_w, fm.height()),
+                    QRectF(text_x, cursor_y, text_w, pfm.height()),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                     _ellipsize(painter, prefix, text_w),
                 )
-                cursor_y += fm.height()
+                cursor_y += pfm.height()
                 painter.setPen(text_color)
 
-        title = self._event.summary or "(no title)"
-        title_font = self._make_title_font()
-        painter.setFont(title_font)
-        title_fm = QFontMetricsF(title_font)
+            # Location is only shown if the title fits completely alongside it.
+            available = self._rect.bottom() - cursor_y - 1
+            location = (self._event.location or "").strip()
+            show_location = False
+            loc_reserved = 0.0
+            if location and h >= theme.CHIP_MIN_LOCATION_H:
+                loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+                loc_fm = QFontMetricsF(loc_font)
+                if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
+                    max_loc_h = loc_fm.height() * 2 + 2
+                    bound = loc_fm.boundingRect(
+                        QRectF(0, 0, text_w, max_loc_h),
+                        int(Qt.TextFlag.TextWordWrap),
+                        location,
+                    )
+                    needed_loc = min(bound.height(), max_loc_h) + 1
+                else:
+                    needed_loc = loc_fm.height() + 1
+                title_bound = title_fm.boundingRect(
+                    QRectF(0, 0, text_w, available),
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+                    title,
+                )
+                if title_bound.height() + needed_loc <= available:
+                    show_location = True
+                    loc_reserved = needed_loc
 
-        loc_reserved = 0.0
-        location = (self._event.location or "").strip()
-        show_location = location and h >= theme.CHIP_MIN_LOCATION_H
-        if show_location:
-            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
-            loc_fm = QFontMetricsF(loc_font)
-            loc_reserved = loc_fm.height() + 1
-
-        title_rect = QRectF(
-            text_x,
-            cursor_y,
-            text_w,
-            max(title_fm.height(), self._rect.bottom() - cursor_y - 1 - loc_reserved),
-        )
-        painter.setPen(text_color)
-        if h < theme.CHIP_MIN_PREFIX_H:
-            painter.drawText(
-                title_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                _ellipsize(painter, title, text_w),
+            title_rect = QRectF(
+                text_x, cursor_y, text_w,
+                max(title_fm.height(), available - loc_reserved),
             )
-        else:
+            painter.setFont(title_font)
+            painter.setPen(text_color)
             painter.drawText(
                 title_rect,
-                int(
-                    Qt.AlignmentFlag.AlignLeft
-                    | Qt.AlignmentFlag.AlignTop
-                    | Qt.TextFlag.TextWordWrap
-                ),
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                    | Qt.TextFlag.TextWordWrap),
                 title,
             )
 
-        if show_location:
-            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
-            painter.setFont(loc_font)
-            loc_fm = QFontMetricsF(loc_font)
-            loc_color = QColor(text_color)
-            loc_color.setAlphaF(0.65)
-            painter.setPen(loc_color)
-            loc_y = self._rect.bottom() - loc_fm.height() - 1
+            if show_location:
+                loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+                painter.setFont(loc_font)
+                loc_fm = QFontMetricsF(loc_font)
+                loc_color = QColor(text_color)
+                loc_color.setAlphaF(0.65)
+                painter.setPen(loc_color)
+                loc_y = self._rect.bottom() - loc_reserved
+                if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
+                    painter.drawText(
+                        QRectF(text_x, loc_y, text_w, loc_reserved),
+                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                            | Qt.TextFlag.TextWordWrap),
+                        location,
+                    )
+                else:
+                    painter.drawText(
+                        QRectF(text_x, loc_y, text_w, loc_fm.height()),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        _ellipsize(painter, location, text_w),
+                    )
+
+        elif h >= theme.CHIP_MIN_INLINE_TIME_H:
+            # ── Tier 1b: time + title on one row, vertically centred ────────
+            pf = QFont(theme.FONT_FAMILY, prefix_pt)
+            pfm = QFontMetricsF(pf)
+            inline_line_h = max(title_fm.height(), pfm.height())
+            cursor_y = self._rect.y() + max(1.0, (h - inline_line_h) / 2)
+
+            prefix = self._prefix_text()
+            title_x = text_x
+            remaining_w = text_w
+            if prefix:
+                prefix_str = prefix + "  "
+                prefix_px = pfm.horizontalAdvance(prefix_str)
+                pen_color = QColor(text_color)
+                pen_color.setAlphaF(0.7)
+                painter.setFont(pf)
+                painter.setPen(pen_color)
+                painter.drawText(
+                    QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    prefix_str,
+                )
+                title_x = text_x + prefix_px
+                remaining_w = max(0.0, text_w - prefix_px)
+
+            if remaining_w > 4.0:
+                painter.setFont(title_font)
+                painter.setPen(text_color)
+                painter.drawText(
+                    QRectF(title_x, cursor_y, remaining_w, title_fm.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    _ellipsize(painter, title, remaining_w),
+                )
+
+        else:
+            # ── Tier 1a: title only, vertically centred ─────────────────────
+            cursor_y = self._rect.y() + max(1.0, (h - title_fm.height()) / 2)
+            painter.setFont(title_font)
+            painter.setPen(text_color)
             painter.drawText(
-                QRectF(text_x, loc_y, text_w, loc_fm.height()),
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                _ellipsize(painter, location, text_w),
+                QRectF(text_x, cursor_y, text_w,
+                       max(title_fm.height(), self._rect.bottom() - cursor_y - 1)),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                _ellipsize(painter, title, text_w),
             )
 
         painter.setClipping(False)
+        self._draw_recurrence_glyph(painter, text_color)
+        self._draw_overlap_badge(painter)
 
     # ── Dot mode (Agenda children, very dense rows) ──────────────────────
     def _paint_dot(self, painter: QPainter, base: QColor) -> None:
@@ -440,8 +578,6 @@ class EventChip(QGraphicsObject):
         text_x = dot_x + dot_d + 6
         text_w = max(8.0, self._rect.right() - text_x - 4)
         painter.setPen(QColor(theme.TEXT_PRIMARY))
-        # Dot-mode uses regular (non-Medium) weight — strikethrough still
-        # applies when dimmed.
         dot_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE)
         if self._is_dimmed():
             dot_font.setStrikeOut(True)
@@ -472,6 +608,53 @@ class EventChip(QGraphicsObject):
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 theme.GLYPH_CONTINUES_RIGHT,
             )
+
+    # ── Recurrence indicator ─────────────────────────────────────────────
+    def _draw_recurrence_glyph(self, painter: QPainter, text_color: QColor) -> None:
+        if not self._event.rrule:
+            return
+        h = self._rect.height()
+        if h < theme.CHIP_MIN_TITLE_H or self._rect.width() < 18:
+            return
+        glyph_font = QFont(theme.FONT_FAMILY, 7)
+        painter.setFont(glyph_font)
+        fm = QFontMetricsF(glyph_font)
+        glyph = "↻"
+        gw = fm.horizontalAdvance(glyph)
+        gx = self._rect.right() - gw - 2
+        gy = self._rect.bottom() - fm.height() - 1
+        color = QColor(text_color)
+        color.setAlphaF(0.55)
+        painter.setPen(color)
+        painter.setClipping(False)
+        painter.drawText(
+            QRectF(gx, gy, gw + 1, fm.height()),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+            glyph,
+        )
+
+    # ── Overlap density badge ─────────────────────────────────────────────
+    def _draw_overlap_badge(self, painter: QPainter) -> None:
+        if self._overlap_cols <= 1 or self._rect.width() >= _BADGE_CHIP_MAX_W:
+            return
+        badge_text = f"+{self._overlap_cols - 1}"
+        badge_font = QFont(theme.FONT_FAMILY, 7, QFont.Weight.Bold)
+        painter.setFont(badge_font)
+        fm = QFontMetricsF(badge_font)
+        bw = fm.horizontalAdvance(badge_text) + 4
+        bh = fm.height() + 2
+        bx = self._rect.right() - bw - 1
+        by = self._rect.y() + 1
+        painter.setClipping(False)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 120))
+        painter.drawRoundedRect(QRectF(bx, by, bw, bh), 2, 2)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(
+            QRectF(bx + 2, by + 1, bw - 4, bh - 2),
+            Qt.AlignmentFlag.AlignCenter,
+            badge_text,
+        )
 
     # ── Interactivity ────────────────────────────────────────────────────
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001
