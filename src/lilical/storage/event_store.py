@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -144,12 +146,19 @@ class EventStore(QObject):
     def __init__(self, engine: Any) -> None:
         super().__init__()
         self._engine = engine
+        self._write_lock = threading.RLock()
+
+    @contextlib.contextmanager
+    def _write_session(self):
+        with self._write_lock:
+            with Session(self._engine) as s, s.begin():
+                yield s
 
     def rebuild_all_instances(self) -> None:
         now = datetime.now(timezone.utc)
         window_start = now.replace(year=now.year - self._instances_window_years)
         window_end = now.replace(year=now.year + self._instances_window_years)
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             s.query(EventInstanceRow).delete()
             for row in s.query(EventRow).all():
                 event = _row_to_event(row)
@@ -308,6 +317,37 @@ class EventStore(QObject):
                     return _row_to_event(row)
         return self.get_event(inst.uid, inst.calendar_id)
 
+    def events_for_instances(self, instances: list["EventInstanceRow"]) -> "dict[int, Event]":
+        """Return {id(inst): Event} for a list of instances in one DB roundtrip.
+
+        Prefers override rows for overridden instances; falls back to the master.
+        """
+        if not instances:
+            return {}
+        uids_by_cal: dict[str, set[str]] = {}
+        for inst in instances:
+            uids_by_cal.setdefault(inst.calendar_id, set()).add(inst.uid)
+
+        by_key: dict[tuple[str, str, str], "EventRow"] = {}
+        with Session(self._engine) as s:
+            for cid, uids in uids_by_cal.items():
+                for r in (
+                    s.query(EventRow)
+                    .filter(EventRow.calendar_id == cid, EventRow.uid.in_(uids))
+                    .all()
+                ):
+                    by_key[(r.uid, r.calendar_id, r.recurrence_id or "")] = r
+
+        out: dict[int, Event] = {}
+        for inst in instances:
+            rid = inst.recurrence_id or ""
+            row = by_key.get((inst.uid, inst.calendar_id, rid)) if rid else None
+            if row is None:
+                row = by_key.get((inst.uid, inst.calendar_id, ""))
+            if row is not None:
+                out[id(inst)] = _row_to_event(row)
+        return out
+
     def get_override_events(self, uid: str, calendar_id: str) -> list[Event]:
         """Return all non-deleted override EventRows for a recurring series."""
         with Session(self._engine) as s:
@@ -330,7 +370,7 @@ class EventStore(QObject):
 
     def queue_create(self, event: Event) -> None:
         account_id = self._account_id_for_calendar(event.calendar_id)
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = _event_to_row(event)
             row.local_dirty = True
             s.add(row)
@@ -354,7 +394,7 @@ class EventStore(QObject):
         recurrence_id_str = (
             event.recurrence_id.isoformat() if event.recurrence_id else ""
         )
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = (
                 s.query(EventRow)
                 .filter_by(
@@ -389,7 +429,7 @@ class EventStore(QObject):
 
     def queue_delete(self, uid: str, calendar_id: str) -> None:
         account_id = self._account_id_for_calendar(calendar_id)
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = (
                 s.query(EventRow)
                 .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
@@ -433,7 +473,7 @@ class EventStore(QObject):
 
         account_id = self._account_id_for_calendar(old_calendar_id)
         new_uid = str(_uuid.uuid4())
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             # Mark the old event as deleted
             old_row = (
                 s.query(EventRow)
@@ -501,7 +541,7 @@ class EventStore(QObject):
         """Update a single instance of a recurring event."""
         account_id = self._account_id_for_calendar(calendar_id)
         recurrence_id_str = recurrence_id_dt.isoformat()
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = (
                 s.query(EventRow)
                 .filter_by(
@@ -558,7 +598,7 @@ class EventStore(QObject):
         """Delete a single occurrence of a recurring event."""
         account_id = self._account_id_for_calendar(calendar_id)
         recurrence_id_str = recurrence_id_dt.isoformat()
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             master_row = (
                 s.query(EventRow)
                 .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
@@ -603,7 +643,12 @@ class EventStore(QObject):
         new_cursor_json: str,
     ) -> int:
         count = 0
-        with Session(self._engine) as s, s.begin():
+        # Events whose instances need rebuilding after the main transaction commits.
+        # Keyed by canonical master (uid, calendar_id) to avoid redundant rebuilds
+        # when both a master and its override(s) arrive in the same batch.
+        masters_to_rebuild: dict[tuple[str, str], Event] = {}
+
+        with self._write_session() as s:
             for change in changes:
                 uid = getattr(change, "uid", "")
                 if change.kind == "delete":
@@ -665,12 +710,21 @@ class EventStore(QObject):
                                 continue
                             setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
-                    self._rebuild_instances_for(s, local_event)
+                    # Defer instance rebuilds to after this transaction commits so
+                    # the write lock is held only for the fast EventRow upserts and
+                    # cursor update, not the expensive iCal expansion.
+                    masters_to_rebuild[(uid, calendar_id)] = local_event
                     count += 1
             if new_cursor_json:
                 s.query(Calendar).filter(Calendar.id == calendar_id).update(
                     {"sync_cursor": new_cursor_json}
                 )
+        # EventRows are now committed. Rebuild event_instances in a separate
+        # transaction so the main write lock stays short.
+        if masters_to_rebuild:
+            with self._write_session() as s:
+                for event in masters_to_rebuild.values():
+                    self._rebuild_instances_for(s, event)
         changed_uids = {c.uid for c in changes if hasattr(c, "uid")}
         self.events_changed.emit(calendar_id, changed_uids)
         return count
@@ -716,7 +770,7 @@ class EventStore(QObject):
     ) -> None:
         from lilical.models.account import Account
 
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             acc = s.query(Account).filter(Account.id == account_id).first()
             if acc is None:
                 return
@@ -733,7 +787,7 @@ class EventStore(QObject):
         from lilical.models.account import Account
         from lilical.models.calendar import Calendar
 
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             cal_ids = [
                 cid
                 for (cid,) in s.query(Calendar.id)
@@ -760,7 +814,7 @@ class EventStore(QObject):
     def set_calendar_visibility(self, calendar_id: str, is_visible: bool) -> None:
         from lilical.models.calendar import Calendar
 
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             s.query(Calendar).filter(Calendar.id == calendar_id).update(
                 {"is_visible": 1 if is_visible else 0}
             )
@@ -776,7 +830,7 @@ class EventStore(QObject):
         from lilical.models.calendar import Calendar
 
         cal_account_id = None
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = s.query(Calendar).filter(Calendar.id == calendar_id).first()
             if row is None:
                 return
@@ -802,7 +856,7 @@ class EventStore(QObject):
         from lilical.models.calendar import Calendar
 
         now = datetime.now(timezone.utc).isoformat()
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             s.add(
                 Account(
                     id=account_id,
@@ -902,7 +956,7 @@ class EventStore(QObject):
         from lilical.models.calendar import Calendar
 
         remote_pids = {c["provider_id"] for c in calendars if c.get("provider_id")}
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             existing = s.query(Calendar).filter(Calendar.account_id == account_id).all()
             existing_by_pid = {c.provider_id: c for c in existing}
 
@@ -952,7 +1006,7 @@ class EventStore(QObject):
     def delete_pending_op(self, op_id: int) -> None:
         from lilical.models.pending_op import PendingOpRow
 
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             s.query(PendingOpRow).filter(PendingOpRow.id == op_id).delete()
 
     def get_pending_op(self, op_id: int):
@@ -962,7 +1016,7 @@ class EventStore(QObject):
             return s.query(PendingOpRow).filter(PendingOpRow.id == op_id).first()
 
     def remove_event(self, uid: str, calendar_id: str) -> None:
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).delete()
             s.query(EventInstanceRow).filter_by(
                 uid=uid, calendar_id=calendar_id
@@ -984,7 +1038,7 @@ class EventStore(QObject):
         id), cascade the uid rewrite to override rows, expanded instances and
         any pending ops still queued for this event.
         """
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             row = (
                 s.query(EventRow)
                 .filter_by(uid=local_uid, calendar_id=calendar_id, recurrence_id="")
@@ -1029,7 +1083,7 @@ class EventStore(QObject):
         import uuid
 
         account_id = self._account_id_for_calendar(calendar_id)
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             master_row = (
                 s.query(EventRow)
                 .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
@@ -1118,7 +1172,7 @@ class EventStore(QObject):
         import re as _re
 
         account_id = self._account_id_for_calendar(calendar_id)
-        with Session(self._engine) as s, s.begin():
+        with self._write_session() as s:
             master_row = (
                 s.query(EventRow)
                 .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")

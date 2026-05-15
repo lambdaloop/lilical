@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import override
 
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QFont,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QSlider,
+    QSplitter,
     QStatusBar,
     QToolBar,
     QToolButton,
@@ -186,7 +187,6 @@ class MainWindow(QMainWindow):
         )
         self._sidebar.calendar_color_changed.connect(self._on_calendar_color_changed)
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
-        main_layout.addWidget(self._sidebar)
 
         # Top toolbar via QMainWindow's standard API — embedding a QToolBar
         # inside a QVBoxLayout has caused it to render at zero height on some
@@ -241,7 +241,15 @@ class MainWindow(QMainWindow):
             view.hide()
 
         right_layout.addWidget(self._view_container, 1)
-        main_layout.addWidget(right, 1)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._sidebar)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([240, 960])
+        splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(splitter)
 
         # ── Status bar ─────────────────────────────────────────────────────
         self._statusbar = QStatusBar()
@@ -260,6 +268,13 @@ class MainWindow(QMainWindow):
         self._apply_theme(self._theme)
 
         # ── Signal wiring ──────────────────────────────────────────────────
+        self._events_changed_pending: set[str] = set()
+        self._events_changed_calendars: set[str] = set()
+        self._events_changed_timer = QTimer(self)
+        self._events_changed_timer.setSingleShot(True)
+        self._events_changed_timer.setInterval(150)
+        self._events_changed_timer.timeout.connect(self._flush_events_changed)
+
         self._store.events_changed.connect(self._on_events_changed)
         self._sync.sync_started.connect(self._on_sync_started)
         self._sync.sync_progress.connect(self._on_sync_progress)
@@ -680,7 +695,7 @@ class MainWindow(QMainWindow):
             log.exception("Failed to apply theme '%s'", name)
         # Repaint all custom-drawn views with the new palette.
         for v in self._views.values():
-            if hasattr(v, "refresh_theme"):
+            if v is self._current_view and hasattr(v, "refresh_theme"):
                 v.refresh_theme()  # type: ignore[reportAttributeAccessIssue]
         # Sidebar mini-month uses hardcoded scene text — re-render it.
         if hasattr(self, "_sidebar"):
@@ -802,14 +817,24 @@ class MainWindow(QMainWindow):
         log.warning("Auth failed for account %s (%s): %s", account_id, label, message)
 
     def _on_events_changed(self, calendar_id: str, uids: set[str]) -> None:
+        self._events_changed_calendars.add(calendar_id)
+        self._events_changed_pending |= uids
+        self._events_changed_timer.start()
+
+    def _flush_events_changed(self) -> None:
+        uids = self._events_changed_pending
+        cals = self._events_changed_calendars
+        self._events_changed_pending = set()
+        self._events_changed_calendars = set()
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
         self._update_range_label()
-        # Wake the sync engine so pending ops are pushed immediately.
         if uids:
-            cal = self._store.get_calendar(calendar_id)
-            if cal is not None:
-                self._sync.force_refresh(cal.account_id)
+            for cal_id in cals:
+                cal = self._store.get_calendar(cal_id)
+                if cal is not None:
+                    self._sync.force_refresh(cal.account_id)
+                    break
 
     # ── Account management ────────────────────────────────────────────────
 

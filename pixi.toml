@@ -19,6 +19,7 @@ tzdata = "*"
 dateparser = "*"
 
 [pypi-dependencies]
+lilical = { path = ".", editable = true }
 qasync = ">=0.28"
 recurring-ical-events = ">=2.2"
 desktop-notifier = "*"
@@ -39,17 +40,21 @@ pytest-cov = "*"
 [feature.dev.pypi-dependencies]
 pytest-recording = "*"
 
+[feature.appimage.pypi-dependencies]
+pyinstaller = ">=6.0"
+
 [environments]
 default = { features = [], solve-group = "main" }
 dev = { features = ["dev"], solve-group = "main" }
+appimage = { features = ["appimage"], solve-group = "main" }
 
 [tasks]
-run        = { cmd = "python -m lilical", env = { PYTHONPATH = "src" } }
-test       = { cmd = "pytest -v", env = { PYTHONPATH = "src" } }
-test-cov   = { cmd = "pytest --cov=lilical --cov-report=term-missing", env = { PYTHONPATH = "src" } }
-lint       = { cmd = "ruff check src tests", env = { PYTHONPATH = "src" } }
-fmt        = { cmd = "ruff format src tests", env = { PYTHONPATH = "src" } }
-typecheck  = { cmd = "basedpyright src", env = { PYTHONPATH = "src" } }
-migrate    = { cmd = "alembic upgrade head", env = { PYTHONPATH = "src" } }
-makemig    = { cmd = "alembic revision --autogenerate -m", depends-on = [], env = { PYTHONPATH = "src" } }
+run        = "python -m lilical"
+test       = "pytest -v"
+test-cov   = "pytest --cov=lilical --cov-report=term-missing"
+lint       = "ruff check src tests"
+fmt        = "ruff format src tests"
+typecheck  = "basedpyright src"
+migrate    = "alembic upgrade head"
+makemig    = { cmd = "alembic revision --autogenerate -m", depends-on = [] }
 radicale   = "docker run --rm -p 5232:5232 tomsquest/docker-radicale"

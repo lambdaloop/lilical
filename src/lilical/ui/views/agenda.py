@@ -65,8 +65,6 @@ class AgendaView(QWidget):
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._tree)
 
-        self.refresh()
-
     def navigate(self, days: int) -> None:
         self._start = self._start + timedelta(days=days)
         self.refresh()
@@ -101,6 +99,14 @@ class AgendaView(QWidget):
             log.exception("AgendaView: failed to query instances")
             return
 
+        events = self._store.events_for_instances(instances)
+
+        # Build calendar-id → (display_name, color) once for the whole refresh.
+        cal_info: dict[str, tuple[str, str | None]] = {}
+        for acc in self._store.list_accounts():
+            for cal in self._store.list_calendars(acc.id, visible_only=False):
+                cal_info[cal.id] = (cal.display_name, cal.color)
+
         by_day: dict[date, list[tuple[datetime, object]]] = {}
         for inst in instances:
             try:
@@ -131,7 +137,7 @@ class AgendaView(QWidget):
             day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
             for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):  # type: ignore[reportAttributeAccessIssue]
-                event = self._store.get_event_for_instance(inst)  # type: ignore[reportArgumentType]
+                event = events.get(id(inst))
                 if event is None:
                     continue
                 row = QTreeWidgetItem(day_item)
@@ -141,21 +147,10 @@ class AgendaView(QWidget):
                     row.setText(0, t.strftime("%H:%M"))
                 row.setText(1, event.summary or "(no title)")
 
-                # Show calendar name if available
-                cal_label = inst.calendar_id  # type: ignore[reportAttributeAccessIssue]
-                accs = self._store.list_accounts()
-                for acc in accs:
-                    for cal in self._store.list_calendars(acc.id, visible_only=False):
-                        if cal.id == inst.calendar_id:  # type: ignore[reportAttributeAccessIssue]
-                            cal_label = cal.display_name
-                            break
-                row.setText(2, cal_label)
+                cal_name, cal_color = cal_info.get(inst.calendar_id, (inst.calendar_id, None))  # type: ignore[reportAttributeAccessIssue]
+                row.setText(2, cal_name)
 
-                # Color swatch icon to the left of the event title.
-                color_hint = event.color
-                if not color_hint:
-                    cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
-                    color_hint = cal.color if cal else None
+                color_hint = event.color or cal_color
                 row.setIcon(1, _color_swatch_icon(color_hint))
 
                 row.setData(0, Qt.ItemDataRole.UserRole, (inst, t))

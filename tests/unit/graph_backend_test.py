@@ -858,28 +858,30 @@ async def test_drain_delta_hydrates_exceptions_from_master() -> None:
     async for batch, _cursor in backend.initial_sync("cal-1"):
         collected.extend(batch)
 
-    # One $batch call for the exception's master (occurrence is skipped).
+    # One $batch call for the shared master (occurrence + exception both reference
+    # it but dedup ensures a single fetch).
     assert len(batch_calls) == 1
     assert len(batch_calls[0]["requests"]) == 1
 
-    # collected has: exception override + singleInstance (occurrence is dropped).
-    assert len(collected) == 2
-    by_uid = {c.uid: c.event for c in collected}
+    # collected has: synthesized seriesMaster + exception override + singleInstance.
+    # Occurrence is dropped.
+    assert len(collected) == 3
+    overrides = [c for c in collected if c.event.recurrence_id is not None]
+    singles = [c for c in collected if c.uid == "AAMk-single"]
+    assert len(overrides) == 1
+    assert len(singles) == 1
     # The exception override inherited subject from master and has recurrence_id.
-    exc_uid = "AAMk-master-1"  # override uid = seriesMasterId
-    assert exc_uid in by_uid
-    assert by_uid[exc_uid].summary == "Weekly standup"
-    assert by_uid[exc_uid].description == "team standup"
-    assert by_uid[exc_uid].location == "Zoom"
-    assert by_uid[exc_uid].recurrence_id is not None
-    # Single instance with its own subject is untouched (uid comes from "id" field).
-    assert by_uid["AAMk-single"].summary == "One-off"
+    assert overrides[0].event.summary == "Weekly standup"
+    assert overrides[0].event.description == "team standup"
+    assert overrides[0].event.location == "Zoom"
+    # Single instance with its own subject is untouched.
+    assert singles[0].event.summary == "One-off"
 
 
 @pytest.mark.asyncio
-async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
-    """If an occurrence already has its own subject (e.g. user edited that
-    one instance), don't waste a request fetching the master."""
+async def test_drain_delta_fetches_master_for_occurrence_regardless_of_subject() -> None:
+    """Occurrences always trigger a master fetch for synthesis, even when the
+    occurrence already has its own subject. Without the master we'd have no rrule."""
     delta_body = {
         "value": [
             {
@@ -914,14 +916,14 @@ async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
     async for _batch, _cursor in backend.initial_sync("cal-1"):
         pass
 
-    assert batch_calls == []
+    # Master fetch is attempted even though the occurrence has its own subject.
+    assert len(batch_calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_drain_delta_cross_page_master_cache() -> None:
     """The same seriesMasterId appearing on two delta pages (as exceptions)
-    should trigger exactly one $batch call total, not one per page.
-    Plain occurrences are skipped — they don't trigger hydration."""
+    should trigger exactly one $batch call total, not one per page."""
     import json as _json
 
     exc = {
@@ -1215,6 +1217,28 @@ def test_event_to_change_exception_returns_override_event() -> None:
     assert ev.summary == "Standup (moved)"
 
 
+def test_event_to_change_exception_without_original_start_returns_none() -> None:
+    """Attendee-view exceptions lack originalStart; they must be dropped rather than
+    overwriting the seriesMaster row (which has recurrence_id='')."""
+    data = {
+        "id": "AAMk-exc-attendee",
+        "subject": "Standup",
+        "type": "exception",
+        "seriesMasterId": "AAMk-master",
+        # originalStart intentionally absent — attendee view from Graph
+        "start": {
+            "dateTime": "2026-05-20T15:00:00.0000000",
+            "timeZone": "UTC",
+        },
+        "end": {
+            "dateTime": "2026-05-20T15:30:00.0000000",
+            "timeZone": "UTC",
+        },
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is None
+
+
 # ── recurring: event-to-Graph-JSON write path ─────────────────────────────────
 
 
@@ -1378,3 +1402,302 @@ async def test_create_event_returns_uid_matching_delta() -> None:
         f"Expected uid=AAMk-new (the Graph id), got {result.uid!r}"
     )
     assert result.provider_event_id == "AAMk-new"
+
+
+# ── seriesMaster synthesis from occurrences ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_synthesizes_master_for_unknown_occurrence() -> None:
+    """When a delta page contains an occurrence whose seriesMaster isn't in the
+    page, the backend should fetch the master via $batch and emit it as a
+    seriesMaster EventChange so the rrule is captured in the DB."""
+    import json as _json
+
+    delta_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-wed",
+                "iCalUId": "uid-weekly-wed@outlook.com",
+                "subject": "Katie / Lili",
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-wed",
+                "start": {"dateTime": "2026-05-13T13:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-13T14:00:00.0000000", "timeZone": "UTC"},
+            }
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl",
+    }
+    master_body = {
+        "id": "AAMk-master-wed",
+        "iCalUId": "uid-weekly-wed@outlook.com",
+        "subject": "Katie / Lili",
+        "type": "seriesMaster",
+        "start": {"dateTime": "2024-01-03T13:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2024-01-03T14:00:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["wednesday"]},
+            "range": {"type": "noEnd", "startDate": "2024-01-03"},
+        },
+    }
+
+    batch_calls: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "/$batch" in str(req.url):
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            responses = [
+                {"id": r["id"], "status": 200, "body": master_body}
+                for r in body["requests"]
+                if r["id"] == "AAMk-master-wed"
+            ]
+            return httpx.Response(200, json={"responses": responses})
+        return httpx.Response(200, json=delta_body)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    collected = []
+    async for batch, _cursor in backend.initial_sync("cal-1"):
+        collected.extend(batch)
+
+    # The occurrence was dropped; the synthesized seriesMaster was emitted.
+    assert len(batch_calls) == 1
+    assert len(collected) == 1
+    change = collected[0]
+    assert change.uid == "AAMk-master-wed"
+    assert change.event.rrule is not None
+    assert "FREQ=WEEKLY" in change.event.rrule
+    assert "BYDAY=WE" in change.event.rrule
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_synthesized_master_dedup_across_pages() -> None:
+    """A seriesMaster fetched on page 1 must not be re-fetched or re-emitted
+    when the same seriesMasterId appears on page 2."""
+    import json as _json
+
+    occ = {
+        "subject": "Katie / Lili",
+        "type": "occurrence",
+        "seriesMasterId": "AAMk-master-wed",
+        "start": {"dateTime": "2026-05-13T13:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T14:00:00.0000000", "timeZone": "UTC"},
+    }
+    master_body = {
+        "id": "AAMk-master-wed",
+        "iCalUId": "uid-weekly-wed@outlook.com",
+        "subject": "Katie / Lili",
+        "type": "seriesMaster",
+        "start": {"dateTime": "2024-01-03T13:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2024-01-03T14:00:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["wednesday"]},
+            "range": {"type": "noEnd", "startDate": "2024-01-03"},
+        },
+    }
+    page1 = {
+        "value": [{**occ, "id": "AAMk-occ-p1"}],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/page2",
+    }
+    page2 = {
+        "value": [
+            {
+                **occ,
+                "id": "AAMk-occ-p2",
+                "start": {"dateTime": "2026-05-20T13:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-20T14:00:00.0000000", "timeZone": "UTC"},
+            }
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl",
+    }
+
+    batch_calls: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "/$batch" in url:
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "responses": [
+                        {"id": r["id"], "status": 200, "body": master_body}
+                        for r in body["requests"]
+                    ]
+                },
+            )
+        if "page2" in url:
+            return httpx.Response(200, json=page2)
+        return httpx.Response(200, json=page1)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    all_changes: list = []
+    async for batch, _cursor in backend.initial_sync("cal-1"):
+        all_changes.extend(batch)
+
+    # Master fetched once from page 1 only; page 2 reuses cache.
+    assert len(batch_calls) == 1
+    # Only one seriesMaster EventChange emitted (from page 1); occurrences dropped.
+    masters_emitted = [c for c in all_changes if c.event.rrule is not None]
+    assert len(masters_emitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_skips_synthesis_when_master_in_page() -> None:
+    """When the seriesMaster is already in the delta page no $batch call is made."""
+    import json as _json
+
+    delta_body = {
+        "value": [
+            {
+                "id": "AAMk-master-w",
+                "iCalUId": "uid-w@outlook.com",
+                "subject": "Weekly standup",
+                "type": "seriesMaster",
+                "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+                "recurrence": {
+                    "pattern": {
+                        "type": "weekly",
+                        "interval": 1,
+                        "daysOfWeek": ["wednesday"],
+                    },
+                    "range": {"type": "noEnd", "startDate": "2026-05-13"},
+                },
+            },
+            {
+                "id": "AAMk-occ-w",
+                "iCalUId": "uid-w@outlook.com",
+                "subject": "Weekly standup",
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-w",
+                "start": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-20T09:30:00.0000000", "timeZone": "UTC"},
+            },
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl",
+    }
+
+    batch_calls: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "/$batch" in str(req.url):
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            return httpx.Response(200, json={"responses": []})
+        return httpx.Response(200, json=delta_body)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    collected = []
+    async for batch, _cursor in backend.initial_sync("cal-1"):
+        collected.extend(batch)
+
+    # No $batch call — master was already in the page.
+    assert len(batch_calls) == 0
+    # One EventChange: the seriesMaster. Occurrence is dropped.
+    assert len(collected) == 1
+    assert collected[0].uid == "AAMk-master-w"
+    assert collected[0].event.rrule is not None
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_exception_hydration_still_works() -> None:
+    """Regression guard: exceptions still inherit subject from master, AND the
+    master is now also emitted as its own EventChange (new behavior). The
+    occurrence in the same page is still dropped."""
+    import json as _json
+
+    delta_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-1",
+                "subject": None,
+                "type": "occurrence",
+                "seriesMasterId": "AAMk-master-1",
+                "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+            },
+            {
+                "id": "AAMk-exc-1",
+                "subject": "",
+                "body": {"contentType": "text", "content": ""},
+                "location": {"displayName": ""},
+                "type": "exception",
+                "seriesMasterId": "AAMk-master-1",
+                "originalStart": {
+                    "dateTime": "2026-05-20T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+                "start": {"dateTime": "2026-05-20T10:00:00.0000000", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-05-20T10:30:00.0000000", "timeZone": "UTC"},
+            },
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl",
+    }
+    master_body = {
+        "id": "AAMk-master-1",
+        "subject": "Weekly standup",
+        "body": {"contentType": "text", "content": "standup notes"},
+        "location": {"displayName": "Zoom"},
+        "type": "seriesMaster",
+        "start": {"dateTime": "2024-01-03T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2024-01-03T09:30:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["wednesday"]},
+            "range": {"type": "noEnd", "startDate": "2024-01-03"},
+        },
+    }
+
+    batch_calls: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "/$batch" in str(req.url):
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "responses": [
+                        {"id": r["id"], "status": 200, "body": master_body}
+                        for r in body["requests"]
+                    ]
+                },
+            )
+        return httpx.Response(200, json=delta_body)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    collected = []
+    async for batch, _cursor in backend.initial_sync("cal-1"):
+        collected.extend(batch)
+
+    # One $batch call for the shared master (occurrence + exception both reference it,
+    # but only one fetch is needed).
+    assert len(batch_calls) == 1
+
+    # Three rows in page, two processed: synthesized master + exception override.
+    # Occurrence is dropped.
+    assert len(collected) == 2
+
+    # Separate by recurrence_id presence — both have uid == "AAMk-master-1".
+    overrides = [c for c in collected if c.event.recurrence_id is not None]
+    masters = [c for c in collected if c.event.recurrence_id is None]
+    assert len(overrides) == 1
+    assert len(masters) == 1
+
+    # Synthesized seriesMaster carries rrule.
+    assert masters[0].event.rrule is not None
+    assert "BYDAY=WE" in masters[0].event.rrule
+
+    # Exception override inherited subject/description/location from master.
+    assert overrides[0].event.summary == "Weekly standup"
+    assert overrides[0].event.description == "standup notes"
+    assert overrides[0].event.location == "Zoom"

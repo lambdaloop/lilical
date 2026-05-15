@@ -545,6 +545,13 @@ def _graph_event_to_change(
             ),
             field="originalStart",
         )
+        if recurrence_id is None:
+            # Graph omits originalStart for attendee-view exceptions (the caller
+            # is not the organizer). Without it we can't anchor the override to
+            # the right occurrence slot; if we store it with recurrence_id=""
+            # it collides with and overwrites the seriesMaster row, destroying
+            # the rrule. Skip — the master's expansion covers all occurrences.
+            return None
 
     event = Event(
         uid=uid,
@@ -933,7 +940,7 @@ class GraphBackend:
             resp = await self._request("GET", next_url)
             data = resp.json()
             events = data.get("value", [])
-            await self._hydrate_occurrences_from_master(events, masters_cache)
+            await self._hydrate_and_synthesize_masters(events, masters_cache)
             batch = [
                 c
                 for c in (_graph_event_to_change(ev, calendar_id) for ev in events)
@@ -967,38 +974,63 @@ class GraphBackend:
                 log.exception("$batch fetch failed for %d masters", len(chunk))
         return result
 
-    async def _hydrate_occurrences_from_master(
+    async def _hydrate_and_synthesize_masters(
         self,
         events: list[dict[str, object]],
         masters_cache: dict[str, dict[str, object]],
     ) -> None:
-        """Fill in subject/body/location on calendarView occurrences that
-        share their data with a seriesMaster.
+        """Fetch missing seriesMaster rows and inject them into the events list.
 
-        calendarView/delta pre-expands recurring events and only populates
-        fields like `subject` on occurrences that have been individually
-        edited — for an unmodified weekly meeting Graph returns blank
-        subject/body/location and expects the caller to pull them from the
-        master via `seriesMasterId`. Masters are fetched in a single $batch
-        call and cached in `masters_cache` across pages so multi-page syncs
-        never re-fetch the same master.
+        calendarView/delta pre-expands recurring series into occurrence rows
+        and only returns the seriesMaster directly when its DTSTART falls
+        inside the calendar view window. For long-running series (started
+        more than a year ago) the seriesMaster is absent; occurrences carry
+        only a `seriesMasterId` back-reference. Without the master we have no
+        rrule and the entire series becomes invisible.
+
+        For every occurrence or exception whose seriesMasterId isn't already
+        in the current page or in the cross-page `masters_cache`, we fetch
+        the master via $batch and inject the JSON into `events` so the
+        downstream _graph_event_to_change pass produces a seriesMaster
+        EventChange with rrule populated. Masters already in the page (id
+        present in existing events) are skipped. The cache prevents re-fetching
+        the same master on subsequent pages.
+
+        Subject/body/location are also hydrated onto exception rows as before.
         """
+        # IDs of seriesMaster events already present in this page.
+        masters_in_page: set[str] = {
+            cast("str", ev.get("id") or "")
+            for ev in events
+            if str(ev.get("type") or "").lower() == "seriesmaster"
+        }
+
         master_ids: set[str] = set()
         for ev in events:
             if "@removed" in ev:
                 continue
-            # Skip plain occurrences — they are dropped in _graph_event_to_change;
-            # no need to pay a $batch round-trip just to fill in fields we discard.
-            if str(ev.get("type") or "").lower() == "occurrence":
+            ev_type = str(ev.get("type") or "").lower()
+            smi = cast("str", ev.get("seriesMasterId") or "")
+            if not smi:
                 continue
-            if not cast("str", ev.get("subject") or "").strip():
-                smi = cast("str", ev.get("seriesMasterId") or "")
-                if smi and smi not in masters_cache:
-                    master_ids.add(smi)
+            # Already in the page or already cached — no fetch needed.
+            if smi in masters_in_page or smi in masters_cache:
+                continue
+            # Collect from both occurrences (to synthesize master) and
+            # exceptions (to hydrate subject + synthesize master).
+            if ev_type in {"occurrence", "exception"}:
+                master_ids.add(smi)
+
         if master_ids:
             fetched = await self._graph_batch_get(list(master_ids))
             masters_cache.update(fetched)
+            # Inject fetched seriesMasters into the events list so
+            # _graph_event_to_change produces EventChange rows with rrule.
+            for mid, master_json in fetched.items():
+                if str(master_json.get("type") or "").lower() == "seriesmaster":
+                    events.append(master_json)
 
+        # Hydrate subject/body/location onto exception rows whose fields are blank.
         for ev in events:
             mid = cast("str", ev.get("seriesMasterId") or "")
             if not mid or mid not in masters_cache:

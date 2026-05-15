@@ -207,7 +207,6 @@ class MonthView(QGraphicsView):
         self._grid = MonthGrid(now.year, now.month)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
-        self.refresh()
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -301,6 +300,7 @@ class MonthView(QGraphicsView):
             log.exception("MonthView: failed to query instances")
             return
 
+        events = self._store.events_for_instances(instances)
         # Precompute calendar colours.
         cal_color: dict[str, str | None] = {}
 
@@ -364,7 +364,7 @@ class MonthView(QGraphicsView):
         multi_spans.sort(key=lambda x: ((x[1] - x[0]).days, x[0]), reverse=True)
 
         for s_day, e_day, inst in multi_spans:
-            event = self._store.get_event_for_instance(inst)  # type: ignore[reportArgumentType]
+            event = events.get(id(inst))
             if event is None:
                 continue
             try:
@@ -488,7 +488,7 @@ class MonthView(QGraphicsView):
                     break
                 track = free_tracks[shown]
                 shown += 1
-                event = self._store.get_event_for_instance(inst)
+                event = events.get(id(inst))
                 if event is None:
                     continue
                 if inst.calendar_id not in cal_color:

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=75"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "lilical"
@@ -15,6 +15,9 @@ lilical = "lilical.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+lilical = ["ui/styles/*.qss", "ui/styles/*.svg"]
 
 [tool.ruff]
 line-length = 88

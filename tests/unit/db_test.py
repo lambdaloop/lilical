@@ -35,7 +35,7 @@ def test_open_engine_sets_busy_timeout(tmp_path: Path) -> None:
     engine = open_engine(str(tmp_path / "test.db"))
     with engine.connect() as conn:
         result = conn.exec_driver_sql("PRAGMA busy_timeout").fetchone()
-    assert result[0] == 5000
+    assert result[0] == 30000
 
 
 def test_ensure_schema_creates_required_tables(tmp_path: Path) -> None:

@@ -49,6 +49,8 @@ migrations/versions/*.pyc
 # Environment & secrets
 .env
 *.enc
+oauth_credentials.json
+src/lilical/_oauth_embedded.py
 
 # Logs
 *.log

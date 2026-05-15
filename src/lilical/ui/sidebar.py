@@ -4,7 +4,7 @@ from datetime import date
 from functools import partial
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction, QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -14,6 +14,9 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -70,6 +73,58 @@ class _CalendarSwatch(QToolButton):
         self.color_changed.emit(self._calendar_id, new_hex)
 
 
+class _ElidedLabel(QLabel):
+    """QLabel that elides text with '…' when narrower than its content."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setToolTip(text)
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        super().setText(text)
+
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        self._full_text = text
+        self.setToolTip(text)
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        painter = QPainter(self)
+        fm = QFontMetrics(self.font())
+        elided = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight, self.width())
+        painter.drawText(
+            self.rect(),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            elided,
+        )
+
+
+class _ElidedCheckBox(QCheckBox):
+    """QCheckBox that elides its label with '…' when the row is narrowed."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._full_text = text
+        self.setToolTip(text)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def paintEvent(self, event) -> None:  # noqa: ANN001
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        fm = QFontMetrics(self.font())
+        style = self.style()
+        indicator_w = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, opt, self)
+        spacing = style.pixelMetric(QStyle.PixelMetric.PM_CheckBoxLabelSpacing, opt, self)
+        text_w = max(0, self.width() - indicator_w - spacing - 4)
+        opt.text = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight, text_w)
+        painter = QPainter(self)
+        style.drawControl(QStyle.ControlElement.CE_CheckBox, opt, painter, self)
+
+
 class Sidebar(QWidget):
     rename_account_requested = Signal(str)
     reauth_account_requested = Signal(str)
@@ -87,7 +142,8 @@ class Sidebar(QWidget):
         super().__init__()
         self._store = store
         self._add_account_callback = add_account_callback
-        self.setFixedWidth(240)
+        self.setMinimumWidth(180)
+        self.setMaximumWidth(420)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -131,6 +187,7 @@ class Sidebar(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_widget = QWidget()
         self._cal_layout = QVBoxLayout(self._scroll_widget)
         self._cal_layout.setContentsMargins(0, 0, 0, 0)
@@ -209,16 +266,17 @@ class Sidebar(QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(4)
 
-        label = QLabel(account.display_name)
+        label = _ElidedLabel(account.display_name)
         label.setStyleSheet("font-weight: bold;")
         label.setToolTip(f"{account.identity} ({account.kind})")
         h.addWidget(label, 1)
 
         menu_btn = QToolButton()
-        menu_btn.setText("⋯")
+        menu_btn.setObjectName("account-menu-btn")
+        menu_btn.setText("⋮")
         menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu_btn.setStyleSheet("QToolButton::menu-indicator { image: none; }")
-        menu_btn.setAutoRaise(True)
+        menu_btn.setFixedSize(24, 22)
+        menu_btn.setToolTip("Account actions")
         menu = QMenu(menu_btn)
 
         account_id = account.id
@@ -259,7 +317,7 @@ class Sidebar(QWidget):
             swatch.color_changed.connect(self._on_calendar_color_changed)
             row_h.addWidget(swatch)
 
-            cb = QCheckBox(cal.display_name)
+            cb = _ElidedCheckBox(cal.display_name)
             cb.setObjectName("cal-cb")
             cb.setChecked(bool(cal.is_visible))
             cb.toggled.connect(

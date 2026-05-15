@@ -89,7 +89,7 @@ class SyncEngine(QObject):
         self._tasks[account_id] = asyncio.create_task(self._run_account(acc))
 
     async def _run_account(self, account) -> None:
-        backend = self._factory(account)
+        backend = await asyncio.to_thread(self._factory, account)
         wake = self._wake_events[account.id] = asyncio.Event()
         delay = 0
         try:
@@ -250,7 +250,8 @@ class SyncEngine(QObject):
             if cursor is None:
                 cal_count = 0
                 async for changes, new_cur in backend.initial_sync(cal.provider_id):
-                    applied = self._store.apply_remote_changes(
+                    applied = await asyncio.to_thread(
+                        self._store.apply_remote_changes,
                         cal.id,
                         changes,
                         json.dumps(new_cur.to_json()),
@@ -262,7 +263,8 @@ class SyncEngine(QObject):
                 changes, new_cur = await backend.incremental_sync(
                     cal.provider_id, cursor
                 )
-                applied = self._store.apply_remote_changes(
+                applied = await asyncio.to_thread(
+                    self._store.apply_remote_changes,
                     cal.id,
                     changes,
                     json.dumps(new_cur.to_json()),
@@ -286,7 +288,8 @@ class SyncEngine(QObject):
                 continue
             cal_count = 0
             async for changes, new_cur in backend.initial_sync(cal.provider_id):
-                applied = self._store.apply_remote_changes(
+                applied = await asyncio.to_thread(
+                    self._store.apply_remote_changes,
                     cal.id,
                     changes,
                     json.dumps(new_cur.to_json()),

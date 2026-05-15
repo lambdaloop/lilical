@@ -428,6 +428,7 @@ class _DayCanvas(QGraphicsView):
             log.exception("DayView: failed to query instances")
             return
 
+        events = self._store.events_for_instances(instances)
         # Count all-day events for band sizing.
         all_day_count = sum(
             1 for inst in instances if inst.all_day and _is_on(inst, self._day)
@@ -449,7 +450,7 @@ class _DayCanvas(QGraphicsView):
         timed_bucket: list[tuple[float, float, dict[str, object]]] = []
 
         for inst in instances:
-            event = self._store.get_event_for_instance(inst)
+            event = events.get(id(inst))
             if event is None:
                 continue
             try:

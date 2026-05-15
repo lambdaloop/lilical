@@ -35,6 +35,20 @@ QToolButton:pressed, QToolButton:checked {
     color: #ffffff;
     border-color: #1e3a8a;
 }
+QToolButton#account-menu-btn {
+    background-color: #f5f5f5;
+    color: #000000;
+    border: 1px solid #808080;
+    border-radius: 3px;
+    padding: 0px;
+    font-size: 14pt;
+    font-weight: bold;
+}
+QToolButton#account-menu-btn:hover {
+    background-color: #e5e5e5;
+    border-color: #000000;
+}
+QToolButton#account-menu-btn::menu-indicator { image: none; }
 
 QStatusBar {
     background-color: #f5f5f5;

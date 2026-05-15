@@ -361,7 +361,6 @@ class WeekView(QGraphicsView):
         # Pin the sticky header to the viewport top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
 
-        self.refresh()
         # Defer to the next tick so the viewport has a real size by then.
         QTimer.singleShot(0, self._scroll_to_first_event)
 
@@ -589,6 +588,7 @@ class WeekView(QGraphicsView):
             log.exception("WeekView: failed to query instances")
             return
 
+        events = self._store.events_for_instances(instances)
         # First pass: count all-day-per-day to size the all-day band.
         all_day_rows_per_col = [0] * self._day_count
         for inst in instances:
@@ -625,7 +625,7 @@ class WeekView(QGraphicsView):
         ]
 
         for inst in instances:
-            event = self._store.get_event_for_instance(inst)
+            event = events.get(id(inst))
             if event is None:
                 continue
             try:
