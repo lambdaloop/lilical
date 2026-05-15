@@ -413,3 +413,38 @@ QWidget#sidebar QScrollBar:vertical {
 QWidget#sidebar QScrollBar::handle:vertical {
     min-height: 18px;
 }
+
+/* Day-count slider in week view toolbar */
+QSlider::groove:horizontal {
+    background: #262626;
+    border: 1px solid #3a3a3a;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::sub-page:horizontal {
+    background: #3b82f6;
+    border: 1px solid #3b82f6;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::add-page:horizontal {
+    background: #262626;
+    border: 1px solid #3a3a3a;
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #7eb5ff;
+    border: 1px solid #7eb5ff;
+    width: 12px;
+    margin: -5px 0;
+    border-radius: 6px;
+}
+QSlider::handle:horizontal:hover {
+    background: #a6cdff;
+    border-color: #a6cdff;
+}
+QSlider::handle:horizontal:pressed {
+    background: #ffffff;
+    border-color: #ffffff;
+}

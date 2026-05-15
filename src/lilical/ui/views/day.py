@@ -62,6 +62,7 @@ class DayGrid(QGraphicsItem):
         self._width = width
         self._px_per_hour = px_per_hour
         self._all_day_band_h = all_day_band_h
+        self.setZValue(-10)
 
     def grid_height(self) -> float:
         return DAY_HEADER_H + self._all_day_band_h + HOURS * self._px_per_hour

@@ -366,8 +366,7 @@ class MainWindow(QMainWindow):
         self._day_count_slider.setMaximum(len(VALID_DAY_COUNTS) - 1)
         self._day_count_slider.setSingleStep(1)
         self._day_count_slider.setPageStep(1)
-        self._day_count_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._day_count_slider.setTickInterval(1)
+        self._day_count_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self._day_count_slider.setFixedWidth(110)
         # Restore last-used value, default 7.
         saved_dc = int(self._settings.value("week_day_count", 7) or 7)  # type: ignore[reportArgumentType]
@@ -376,6 +375,12 @@ class MainWindow(QMainWindow):
         self._day_count_slider.setValue(VALID_DAY_COUNTS.index(saved_dc))
         self._day_count_slider.valueChanged.connect(self._on_day_count_changed)
         tb.addWidget(self._day_count_slider)
+
+        self._pending_day_count: int = saved_dc
+        self._day_count_debounce = QTimer(self)
+        self._day_count_debounce.setSingleShot(True)
+        self._day_count_debounce.setInterval(80)
+        self._day_count_debounce.timeout.connect(self._apply_pending_day_count)
 
         self._day_count_value_label = QLabel(str(saved_dc))
         # Fixed width so "1" vs "14" doesn't change the toolbar's min size.
@@ -654,9 +659,13 @@ class MainWindow(QMainWindow):
         n = VALID_DAY_COUNTS[slider_value]
         self._day_count_value_label.setText(str(n))
         self._settings.setValue("week_day_count", n)
+        self._pending_day_count = n
+        self._day_count_debounce.start()
+
+    def _apply_pending_day_count(self) -> None:
         week_view = self._views.get("Week")
         if isinstance(week_view, WeekView):
-            week_view.set_day_count(n)
+            week_view.set_day_count(self._pending_day_count)
             self._update_range_label()
 
     # ── Events ─────────────────────────────────────────────────────────────
