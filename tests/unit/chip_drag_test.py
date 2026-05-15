@@ -120,7 +120,7 @@ def test_body_drag_emits_progress_and_committed(qapp):
 
 
 def test_click_without_drag_emits_details_requested(qapp):
-    """Press+release without exceeding threshold → details_requested (no drag signals)."""
+    """Press+release without exceeding threshold → details_requested (no drag signals)."""  # noqa: E501
     from PySide6.QtCore import QPointF
 
     chip = _make_chip()
@@ -145,9 +145,8 @@ def test_click_without_drag_emits_details_requested(qapp):
 
 
 def test_double_click_emits_no_signals(qapp):
-    """Left double-click is swallowed — neither details_requested nor edit_requested fires."""
-    from PySide6.QtCore import QPointF
-    from PySide6.QtCore import Qt
+    """Left double-click is swallowed — neither details_requested nor edit_requested fires."""  # noqa: E501
+    from PySide6.QtCore import QPointF, Qt
     from PySide6.QtWidgets import QGraphicsSceneMouseEvent
 
     chip = _make_chip()

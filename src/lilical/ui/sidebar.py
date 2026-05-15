@@ -24,7 +24,7 @@ from lilical.ui.widgets.mini_month import MiniMonthGrid
 
 
 class _CalendarChip(QToolButton):
-    """Colored chip showing calendar visibility; click to toggle, right-click for color, drag to reorder."""
+    """Colored chip showing calendar visibility; click to toggle, right-click for color, drag to reorder."""  # noqa: E501
 
     visibility_changed = Signal(str, bool)  # calendar_id, is_visible
     color_changed = Signal(str, str)  # calendar_id, new_hex
@@ -50,19 +50,18 @@ class _CalendarChip(QToolButton):
         self._apply_style()
         self.clicked.connect(self._on_clicked)
 
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
-        if self._drag_start_pos is not None:
-            if (
-                event.pos() - self._drag_start_pos
-            ).manhattanLength() >= QApplication.startDragDistance():
-                self._drag_start_pos = None
-                self._start_drag(event)
-                return
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._drag_start_pos is not None and (
+            event.pos() - self._drag_start_pos
+        ).manhattanLength() >= QApplication.startDragDistance():
+            self._drag_start_pos = None
+            self._start_drag(event)
+            return
         super().mouseMoveEvent(event)
 
     def _start_drag(self, event) -> None:  # noqa: ANN001
@@ -106,7 +105,7 @@ class _CalendarChip(QToolButton):
         self._apply_style()
         self.visibility_changed.emit(self._calendar_id, self._visible)
 
-    def contextMenuEvent(self, event) -> None:  # noqa: ANN001
+    def contextMenuEvent(self, event) -> None:  # noqa: ANN001, N802
         initial = QColor(self._color)
         if not initial.isValid():
             initial = QColor("#5e9fff")
@@ -136,19 +135,18 @@ class _AccountHeader(QWidget):
         self._drag_start_pos: QPoint | None = None
         self.setObjectName("account-header")
 
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
-        if self._drag_start_pos is not None:
-            if (
-                event.pos() - self._drag_start_pos
-            ).manhattanLength() >= QApplication.startDragDistance():
-                self._drag_start_pos = None
-                self._start_drag(event)
-                return
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._drag_start_pos is not None and (
+            event.pos() - self._drag_start_pos
+        ).manhattanLength() >= QApplication.startDragDistance():
+            self._drag_start_pos = None
+            self._start_drag(event)
+            return
         super().mouseMoveEvent(event)
 
     def _start_drag(self, event) -> None:  # noqa: ANN001
@@ -190,13 +188,13 @@ class _ElidedLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         super().setText(text)
 
-    def setText(self, text: str) -> None:  # type: ignore[override]
+    def setText(self, text: str) -> None:  # noqa: N802, type: ignore[override]
         self._full_text = text
         self.setToolTip(text)
         super().setText(text)
         self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: ANN001
+    def paintEvent(self, event) -> None:  # noqa: ANN001, N802
         painter = QPainter(self)
         fm = QFontMetrics(self.font())
         elided = fm.elidedText(
@@ -532,7 +530,7 @@ class Sidebar(QWidget):
 
     # ── Drag-and-drop reordering ───────────────────────────────────────────
 
-    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         mime = event.mimeData()
         if mime.hasFormat("application/x-lilical-account-drag"):
             self._drag_kind = "account"
@@ -558,22 +556,23 @@ class Sidebar(QWidget):
         self._drag_active = True
         if self._scroll_timer is not None:
             self._scroll_timer.stop()
-        self._scroll_timer = QTimer(self)
-        self._scroll_timer.timeout.connect(self._on_auto_scroll)
-        self._scroll_timer.start(30)
+        timer = QTimer(self)
+        timer.timeout.connect(self._on_auto_scroll)
+        timer.start(30)
+        self._scroll_timer = timer
         event.accept()
 
-    def dragMoveEvent(self, event) -> None:  # noqa: ANN001
+    def dragMoveEvent(self, event) -> None:  # noqa: ANN001, N802
         self._update_drop_indicator(event)
         event.accept()
 
-    def dragLeaveEvent(self, event) -> None:  # noqa: ANN001
+    def dragLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hide_drop_indicator()
         self._stop_auto_scroll()
         self._drag_active = False
         event.accept()
 
-    def dropEvent(self, event) -> None:  # noqa: ANN001
+    def dropEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hide_drop_indicator()
         self._stop_auto_scroll()
         self._drag_active = False

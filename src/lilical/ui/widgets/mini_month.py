@@ -129,9 +129,7 @@ class MiniMonthGrid(QGraphicsView):
                 QTextOption(Qt.AlignmentFlag.AlignHCenter)
             )
             item.setPos(x, y + (ch - item.boundingRect().height()) / 2)
-            if cur == today:
-                item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
-            elif in_range:
+            if cur == today or in_range:
                 item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
             else:
                 item.setDefaultTextColor(QColor(theme.TEXT_SECONDARY))

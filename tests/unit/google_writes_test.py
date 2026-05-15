@@ -7,7 +7,6 @@ import json
 from datetime import datetime, timezone
 
 import httpx
-import pytest
 
 from lilical.backends._google_serializer import event_to_google_body
 from lilical.models.event import Event

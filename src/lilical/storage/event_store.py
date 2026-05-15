@@ -155,9 +155,8 @@ class EventStore(QObject):
 
     @contextlib.contextmanager
     def _write_session(self):
-        with self._write_lock:
-            with Session(self._engine) as s, s.begin():
-                yield s
+        with self._write_lock, Session(self._engine) as s, s.begin():
+            yield s
 
     def rebuild_all_instances(self) -> None:
         now = datetime.now(timezone.utc)

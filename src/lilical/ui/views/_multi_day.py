@@ -26,7 +26,7 @@ def multi_day_span(inst) -> tuple[date, date] | None:
         end_day = end_day - timedelta(days=1)
     if end_day > start_day:
         return start_day, end_day
-    # After adjustment end_day == start_day: catches midnight-to-midnight whole-day events.
+    # After adjustment end_day == start_day: catches midnight-to-midnight whole-day events.  # noqa: E501
     if t.time() == time.min and et.time() == time.min:
         return start_day, start_day
     return None

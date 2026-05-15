@@ -167,9 +167,9 @@ class MainWindow(QMainWindow):
         self._secrets = secrets
         self._current_view: QWidget | None = None
         self._view_actions: dict[str, QAction] = {}
-        # Account display names for sync-status labels (legacy; kept alongside _account_meta).
+        # Account display names for sync-status labels (legacy; kept alongside _account_meta).  # noqa: E501
         self._account_display_names: dict[str, str] = {}
-        # Per-account metadata for sidebar tooltips: id → (display_name, identity, kind).
+        # Per-account metadata for sidebar tooltips: id → (display_name, identity, kind).  # noqa: E501
         self._account_meta: dict[str, tuple[str, str, str]] = {}
         # Per-calendar metadata snapshot; rebuilt off-thread after sync ticks.
         self._cal_info: dict[str, CalInfo] = {}
@@ -1039,7 +1039,7 @@ class MainWindow(QMainWindow):
         )
         label = display_name or identity or ""
         self._account_display_names[account_id] = label
-        self._account_meta[account_id] = (label, identity, kind)
+        self._account_meta[account_id] = (label, identity or "", kind or "")
         self._sidebar.refresh()
         self._fire_async(
             self._sync.start_account(account_id), f"start_account/{account_id}"

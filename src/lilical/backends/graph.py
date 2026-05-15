@@ -1026,7 +1026,7 @@ class GraphBackend:
             masters_cache.update(fetched)
             # Inject fetched seriesMasters into the events list so
             # _graph_event_to_change produces EventChange rows with rrule.
-            for mid, master_json in fetched.items():
+            for _mid, master_json in fetched.items():
                 if str(master_json.get("type") or "").lower() == "seriesmaster":
                     events.append(master_json)
 

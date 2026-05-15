@@ -317,7 +317,7 @@ def _compute_day_placements(
     cal_color = data["cal_color"]
     day = data["day"]
 
-    # Count band occupants: true all-day events and multi-day timed events covering this day.
+    # Count band occupants: true all-day events and multi-day timed events covering this day.  # noqa: E501
     all_day_count = 0
     for inst in instances:
         if inst.all_day and _is_on(inst, day):

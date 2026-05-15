@@ -387,7 +387,7 @@ def _compute_week_placements(
 
     # Collect band items (all-day + multi-day timed) and single-day timed instances.
     # band_items: (start_col, end_col, inst, inst_t, span_or_None)
-    #   span_or_None is the (s_day, e_day) from multi_day_span for multi-day items, None for all-day.
+    #   span_or_None is the (s_day, e_day) from multi_day_span for multi-day items, None for all-day.  # noqa: E501
     band_items: list[tuple[int, int, object, datetime, tuple | None]] = []
     timed_instances: list[tuple[object, datetime]] = []
 

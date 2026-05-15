@@ -191,7 +191,9 @@ class RecurrenceEditor(QWidget):
             self._rb_never.setChecked(True)
 
 
-_BYDAY_NAME = dict(zip(_BYDAY_CODES, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]))
+_BYDAY_NAME = dict(
+    zip(_BYDAY_CODES, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], strict=True)
+)
 
 
 def format_rrule_human(rrule: str) -> str:
@@ -214,7 +216,7 @@ def format_rrule_human(rrule: str) -> str:
         if freq not in freq_map:
             return rrule
 
-        singular, unit_s, unit_p = freq_map[freq]
+        singular, _, unit_p = freq_map[freq]
         base = singular if interval == 1 else f"Every {interval} {unit_p}"
 
         if freq == "WEEKLY" and "BYDAY" in props:

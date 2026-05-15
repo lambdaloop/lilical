@@ -5,7 +5,7 @@ import contextlib
 import json
 import logging
 import random
-from typing import Any
+from typing import Any, cast
 
 from PySide6.QtCore import QObject, Signal
 
@@ -231,14 +231,14 @@ class SyncEngine(QObject):
                 log.warning("delete_instance op missing recurrence_id for %s", op.uid)
 
     async def _initial_sync_cal(self, account_id: str, cal, backend) -> int:
-        """Initial-sync one calendar, pre-fetching the next page during each DB write."""
-        _DONE = object()
+        """Initial-sync one calendar, pre-fetching the next page during each DB write."""  # noqa: E501
+        _done = object()
 
         async def _next(gen):
             try:
                 return await gen.__anext__()
             except StopAsyncIteration:
-                return _DONE
+                return _done
 
         gen = backend.initial_sync(cal.provider_id)
         fetch = asyncio.create_task(_next(gen))
@@ -246,9 +246,9 @@ class SyncEngine(QObject):
         try:
             while True:
                 result = await fetch
-                if result is _DONE:
+                if result is _done:
                     break
-                changes, new_cur = result
+                changes, new_cur = cast("tuple[list, Any]", result)
                 fetch = asyncio.create_task(_next(gen))
                 applied = await asyncio.to_thread(
                     self._store.apply_remote_changes,
@@ -293,7 +293,7 @@ class SyncEngine(QObject):
                 await asyncio.to_thread(self._store.delete_pending_op, op.id)
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
-        # 2) Pull incremental changes per calendar (parallel, bounded to _CAL_CONCURRENCY)
+        # 2) Pull incremental changes per calendar (parallel, bounded to _CAL_CONCURRENCY)  # noqa: E501
         from lilical.sync.cursor import cursor_from_json
 
         cals = await asyncio.to_thread(self._store.list_calendars, account.id, True)
@@ -325,7 +325,7 @@ class SyncEngine(QObject):
         for r in results:
             if isinstance(r, int):
                 n_changes += r
-            elif isinstance(r, BaseException):
+            else:
                 raise r
 
         self.sync_finished.emit(account.id, n_changes)

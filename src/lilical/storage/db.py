@@ -15,7 +15,7 @@ def _project_root() -> Path:
 
     # Inside a PyInstaller bundle all data files land in sys._MEIPASS.
     if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS)
+        return Path(sys._MEIPASS)  # type: ignore[reportAttributeAccessIssue]
     # Inside a Flatpak sandbox alembic.ini and migrations/ are installed here.
     if os.environ.get("FLATPAK_ID"):
         return Path("/app/share/lilical")
@@ -28,7 +28,7 @@ def open_engine(db_path: str) -> Engine:
         connect_args={"check_same_thread": False},
     )
 
-    @event.listens_for(engine, "connect")
+    @event.listens_for(engine, "connect")  # type: ignore[reportUntypedFunctionDecorator]
     def _pragmas(conn, _) -> None:  # type: ignore[reportUnusedFunction]
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")

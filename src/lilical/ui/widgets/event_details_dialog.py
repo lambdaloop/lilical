@@ -5,14 +5,6 @@ from datetime import timedelta
 from html import escape
 from typing import TYPE_CHECKING
 
-_URL_RE = re.compile(r"(https?://[^\s<>\"{}|\\^`\[\]]+)", re.IGNORECASE)
-# Conservative HTML detection: look for common block/inline tags used by calendar systems.
-_HTML_TAG_RE = re.compile(
-    r"<(?:html|body|p|br|div|span|a|b|i|em|strong|ul|ol|li|h[1-6]|table|tr|td|pre|img)"
-    r"[\s/>]",
-    re.IGNORECASE,
-)
-
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
@@ -28,6 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui.widgets.event_chip import _readable_text_color, _resolve_color
+
+_URL_RE = re.compile(r"(https?://[^\s<>\"{}|\\^`\[\]]+)", re.IGNORECASE)
+# Conservative HTML detection: look for common block/inline tags used by calendar systems.  # noqa: E501
+_HTML_TAG_RE = re.compile(
+    r"<(?:html|body|p|br|div|span|a|b|i|em|strong|ul|ol|li|h[1-6]|table|tr|td|pre|img)"
+    r"[\s/>]",
+    re.IGNORECASE,
+)
 
 if TYPE_CHECKING:
     from lilical.models.event import Event
