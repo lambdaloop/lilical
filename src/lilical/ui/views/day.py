@@ -5,7 +5,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -162,16 +162,48 @@ class DayGrid(QGraphicsItem):
                 f"{hour:02d}:00",
             )
 
-        # Now line.
-        if is_today:
+
+
+class _DayNowLine(QGraphicsItem):
+    """Current-time indicator for Day view, drawn above event chips (z=50)."""
+
+    def __init__(self, grid: DayGrid) -> None:
+        super().__init__()
+        self._grid = grid
+        self._y = 0.0
+        self.setZValue(50)
+
+    def set_grid(self, grid: DayGrid) -> None:
+        self._grid = grid
+        self.refresh()
+
+    def refresh(self) -> None:
+        today = date.today()
+        self.prepareGeometryChange()
+        if today == self._grid._day:
             now = datetime.now().astimezone()
             minutes = now.hour * 60 + now.minute
-            ny = body_top + minutes * self._px_per_hour / 60
-            painter.setPen(QPen(QColor(theme.DANGER), 2))
-            painter.drawLine(int(TIME_AXIS_WIDTH), int(ny), int(self._width), int(ny))
-            painter.setBrush(QColor(theme.DANGER))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(QRectF(TIME_AXIS_WIDTH - 4, ny - 4, 8, 8))
+            self._y = self._grid.hour_top() + minutes * self._grid.px_per_hour / 60
+            self.setVisible(True)
+        else:
+            self.setVisible(False)
+        self.update()
+
+    @override
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, self._y - 5, self._grid._width, 10)
+
+    @override
+    def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self._grid._width
+        line_color = QColor(theme.DANGER)
+        line_color.setAlphaF(0.65)
+        painter.setPen(QPen(line_color, 2))
+        painter.drawLine(int(TIME_AXIS_WIDTH), int(self._y), int(w), int(self._y))
+        painter.setBrush(QColor(theme.DANGER))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRectF(TIME_AXIS_WIDTH - 4, self._y - 4, 8, 8))
 
 
 class _DayStickyHeader(QGraphicsItem):
@@ -491,8 +523,15 @@ class _DayCanvas(QGraphicsView):
         self._scene.addItem(self._grid)
         self._sticky = _DayStickyHeader(self._day, 1)
         self._scene.addItem(self._sticky)
+        self._now_line = _DayNowLine(self._grid)
+        self._scene.addItem(self._now_line)
+        self._now_line.refresh()
         self._scene.setSceneRect(self._grid.boundingRect())
         self._rendered_day = self._day
+
+        self._now_timer = QTimer(self)
+        self._now_timer.timeout.connect(self._now_line.refresh)
+        self._now_timer.start(60_000)
 
         # Keep the sticky header pinned to viewport-top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
@@ -503,6 +542,7 @@ class _DayCanvas(QGraphicsView):
         w = self.viewport().width()
         self._grid.set_width(w)
         self._sticky.set_width(w)
+        self._now_line.refresh()
         self._scene.setSceneRect(0, 0, w, self._grid.grid_height())
         self.refresh(data_dirty=False)
 
@@ -531,6 +571,7 @@ class _DayCanvas(QGraphicsView):
         self._scene.addItem(self._grid)
         self._sticky.set_width(w)
         self._sticky.set_day(self._day)
+        self._now_line.set_grid(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
         self._rendered_day = self._day
 
@@ -545,6 +586,7 @@ class _DayCanvas(QGraphicsView):
             return
         self._px_per_hour = px
         self._grid.set_px_per_hour(px)
+        self._now_line.refresh()
         self._scene.setSceneRect(self._grid.boundingRect())
         self.refresh(data_dirty=False)
 
@@ -615,6 +657,7 @@ class _DayCanvas(QGraphicsView):
             self._grid.set_all_day_band_h(band_h)
             self._sticky.set_all_day_band_h(band_h)
             self._scene.setSceneRect(self._grid.boundingRect())
+            self._now_line.refresh()
         else:
             self._sticky.set_all_day_band_h(band_h)
 
