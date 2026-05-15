@@ -22,6 +22,9 @@ from lilical.storage.secrets import SecretsStore
 log = logging.getLogger(__name__)
 
 
+_CAL_CONCURRENCY = 4  # max parallel calendar syncs per account
+
+
 def _next_backoff(prev: int) -> int:
     base = min(max(prev * 2, 5), 300)
     return int(base * random.uniform(0.5, 1.5))
@@ -150,7 +153,9 @@ class SyncEngine(QObject):
             row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             if row is None:
                 op = await asyncio.to_thread(self._store.get_pending_op, op.id) or op
-                row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
+                row = await asyncio.to_thread(
+                    self._store.get_event, op.uid, op.calendar_id
+                )
             pid = (row.provider_event_id if row else None) or event.provider_event_id
             if not pid:
                 return
@@ -173,10 +178,14 @@ class SyncEngine(QObject):
             row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             if row is None:
                 op = await asyncio.to_thread(self._store.get_pending_op, op.id) or op
-                row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
+                row = await asyncio.to_thread(
+                    self._store.get_event, op.uid, op.calendar_id
+                )
             pid = row.provider_event_id if row else None
             if not pid:
-                await asyncio.to_thread(self._store.remove_event, op.uid, op.calendar_id)
+                await asyncio.to_thread(
+                    self._store.remove_event, op.uid, op.calendar_id
+                )
                 return
             await backend.delete_event(
                 provider_cal_id, pid, if_match=row.etag if row else op.if_match
@@ -185,7 +194,9 @@ class SyncEngine(QObject):
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
             if event.recurrence_id:
-                master = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
+                master = await asyncio.to_thread(
+                    self._store.get_event, op.uid, op.calendar_id
+                )
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.update_instance(
@@ -206,7 +217,9 @@ class SyncEngine(QObject):
                 from datetime import datetime as _dt
 
                 rid = _dt.fromisoformat(rid_str)
-                master = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
+                master = await asyncio.to_thread(
+                    self._store.get_event, op.uid, op.calendar_id
+                )
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.delete_instance(provider_cal_id, master_pid, rid)
@@ -216,6 +229,41 @@ class SyncEngine(QObject):
                     )
             else:
                 log.warning("delete_instance op missing recurrence_id for %s", op.uid)
+
+    async def _initial_sync_cal(self, account_id: str, cal, backend) -> int:
+        """Initial-sync one calendar, pre-fetching the next page during each DB write."""
+        _DONE = object()
+
+        async def _next(gen):
+            try:
+                return await gen.__anext__()
+            except StopAsyncIteration:
+                return _DONE
+
+        gen = backend.initial_sync(cal.provider_id)
+        fetch = asyncio.create_task(_next(gen))
+        cal_count = 0
+        try:
+            while True:
+                result = await fetch
+                if result is _DONE:
+                    break
+                changes, new_cur = result
+                fetch = asyncio.create_task(_next(gen))
+                applied = await asyncio.to_thread(
+                    self._store.apply_remote_changes,
+                    cal.id,
+                    changes,
+                    json.dumps(new_cur.to_json()),
+                )
+                cal_count += applied
+                self.sync_progress.emit(account_id, cal.display_name, cal_count)
+        except BaseException:
+            fetch.cancel()
+            with contextlib.suppress(BaseException):
+                await fetch
+            raise
+        return cal_count
 
     async def _tick(self, account, backend) -> None:
         self.sync_started.emit(account.id)
@@ -245,28 +293,19 @@ class SyncEngine(QObject):
                 await asyncio.to_thread(self._store.delete_pending_op, op.id)
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
-        # 2) Pull incremental changes per calendar
-        for cal in await asyncio.to_thread(
-            self._store.list_calendars, account.id, True
-        ):
-            from lilical.sync.cursor import cursor_from_json
+        # 2) Pull incremental changes per calendar (parallel, bounded to _CAL_CONCURRENCY)
+        from lilical.sync.cursor import cursor_from_json
 
-            cursor = cursor_from_json(
-                json.loads(cal.sync_cursor) if cal.sync_cursor else None
-            )
-            if cursor is None:
-                cal_count = 0
-                async for changes, new_cur in backend.initial_sync(cal.provider_id):
-                    applied = await asyncio.to_thread(
-                        self._store.apply_remote_changes,
-                        cal.id,
-                        changes,
-                        json.dumps(new_cur.to_json()),
-                    )
-                    n_changes += applied
-                    cal_count += applied
-                    self.sync_progress.emit(account.id, cal.display_name, cal_count)
-            else:
+        cals = await asyncio.to_thread(self._store.list_calendars, account.id, True)
+        sem = asyncio.Semaphore(_CAL_CONCURRENCY)
+
+        async def _sync_one(cal) -> int:
+            async with sem:
+                cursor = cursor_from_json(
+                    json.loads(cal.sync_cursor) if cal.sync_cursor else None
+                )
+                if cursor is None:
+                    return await self._initial_sync_cal(account.id, cal, backend)
                 changes, new_cur = await backend.incremental_sync(
                     cal.provider_id, cursor
                 )
@@ -276,9 +315,18 @@ class SyncEngine(QObject):
                     changes,
                     json.dumps(new_cur.to_json()),
                 )
-                n_changes += applied
                 if applied:
                     self.sync_progress.emit(account.id, cal.display_name, applied)
+                return applied
+
+        results = await asyncio.gather(
+            *[_sync_one(c) for c in cals], return_exceptions=True
+        )
+        for r in results:
+            if isinstance(r, int):
+                n_changes += r
+            elif isinstance(r, BaseException):
+                raise r
 
         self.sync_finished.emit(account.id, n_changes)
 
@@ -293,16 +341,7 @@ class SyncEngine(QObject):
         for cal in cals:
             if calendar_id and cal.provider_id != calendar_id:
                 continue
-            cal_count = 0
-            async for changes, new_cur in backend.initial_sync(cal.provider_id):
-                applied = await asyncio.to_thread(
-                    self._store.apply_remote_changes,
-                    cal.id,
-                    changes,
-                    json.dumps(new_cur.to_json()),
-                )
-                cal_count += applied
-                self.sync_progress.emit(account.id, cal.display_name, cal_count)
+            await self._initial_sync_cal(account.id, cal, backend)
 
 
 def _event_from_payload(payload: str | None):

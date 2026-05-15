@@ -9,8 +9,8 @@ import logging
 import os
 import urllib.parse
 import zoneinfo
-from pathlib import Path
 from collections.abc import AsyncIterator
+from pathlib import Path
 from datetime import date as _date_cls
 from datetime import datetime, time, timezone
 from typing import Any, cast
@@ -33,6 +33,16 @@ from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 log = logging.getLogger(__name__)
 
 GOOGLE_BASE = "https://www.googleapis.com/calendar/v3"
+
+# Minimal field mask for events.list — only what _google_event_to_change reads.
+_EVENTS_LIST_FIELDS = (
+    "nextPageToken,nextSyncToken,"
+    "items(id,iCalUID,etag,status,recurringEventId,summary,description,location,"
+    "htmlLink,transparency,updated,sequence,recurrence,"
+    "start(date,dateTime,timeZone),end(date,dateTime,timeZone),"
+    "originalStartTime(date,dateTime,timeZone),"
+    "attendees(email,self,responseStatus))"
+)
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -500,7 +510,11 @@ class GoogleBackend:
     ):
         import httpx
 
-        token = await asyncio.to_thread(self._acquire_token)
+        # Avoid thread-hop when credentials are still valid (the common case).
+        if self._creds is not None and self._creds.valid:
+            token: str = str(self._creds.token)
+        else:
+            token = await asyncio.to_thread(self._acquire_token)
         hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         if headers:
             hdrs.update(headers)
@@ -557,7 +571,11 @@ class GoogleBackend:
 
     @_classify_errors
     async def list_calendars(self) -> list[dict[str, object]]:
-        resp = await self._request("GET", "/users/me/calendarList")
+        resp = await self._request(
+            "GET",
+            "/users/me/calendarList",
+            params={"fields": "items(id,summary,backgroundColor)"},
+        )
         data = resp.json()
         out = []
         for cal in data.get("items", []):
@@ -583,7 +601,8 @@ class GoogleBackend:
             {
                 "singleEvents": "false",
                 "showDeleted": "true",
-                "maxResults": "250",
+                "maxResults": "2500",
+                "fields": _EVENTS_LIST_FIELDS,
             },
         ):
             yield batch, cursor
@@ -602,7 +621,8 @@ class GoogleBackend:
                 "syncToken": cursor.sync_token,
                 "singleEvents": "false",
                 "showDeleted": "true",
-                "maxResults": "250",
+                "maxResults": "2500",
+                "fields": _EVENTS_LIST_FIELDS,
             },
         ):
             changes.extend(batch)
@@ -683,40 +703,24 @@ class GoogleBackend:
         recurrence_id_dt: datetime,
         event: Event,
     ) -> None:
-        from datetime import timedelta
-
         from lilical.backends._google_serializer import event_to_google_body
 
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        original_start = rid_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         encoded_cal = urllib.parse.quote(calendar_id, safe="")
         encoded_master = urllib.parse.quote(master_provider_id, safe="")
         instances_resp = await self._request(
             "GET",
             f"/calendars/{encoded_cal}/events/{encoded_master}/instances",
-            params={"timeMin": win_start, "timeMax": win_end},
+            params={"originalStart": original_start},
         )
-        instance_id: str | None = None
-        for item in instances_resp.json().get("items", []):
-            start_part = item.get("start") or {}
-            raw = start_part.get("dateTime") or start_part.get("date")
-            if not raw:
-                continue
-            try:
-                item_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            item_utc = item_dt.astimezone(timezone.utc)
-            if abs((item_utc - rid_utc).total_seconds()) < 300:
-                instance_id = item.get("id")
-                break
-
-        if not instance_id:
+        items = instances_resp.json().get("items", [])
+        if not items:
             raise PermanentError(
                 f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
             )
+        instance_id: str = items[0]["id"]
 
         body = event_to_google_body(event)
         encoded_inst = urllib.parse.quote(instance_id, safe="")
@@ -734,38 +738,22 @@ class GoogleBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
     ) -> None:
-        from datetime import timedelta
-
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        original_start = rid_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         encoded_cal = urllib.parse.quote(calendar_id, safe="")
         encoded_master = urllib.parse.quote(master_provider_id, safe="")
         instances_resp = await self._request(
             "GET",
             f"/calendars/{encoded_cal}/events/{encoded_master}/instances",
-            params={"timeMin": win_start, "timeMax": win_end},
+            params={"originalStart": original_start},
         )
-        instance_id: str | None = None
-        for item in instances_resp.json().get("items", []):
-            start_part = item.get("start") or {}
-            raw = start_part.get("dateTime") or start_part.get("date")
-            if not raw:
-                continue
-            try:
-                item_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            item_utc = item_dt.astimezone(timezone.utc)
-            if abs((item_utc - rid_utc).total_seconds()) < 300:
-                instance_id = item.get("id")
-                break
-
-        if not instance_id:
+        items = instances_resp.json().get("items", [])
+        if not items:
             raise PermanentError(
                 f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
             )
+        instance_id: str = items[0]["id"]
 
         encoded_inst = urllib.parse.quote(instance_id, safe="")
         await self._request(
