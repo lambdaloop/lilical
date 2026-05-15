@@ -21,6 +21,7 @@ class Calendar(Base):
     color: Mapped[str] = mapped_column(Text)
     is_primary: Mapped[int] = mapped_column(Integer, default=0)
     is_visible: Mapped[int] = mapped_column(Integer, default=1)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_favorite: Mapped[int] = mapped_column(Integer, default=0)
     access_role: Mapped[str] = mapped_column(Text)
     sync_cursor: Mapped[str | None] = mapped_column(Text)

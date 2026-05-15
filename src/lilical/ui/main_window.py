@@ -222,6 +222,8 @@ class MainWindow(QMainWindow):
             self._on_calendar_visibility_changed
         )
         self._sidebar.calendar_color_changed.connect(self._on_calendar_color_changed)
+        self._sidebar.account_order_changed.connect(self._on_account_order_changed)
+        self._sidebar.calendar_order_changed.connect(self._on_calendar_order_changed)
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
 
         # Top toolbar via QMainWindow's standard API — embedding a QToolBar
@@ -1124,6 +1126,20 @@ class MainWindow(QMainWindow):
     def _on_calendar_color_changed(self, _calendar_id: str, _new_hex: str) -> None:
         # The swatch already persisted via store.set_calendar_color. Just kick
         # the current view to re-paint its chips with the new fallback color.
+        if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
+
+    def _on_account_order_changed(self) -> None:
+        self._account_meta.clear()
+        for acc in self._store.list_accounts():
+            self._account_meta[acc.id] = (acc.display_name, acc.identity, acc.kind)
+        self._sidebar.refresh()
+
+    def _on_calendar_order_changed(self, account_id: str) -> None:
+        new_entries, _ = self._build_cal_info_for_account(account_id)
+        self._cal_info = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
+        self._cal_info.update(new_entries)
+        self._sidebar.refresh_for_account(account_id)
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 

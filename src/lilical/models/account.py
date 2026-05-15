@@ -16,4 +16,5 @@ class Account(Base):
     server_url: Mapped[str | None] = mapped_column(Text)
     secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[int] = mapped_column(Integer, default=1)

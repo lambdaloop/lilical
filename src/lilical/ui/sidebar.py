@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFontMetrics, QPainter
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
+    QApplication,
     QColorDialog,
     QFrame,
     QHBoxLayout,
@@ -23,24 +24,49 @@ from lilical.ui.widgets.mini_month import MiniMonthGrid
 
 
 class _CalendarChip(QToolButton):
-    """Colored chip showing calendar visibility; click to toggle, right-click for color."""
+    """Colored chip showing calendar visibility; click to toggle, right-click for color, drag to reorder."""
 
     visibility_changed = Signal(str, bool)  # calendar_id, is_visible
     color_changed = Signal(str, str)  # calendar_id, new_hex
 
     def __init__(
-        self, calendar_id: str, color_hex: str, is_visible: bool, store: EventStore
+        self, calendar_id: str, color_hex: str, is_visible: bool, store: EventStore, account_id: str
     ) -> None:
         super().__init__()
         self._calendar_id = calendar_id
+        self._account_id = account_id
         self._color = color_hex
         self._visible = bool(is_visible)
         self._store = store
+        self._drag_start_pos: QPoint | None = None
         self.setFixedSize(16, 16)
         self.setToolTip("Click to hide/show · Right-click to change color")
         self.setAutoRaise(True)
         self._apply_style()
         self.clicked.connect(self._on_clicked)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+        if self._drag_start_pos is not None:
+            if (event.pos() - self._drag_start_pos).manhattanLength() >= QApplication.startDragDistance():
+                self._drag_start_pos = None
+                self._start_drag(event)
+                return
+        super().mouseMoveEvent(event)
+
+    def _start_drag(self, event) -> None:  # noqa: ANN001
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData("application/x-lilical-calendar-drag", QByteArray(self._calendar_id.encode()))
+        mime.setData("application/x-lilical-account-id", QByteArray(self._account_id.encode()))
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(event.pos())
+        drag.exec(Qt.DropAction.MoveAction)
 
     def _apply_style(self) -> None:
         border_color = QColor(self._color).darker(130).name()
@@ -89,6 +115,53 @@ class _CalendarChip(QToolButton):
         self.color_changed.emit(self._calendar_id, new_hex)
 
 
+class _AccountHeader(QWidget):
+    """Account header that doubles as a drag handle for reordering."""
+
+    def __init__(self, account_id: str) -> None:
+        super().__init__()
+        self._account_id = account_id
+        self._drag_start_pos: QPoint | None = None
+        self.setObjectName("account-header")
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.pos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+        if self._drag_start_pos is not None:
+            if (event.pos() - self._drag_start_pos).manhattanLength() >= QApplication.startDragDistance():
+                self._drag_start_pos = None
+                self._start_drag(event)
+                return
+        super().mouseMoveEvent(event)
+
+    def _start_drag(self, event) -> None:  # noqa: ANN001
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData("application/x-lilical-account-drag", QByteArray(self._account_id.encode()))
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(event.pos())
+        drag.exec(Qt.DropAction.MoveAction)
+
+
+class _DropIndicator(QWidget):
+    """Thin blue line shown at the insertion point during drag."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(3)
+        self.setStyleSheet("background: #3b82f6; border-radius: 1px;")
+        self.hide()
+
+    def place_at(self, y: int, indent: int = 0) -> None:
+        w = self.parent().width() - indent - 8
+        self.setGeometry(indent, y, max(w, 0), 3)
+        self.show()
+
+
 class _ElidedLabel(QLabel):
     """QLabel that elides text with '…' when narrower than its content."""
 
@@ -135,6 +208,8 @@ class Sidebar(QWidget):
     delete_account_requested = Signal(str)
     calendar_visibility_changed = Signal(str, bool)
     calendar_color_changed = Signal(str, str)  # calendar_id, new_hex
+    account_order_changed = Signal()
+    calendar_order_changed = Signal(str)  # account_id
     date_selected = Signal(date)  # from mini-month
 
     def __init__(
@@ -189,17 +264,17 @@ class Sidebar(QWidget):
         layout.addWidget(cal_title)
 
         # ── Calendar list (scrollable) ─────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_widget = QWidget()
         self._cal_layout = QVBoxLayout(self._scroll_widget)
         self._cal_layout.setContentsMargins(0, 0, 0, 0)
         self._cal_layout.setSpacing(2)
         self._cal_layout.addStretch(1)
-        scroll.setWidget(self._scroll_widget)
-        layout.addWidget(scroll, 1)
+        self._scroll_area.setWidget(self._scroll_widget)
+        layout.addWidget(self._scroll_area, 1)
 
         add_btn = QPushButton("+ Add account")
         add_btn.setObjectName("add-account")
@@ -211,6 +286,13 @@ class Sidebar(QWidget):
         self._account_widgets: list[QWidget] = []
         self._account_widget_map: dict[str, QWidget] = {}  # account_id → group widget
         self._cal_snapshot: list[tuple] = []
+        self._drag_active = False
+        self._drag_kind: str | None = None
+        self._drag_info: dict = {}
+        self._drop_insert_idx = 0
+        self._scroll_timer: QTimer | None = None
+        self._drop_indicator = _DropIndicator(self._scroll_widget)
+        self.setAcceptDrops(True)
         self.refresh()
 
     # ── Mini-month navigation ──────────────────────────────────────────────
@@ -260,11 +342,13 @@ class Sidebar(QWidget):
             result.append((
                 acc_id,
                 display_name,
-                tuple(sorted((ci.id, ci.display_name, ci.color, ci.visible) for ci in cals)),
+                tuple((ci.id, ci.display_name, ci.color, ci.visible) for ci in cals),
             ))
         return result
 
     def refresh(self) -> None:
+        if self._drag_active:
+            return
         new_snapshot = self._build_snapshot()
         if new_snapshot == self._cal_snapshot:
             return
@@ -292,6 +376,8 @@ class Sidebar(QWidget):
 
     def refresh_for_account(self, account_id: str) -> None:
         """Rebuild only one account's calendar group; skip if nothing changed."""
+        if self._drag_active:
+            return
         new_snapshot = self._build_snapshot()
         if new_snapshot == self._cal_snapshot:
             return
@@ -333,8 +419,7 @@ class Sidebar(QWidget):
         v.setContentsMargins(0, 10, 0, 6)
         v.setSpacing(2)
 
-        header = QWidget()
-        header.setObjectName("account-header")
+        header = _AccountHeader(account_id=acc_id)
         h = QHBoxLayout(header)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(4)
@@ -390,7 +475,7 @@ class Sidebar(QWidget):
             row_h.setContentsMargins(14, 2, 4, 2)
             row_h.setSpacing(8)
 
-            chip = _CalendarChip(ci.id, ci.color or "#5e9fff", ci.visible, self._store)
+            chip = _CalendarChip(ci.id, ci.color or "#5e9fff", ci.visible, self._store, account_id=acc_id)
             chip.visibility_changed.connect(
                 lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
@@ -414,3 +499,195 @@ class Sidebar(QWidget):
     def _on_calendar_color_changed(self, calendar_id: str, new_hex: str) -> None:
         """Re-emit upward so MainWindow can refresh views with the new tint."""
         self.calendar_color_changed.emit(calendar_id, new_hex)
+
+    # ── Drag-and-drop reordering ───────────────────────────────────────────
+
+    def dragEnterEvent(self, event) -> None:  # noqa: ANN001
+        mime = event.mimeData()
+        if mime.hasFormat("application/x-lilical-account-drag"):
+            self._drag_kind = "account"
+            self._drag_info = {"source_id": bytes(mime.data("application/x-lilical-account-drag")).decode()}
+        elif mime.hasFormat("application/x-lilical-calendar-drag"):
+            self._drag_kind = "calendar"
+            self._drag_info = {
+                "source_id": bytes(mime.data("application/x-lilical-calendar-drag")).decode(),
+                "source_account_id": bytes(mime.data("application/x-lilical-account-id")).decode(),
+            }
+        else:
+            event.ignore()
+            return
+
+        self._drag_active = True
+        if self._scroll_timer is not None:
+            self._scroll_timer.stop()
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.timeout.connect(self._on_auto_scroll)
+        self._scroll_timer.start(30)
+        event.accept()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: ANN001
+        self._update_drop_indicator(event)
+        event.accept()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: ANN001
+        self._hide_drop_indicator()
+        self._stop_auto_scroll()
+        self._drag_active = False
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: ANN001
+        self._hide_drop_indicator()
+        self._stop_auto_scroll()
+        self._drag_active = False
+        self._handle_drop(event)
+        event.accept()
+
+    def _hide_drop_indicator(self) -> None:
+        self._drop_indicator.hide()
+
+    def _stop_auto_scroll(self) -> None:
+        if self._scroll_timer is not None:
+            self._scroll_timer.stop()
+            self._scroll_timer = None
+
+    def _on_auto_scroll(self) -> None:
+        viewport = self._scroll_area.viewport()
+        pos = viewport.mapFromGlobal(QCursor.pos())
+        margin = 40
+        bar = self._scroll_area.verticalScrollBar()
+        scrolled = False
+        if pos.y() < margin:
+            bar.setValue(max(bar.value() - 5, bar.minimum()))
+            scrolled = True
+        elif pos.y() > viewport.height() - margin:
+            bar.setValue(min(bar.value() + 5, bar.maximum()))
+            scrolled = True
+        if scrolled:
+            pos_scroll = self._scroll_widget.mapFromGlobal(QCursor.pos())
+            self._update_drop_indicator_at(pos_scroll)
+
+    def _update_drop_indicator(self, event) -> None:  # noqa: ANN001
+        pos = self._scroll_widget.mapFrom(self, event.pos())
+        self._update_drop_indicator_at(pos)
+
+    def _update_drop_indicator_at(self, pos: QPoint) -> None:
+        y = pos.y()
+
+        if self._drag_kind == "account":
+            insert_idx = self._find_account_insert_index(y)
+            self._drop_insert_idx = insert_idx
+            if insert_idx < 0 or insert_idx > len(self._account_widgets):
+                self._drop_indicator.hide()
+                return
+            indicator_y = (
+                self._account_widgets[insert_idx].geometry().top()
+                if insert_idx < len(self._account_widgets)
+                else self._account_widgets[-1].geometry().bottom()
+            )
+            self._drop_indicator.place_at(y=indicator_y, indent=0)
+
+        elif self._drag_kind == "calendar":
+            source_account_id = self._drag_info["source_account_id"]
+            group = self._account_widget_map.get(source_account_id)
+            if group is None:
+                self._drop_indicator.hide()
+                return
+            group_top = group.mapTo(self._scroll_widget, QPoint(0, 0)).y()
+            group_bot = group_top + group.geometry().height()
+            if not (group_top <= y <= group_bot):
+                self._drop_indicator.hide()
+                return
+
+            rows = self._get_calendar_rows(group)
+            insert_idx = self._find_calendar_insert_index(y, group_top, rows)
+            self._drop_insert_idx = insert_idx
+            if insert_idx < 0:
+                self._drop_indicator.hide()
+                return
+            if insert_idx < len(rows):
+                row_top = rows[insert_idx].mapTo(self._scroll_widget, QPoint(0, 0)).y()
+                indicator_y = row_top
+            elif rows:
+                row_bot = rows[-1].mapTo(self._scroll_widget, QPoint(0, 0)).y() + rows[-1].height()
+                indicator_y = row_bot
+            else:
+                header = group.layout().itemAt(0).widget() if group.layout().count() > 0 else None
+                indicator_y = group_top + (header.height() if header else 0)
+            self._drop_indicator.place_at(y=indicator_y, indent=14)
+
+        else:
+            self._drop_indicator.hide()
+
+    def _find_account_insert_index(self, y: int) -> int:
+        for i, w in enumerate(self._account_widgets):
+            top = w.geometry().top()
+            mid = top + w.geometry().height() // 2
+            if y < mid:
+                return i
+        return len(self._account_widgets)
+
+    def _find_calendar_insert_index(self, y: int, group_top: int, rows: list[QWidget]) -> int:
+        for i, row in enumerate(rows):
+            row_top = row.mapTo(self._scroll_widget, QPoint(0, 0)).y()
+            mid = row_top + row.height() // 2
+            if y < mid:
+                return i
+        return len(rows)
+
+    @staticmethod
+    def _get_calendar_rows(group: QWidget) -> list[QWidget]:
+        rows = []
+        layout = group.layout()
+        if layout is None:
+            return rows
+        for i in range(layout.count()):
+            w = layout.itemAt(i).widget()
+            if w is not None and w.objectName() == "cal-row":
+                rows.append(w)
+        return rows
+
+    def _handle_drop(self, event) -> None:  # noqa: ANN001
+        if self._drag_kind == "account":
+            self._handle_account_drop()
+        elif self._drag_kind == "calendar":
+            self._handle_calendar_drop()
+
+    def _handle_account_drop(self) -> None:
+        source_id = self._drag_info["source_id"]
+        insert_idx = self._drop_insert_idx
+
+        current_ids = list(self._account_meta_provider().keys())
+        try:
+            source_idx = current_ids.index(source_id)
+        except ValueError:
+            return
+        current_ids.pop(source_idx)
+        if insert_idx > source_idx:
+            insert_idx -= 1
+        if source_idx == insert_idx:
+            return
+        current_ids.insert(insert_idx, source_id)
+        orders = [(aid, i) for i, aid in enumerate(current_ids)]
+        self._store.set_account_orders(orders)
+        self.account_order_changed.emit()
+
+    def _handle_calendar_drop(self) -> None:
+        source_id = self._drag_info["source_id"]
+        source_account_id = self._drag_info["source_account_id"]
+        insert_idx = self._drop_insert_idx
+
+        cal_info = self._cal_info_provider()
+        current_ids = [ci.id for ci in cal_info.values() if ci.account_id == source_account_id]
+        try:
+            source_idx = current_ids.index(source_id)
+        except ValueError:
+            return
+        current_ids.pop(source_idx)
+        if insert_idx > source_idx:
+            insert_idx -= 1
+        if source_idx == insert_idx:
+            return
+        current_ids.insert(insert_idx, source_id)
+        orders = [(cid, i) for i, cid in enumerate(current_ids)]
+        self._store.set_calendar_orders(orders)
+        self.calendar_order_changed.emit(source_account_id)

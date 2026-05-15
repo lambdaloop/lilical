@@ -9,6 +9,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from lilical.models.calendar import Calendar
@@ -781,7 +782,16 @@ class EventStore(QObject):
             q = s.query(Account)
             if enabled_only:
                 q = q.filter(Account.enabled == 1)
-            return q.all()
+            return q.order_by(Account.sort_order, Account.display_name).all()
+
+    def set_account_orders(self, orders: list[tuple[str, int]]) -> None:
+        from lilical.models.account import Account
+
+        with self._write_session() as s:
+            for acc_id, order in orders:
+                acc = s.query(Account).filter(Account.id == acc_id).first()
+                if acc is not None:
+                    acc.sort_order = order
 
     def update_account(
         self,
@@ -913,7 +923,16 @@ class EventStore(QObject):
             q = s.query(Calendar).filter(Calendar.account_id == account_id)
             if visible_only:
                 q = q.filter(Calendar.is_visible == 1)
-            return q.all()
+            return q.order_by(Calendar.sort_order, Calendar.display_name).all()
+
+    def set_calendar_orders(self, orders: list[tuple[str, int]]) -> None:
+        from lilical.models.calendar import Calendar
+
+        with self._write_session() as s:
+            for cal_id, order in orders:
+                cal = s.query(Calendar).filter(Calendar.id == cal_id).first()
+                if cal is not None:
+                    cal.sort_order = order
 
     def visible_calendar_ids(self) -> set[str]:
         """IDs of every visible calendar across every enabled account.
@@ -988,6 +1007,10 @@ class EventStore(QObject):
                 if cal.provider_id == "default" and "default" not in remote_pids:
                     s.delete(cal)
 
+            next_order = (
+                (s.query(func.max(Calendar.sort_order)).filter(Calendar.account_id == account_id).scalar() or 0) + 1
+            )
+
             for remote in calendars:
                 pid = remote.get("provider_id")
                 if not pid:
@@ -1013,8 +1036,10 @@ class EventStore(QObject):
                             is_primary=0,
                             is_visible=1,
                             access_role="owner",
+                            sort_order=next_order,
                         )
                     )
+                    next_order += 1
 
     def list_pending_ops(self, account_id: str) -> list[Any]:
         from lilical.models.pending_op import PendingOpRow
