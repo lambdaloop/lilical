@@ -195,7 +195,17 @@ def _vevent_to_event(
 ) -> Event:
     dtstart_prop = ve.get("DTSTART")
     dtstart_params = getattr(dtstart_prop, "params", None) if dtstart_prop else None
-    all_day = bool(dtstart_params and dtstart_params.get("VALUE") == "DATE")
+    _dtstart_raw = getattr(dtstart_prop, "dt", None) if dtstart_prop else None
+
+    # Layered all-day detection.
+    # 1. icalendar parsed DTSTART as a bare date (canonical VALUE=DATE).
+    # 2. VALUE=DATE param present (str() coerces vText wrappers from some libs).
+    # 3. Heuristic applied after dtend is resolved below.
+    all_day = (
+        isinstance(_dtstart_raw, _date_cls) and not isinstance(_dtstart_raw, datetime)
+    ) or bool(
+        dtstart_params and str(dtstart_params.get("VALUE", "")).upper() == "DATE"
+    )
     tz = str(dtstart_params.get("TZID", "UTC")) if dtstart_params else "UTC"
 
     dtstart = _safe(lambda: _prop_dt(dtstart_prop, tz), field="DTSTART")
@@ -211,6 +221,38 @@ def _vevent_to_event(
             dtend = dtstart + timedelta(days=1)
         else:
             dtend = dtstart
+
+    # Tertiary heuristic: catch "pseudo-all-day" events that some self-hosted
+    # servers (Radicale, Baikal) emit as midnight UTC DATE-TIME with no
+    # VALUE=DATE param and a whole-day duration.
+    if (
+        not all_day
+        and dtstart is not None
+        and dtend is not None
+        and dtstart.time() == time.min
+        and dtend.time() == time.min
+        and (dtend - dtstart) >= timedelta(days=1)
+        and (dtend - dtstart) % timedelta(days=1) == timedelta(0)
+    ):
+        all_day = True
+
+    # Diagnostic: log all-day candidates so the server's wire format can be
+    # confirmed. TODO: demote to log.debug once root cause is confirmed.
+    if all_day or (
+        dtstart is not None
+        and dtstart.tzinfo == timezone.utc
+        and dtstart.time() == time.min
+    ):
+        log.info(
+            "caldav all-day probe uid=%s dtstart_ical=%r dt_type=%s params=%r"
+            " all_day=%s dtend_ical=%r",
+            str(ve.get("UID", "")),
+            dtstart_prop.to_ical().decode() if dtstart_prop else "n/a",
+            type(_dtstart_raw).__name__,
+            dict(dtstart_params) if dtstart_params else {},
+            all_day,
+            dtend_prop.to_ical().decode() if dtend_prop else "n/a",
+        )
 
     rrule_prop = ve.get("RRULE")
     rrule = (
@@ -292,16 +334,18 @@ def _vevent_to_event(
                 dtend = dtend.astimezone(local_zone)
             tz = local_name
 
-    # All-day events arrive as naive midnight datetime (no tzinfo). Attach the
-    # local zone so that .date() in display code returns the right calendar day
-    # for users west of UTC (otherwise May 14 00:00 UTC → May 13 in EDT).
-    if all_day and dtstart is not None and dtstart.tzinfo is None:
-        local_name = local_iana_tz()
-        local_zone = zoneinfo.ZoneInfo(local_name)
-        dtstart = dtstart.replace(tzinfo=local_zone)
-        if dtend is not None and dtend.tzinfo is None:
-            dtend = dtend.replace(tzinfo=local_zone)
-        tz = local_name
+    # All-day events must be anchored at local-zone midnight so that .date()
+    # in display code returns the right calendar day regardless of how the
+    # server encoded them (VALUE=DATE naive midnight, UTC midnight, etc.).
+    # We use the wall-clock date directly (dtstart.date()) — never astimezone —
+    # because for VALUE=DATE and UTC-midnight pseudo-all-day events the date
+    # component IS the intended calendar day independent of any timezone offset.
+    if all_day and dtstart is not None:
+        local_zone = zoneinfo.ZoneInfo(local_iana_tz())
+        dtstart = datetime.combine(dtstart.date(), time.min, tzinfo=local_zone)
+        if dtend is not None:
+            dtend = datetime.combine(dtend.date(), time.min, tzinfo=local_zone)
+        tz = local_zone.key
 
     return Event(
         uid=str(ve.get("UID", "")),

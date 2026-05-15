@@ -4,7 +4,8 @@ import contextlib
 import dataclasses
 import json
 import threading
-from datetime import datetime, timedelta, timezone
+import zoneinfo
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from lilical.models.calendar import Calendar
 from lilical.models.event import Event, EventInstanceRow, EventRow
 from lilical.models.pending_op import PendingOpRow
+from lilical.utils.timezone import local_iana_tz
 
 
 def _utc_now() -> str:
@@ -168,7 +170,6 @@ class EventStore(QObject):
     @staticmethod
     def _ensure_aware_dt(val) -> datetime:
         from datetime import date as _date_cls
-        from datetime import time
 
         if isinstance(val, _date_cls) and not isinstance(val, datetime):
             return datetime.combine(val, time.min, tzinfo=timezone.utc)
@@ -177,6 +178,15 @@ class EventStore(QObject):
                 return val.replace(tzinfo=timezone.utc)
             return val
         return val
+
+    @staticmethod
+    def _anchor_all_day(dt: datetime) -> datetime:
+        """Re-anchor an all-day datetime to local-zone midnight on the same
+        wall-clock date.  Uses dt.date() directly so UTC-midnight-encoded
+        events (Radicale/Baikal style) keep their intended calendar day
+        instead of shifting to the previous evening for users west of UTC."""
+        local_zone = zoneinfo.ZoneInfo(local_iana_tz())
+        return datetime.combine(dt.date(), time.min, tzinfo=local_zone)
 
     def _rebuild_instances_for(
         self,
@@ -234,6 +244,9 @@ class EventStore(QObject):
             ):
                 ds = self._ensure_aware_dt(occ["dtstart"])
                 de = self._ensure_aware_dt(occ["dtend"])
+                if occ["all_day"]:
+                    ds = self._anchor_all_day(ds)
+                    de = self._anchor_all_day(de)
                 session.add(
                     EventInstanceRow(
                         uid=occ["uid"],
@@ -250,6 +263,9 @@ class EventStore(QObject):
             return
         dtstart = self._ensure_aware_dt(event.dtstart)
         dtend = self._ensure_aware_dt(event.dtend or event.dtstart)
+        if event.all_day:
+            dtstart = self._anchor_all_day(dtstart)
+            dtend = self._anchor_all_day(dtend)
         session.add(
             EventInstanceRow(
                 uid=event.uid,

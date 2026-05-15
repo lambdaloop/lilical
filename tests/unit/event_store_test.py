@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine
@@ -1360,3 +1361,43 @@ def test_queue_truncate_series_sets_until(engine) -> None:
     # Only one op (update master), no create for tail
     assert len(ops) == 1
     assert ops[0].op == "update"
+
+
+def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
+    """End-to-end: an all-day event whose dtstart is a local-zone midnight must
+    produce an instance whose dtstart_local, when parsed and astimezone()'d,
+    gives back the intended calendar date — regardless of how it arrived
+    (UTC midnight, VALUE=DATE naive midnight, etc.)."""
+    from lilical.models.event import EventInstanceRow
+
+    ny_zone = ZoneInfo("America/New_York")
+    # Simulate what _vevent_to_event returns after the CalDAV fix for a
+    # server that emits DTSTART:20260704T000000Z — local midnight in NY.
+    all_day_event = Event(
+        uid="allday-roundtrip",
+        calendar_id="cal-1",
+        provider_event_id="allday-rt",
+        dtstart=datetime(2026, 7, 4, 0, 0, tzinfo=ny_zone),
+        dtend=datetime(2026, 7, 5, 0, 0, tzinfo=ny_zone),
+        tz="America/New_York",
+        all_day=True,
+        summary="Independence Day",
+    )
+
+    store = EventStore(engine)
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=all_day_event, uid="allday-roundtrip")],
+        "{}",
+    )
+
+    from sqlalchemy.orm import Session
+
+    with Session(engine) as s:
+        inst = s.query(EventInstanceRow).filter_by(uid="allday-roundtrip").one()
+        assert inst.all_day == 1
+        parsed = datetime.fromisoformat(inst.dtstart_local)
+        assert parsed.astimezone().date() == date(2026, 7, 4), (
+            f"Expected July 4 but got {parsed.astimezone().date()} "
+            f"(dtstart_local={inst.dtstart_local!r})"
+        )

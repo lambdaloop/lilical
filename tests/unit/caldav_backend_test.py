@@ -405,6 +405,34 @@ END:VCALENDAR
 """
 
 
+_VCAL_ALL_DAY_UTC_MIDNIGHT = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:all-day-utc@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260704T000000Z
+DTEND:20260705T000000Z
+SUMMARY:Independence Day (UTC midnight style)
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+_VCAL_ALL_DAY_NAIVE_DURATION = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:all-day-dur@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260704T000000
+DURATION:P1D
+SUMMARY:Independence Day (naive midnight + P1D)
+END:VEVENT
+END:VCALENDAR
+"""
+
+
 _VCAL_DURATION = """BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//test//
@@ -487,6 +515,30 @@ def test_vevent_to_event_extracts_all_day_event() -> None:
     assert event.all_day is True
     # All-day events are now stored as midnight in the local zone so that
     # .date() returns the right calendar day regardless of the runner's UTC offset.
+    assert event.dtstart is not None
+    assert event.dtstart.tzinfo is not None
+    assert event.dtstart.date() == date(2026, 7, 4)
+    assert event.dtend is not None
+    assert event.dtend.date() == date(2026, 7, 5)
+
+
+def test_vevent_to_event_detects_all_day_from_utc_midnight() -> None:
+    """Radicale/Baikal-style: DTSTART:YYYYMMDDT000000Z with no VALUE=DATE."""
+    vevents = _parse_vevents(_VCAL_ALL_DAY_UTC_MIDNIGHT)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.all_day is True
+    assert event.dtstart is not None
+    assert event.dtstart.tzinfo is not None
+    assert event.dtstart.date() == date(2026, 7, 4)
+    assert event.dtend is not None
+    assert event.dtend.date() == date(2026, 7, 5)
+
+
+def test_vevent_to_event_detects_all_day_from_naive_midnight_with_duration() -> None:
+    """Naive midnight DTSTART + DURATION:P1D should be detected as all-day."""
+    vevents = _parse_vevents(_VCAL_ALL_DAY_NAIVE_DURATION)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.all_day is True
     assert event.dtstart is not None
     assert event.dtstart.tzinfo is not None
     assert event.dtstart.date() == date(2026, 7, 4)
