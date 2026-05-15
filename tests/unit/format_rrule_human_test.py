@@ -8,6 +8,7 @@ import pytest
 @pytest.fixture(scope="module")
 def fmt():
     from lilical.ui.widgets.recurrence_editor import format_rrule_human
+
     return format_rrule_human
 
 

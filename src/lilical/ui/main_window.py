@@ -882,7 +882,9 @@ class MainWindow(QMainWindow):
             log.exception("Failed to rebuild cal_info for account %s", account_id)
             return
         # Merge on GUI thread: drop old entries for this account, add new ones.
-        updated = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
+        updated = {
+            k: v for k, v in self._cal_info.items() if v.account_id != account_id
+        }
         updated.update(new_entries)
         self._cal_info = updated
         if acc_meta is not None:
@@ -899,9 +901,13 @@ class MainWindow(QMainWindow):
         if not cal.is_included:
             if calendar_id in self._cal_info:
                 account_id = self._cal_info[calendar_id].account_id
-                self._cal_info = {k: v for k, v in self._cal_info.items() if k != calendar_id}
+                self._cal_info = {
+                    k: v for k, v in self._cal_info.items() if k != calendar_id
+                }
                 self._sidebar.refresh_for_account(account_id)
-                if self._current_view is not None and hasattr(self._current_view, "refresh"):
+                if self._current_view is not None and hasattr(
+                    self._current_view, "refresh"
+                ):
                     self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
             return
         if calendar_id not in self._cal_info:
@@ -917,7 +923,9 @@ class MainWindow(QMainWindow):
                 ),
             }
             self._sidebar.refresh_for_account(cal.account_id)
-            if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            if self._current_view is not None and hasattr(
+                self._current_view, "refresh"
+            ):
                 self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
             return
         old = self._cal_info[calendar_id]
@@ -1125,7 +1133,9 @@ class MainWindow(QMainWindow):
         await asyncio.to_thread(self._store.delete_account, account_id)
         self._account_display_names.pop(account_id, None)
         self._account_meta.pop(account_id, None)
-        self._cal_info = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
+        self._cal_info = {
+            k: v for k, v in self._cal_info.items() if v.account_id != account_id
+        }
         self._sidebar.refresh()
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
@@ -1159,7 +1169,9 @@ class MainWindow(QMainWindow):
 
     def _on_calendar_order_changed(self, account_id: str) -> None:
         new_entries, _ = self._build_cal_info_for_account(account_id)
-        self._cal_info = {k: v for k, v in self._cal_info.items() if v.account_id != account_id}
+        self._cal_info = {
+            k: v for k, v in self._cal_info.items() if v.account_id != account_id
+        }
         self._cal_info.update(new_entries)
         self._sidebar.refresh_for_account(account_id)
         if self._current_view is not None and hasattr(self._current_view, "refresh"):

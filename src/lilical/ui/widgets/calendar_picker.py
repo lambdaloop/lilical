@@ -32,9 +32,7 @@ class _CalendarRow(QWidget):
 
         swatch = QLabel()
         swatch.setFixedSize(14, 14)
-        swatch.setStyleSheet(
-            f"background-color: {color}; border-radius: 3px;"
-        )
+        swatch.setStyleSheet(f"background-color: {color}; border-radius: 3px;")
         layout.addWidget(swatch)
 
         label = QLabel(display_name)
@@ -84,8 +82,7 @@ class CalendarPickerDialog(QDialog):
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)

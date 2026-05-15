@@ -30,7 +30,12 @@ class _CalendarChip(QToolButton):
     color_changed = Signal(str, str)  # calendar_id, new_hex
 
     def __init__(
-        self, calendar_id: str, color_hex: str, is_visible: bool, store: EventStore, account_id: str
+        self,
+        calendar_id: str,
+        color_hex: str,
+        is_visible: bool,
+        store: EventStore,
+        account_id: str,
     ) -> None:
         super().__init__()
         self._calendar_id = calendar_id
@@ -52,7 +57,9 @@ class _CalendarChip(QToolButton):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
         if self._drag_start_pos is not None:
-            if (event.pos() - self._drag_start_pos).manhattanLength() >= QApplication.startDragDistance():
+            if (
+                event.pos() - self._drag_start_pos
+            ).manhattanLength() >= QApplication.startDragDistance():
                 self._drag_start_pos = None
                 self._start_drag(event)
                 return
@@ -61,8 +68,13 @@ class _CalendarChip(QToolButton):
     def _start_drag(self, event) -> None:  # noqa: ANN001
         drag = QDrag(self)
         mime = QMimeData()
-        mime.setData("application/x-lilical-calendar-drag", QByteArray(self._calendar_id.encode()))
-        mime.setData("application/x-lilical-account-id", QByteArray(self._account_id.encode()))
+        mime.setData(
+            "application/x-lilical-calendar-drag",
+            QByteArray(self._calendar_id.encode()),
+        )
+        mime.setData(
+            "application/x-lilical-account-id", QByteArray(self._account_id.encode())
+        )
         drag.setMimeData(mime)
         drag.setPixmap(self.grab())
         drag.setHotSpot(event.pos())
@@ -131,7 +143,9 @@ class _AccountHeader(QWidget):
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
         if self._drag_start_pos is not None:
-            if (event.pos() - self._drag_start_pos).manhattanLength() >= QApplication.startDragDistance():
+            if (
+                event.pos() - self._drag_start_pos
+            ).manhattanLength() >= QApplication.startDragDistance():
                 self._drag_start_pos = None
                 self._start_drag(event)
                 return
@@ -140,7 +154,9 @@ class _AccountHeader(QWidget):
     def _start_drag(self, event) -> None:  # noqa: ANN001
         drag = QDrag(self)
         mime = QMimeData()
-        mime.setData("application/x-lilical-account-drag", QByteArray(self._account_id.encode()))
+        mime.setData(
+            "application/x-lilical-account-drag", QByteArray(self._account_id.encode())
+        )
         drag.setMimeData(mime)
         drag.setPixmap(self.grab())
         drag.setHotSpot(event.pos())
@@ -183,7 +199,9 @@ class _ElidedLabel(QLabel):
     def paintEvent(self, event) -> None:  # noqa: ANN001
         painter = QPainter(self)
         fm = QFontMetrics(self.font())
-        elided = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight, self.width())
+        elided = fm.elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.width()
+        )
         painter.drawText(
             self.rect(),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
@@ -267,7 +285,9 @@ class Sidebar(QWidget):
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self._scroll_widget = QWidget()
         self._cal_layout = QVBoxLayout(self._scroll_widget)
         self._cal_layout.setContentsMargins(0, 0, 0, 0)
@@ -339,11 +359,15 @@ class Sidebar(QWidget):
         for acc_id, acc_meta in account_meta.items():
             display_name = acc_meta[0]
             cals = cals_by_account.get(acc_id, [])
-            result.append((
-                acc_id,
-                display_name,
-                tuple((ci.id, ci.display_name, ci.color, ci.visible) for ci in cals),
-            ))
+            result.append(
+                (
+                    acc_id,
+                    display_name,
+                    tuple(
+                        (ci.id, ci.display_name, ci.color, ci.visible) for ci in cals
+                    ),
+                )
+            )
         return result
 
     def refresh(self) -> None:
@@ -392,7 +416,9 @@ class Sidebar(QWidget):
 
         # Remove stale chips for this account.
         for cid in list(self._chips):
-            if self._chips[cid].parent() is old_widget or _is_inside(self._chips[cid], old_widget):
+            if self._chips[cid].parent() is old_widget or _is_inside(
+                self._chips[cid], old_widget
+            ):
                 del self._chips[cid]
 
         insert_at = self._cal_layout.indexOf(old_widget)
@@ -407,7 +433,9 @@ class Sidebar(QWidget):
         self._account_widgets.insert(insert_at, new_group)
         self._account_widget_map[account_id] = new_group
 
-    def _build_account_group_from_data(self, acc_id: str, acc_meta: tuple, cals: list) -> QWidget:
+    def _build_account_group_from_data(
+        self, acc_id: str, acc_meta: tuple, cals: list
+    ) -> QWidget:
         """Build the account group widget from pre-fetched data.
 
         acc_meta is a (display_name, identity, kind) tuple.
@@ -475,7 +503,9 @@ class Sidebar(QWidget):
             row_h.setContentsMargins(14, 2, 4, 2)
             row_h.setSpacing(8)
 
-            chip = _CalendarChip(ci.id, ci.color or "#5e9fff", ci.visible, self._store, account_id=acc_id)
+            chip = _CalendarChip(
+                ci.id, ci.color or "#5e9fff", ci.visible, self._store, account_id=acc_id
+            )
             chip.visibility_changed.connect(
                 lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
@@ -506,12 +536,20 @@ class Sidebar(QWidget):
         mime = event.mimeData()
         if mime.hasFormat("application/x-lilical-account-drag"):
             self._drag_kind = "account"
-            self._drag_info = {"source_id": bytes(mime.data("application/x-lilical-account-drag")).decode()}
+            self._drag_info = {
+                "source_id": bytes(
+                    mime.data("application/x-lilical-account-drag")
+                ).decode()
+            }
         elif mime.hasFormat("application/x-lilical-calendar-drag"):
             self._drag_kind = "calendar"
             self._drag_info = {
-                "source_id": bytes(mime.data("application/x-lilical-calendar-drag")).decode(),
-                "source_account_id": bytes(mime.data("application/x-lilical-account-id")).decode(),
+                "source_id": bytes(
+                    mime.data("application/x-lilical-calendar-drag")
+                ).decode(),
+                "source_account_id": bytes(
+                    mime.data("application/x-lilical-account-id")
+                ).decode(),
             }
         else:
             event.ignore()
@@ -608,10 +646,17 @@ class Sidebar(QWidget):
                 row_top = rows[insert_idx].mapTo(self._scroll_widget, QPoint(0, 0)).y()
                 indicator_y = row_top
             elif rows:
-                row_bot = rows[-1].mapTo(self._scroll_widget, QPoint(0, 0)).y() + rows[-1].height()
+                row_bot = (
+                    rows[-1].mapTo(self._scroll_widget, QPoint(0, 0)).y()
+                    + rows[-1].height()
+                )
                 indicator_y = row_bot
             else:
-                header = group.layout().itemAt(0).widget() if group.layout().count() > 0 else None
+                header = (
+                    group.layout().itemAt(0).widget()
+                    if group.layout().count() > 0
+                    else None
+                )
                 indicator_y = group_top + (header.height() if header else 0)
             self._drop_indicator.place_at(y=indicator_y, indent=14)
 
@@ -626,7 +671,9 @@ class Sidebar(QWidget):
                 return i
         return len(self._account_widgets)
 
-    def _find_calendar_insert_index(self, y: int, group_top: int, rows: list[QWidget]) -> int:
+    def _find_calendar_insert_index(
+        self, y: int, group_top: int, rows: list[QWidget]
+    ) -> int:
         for i, row in enumerate(rows):
             row_top = row.mapTo(self._scroll_widget, QPoint(0, 0)).y()
             mid = row_top + row.height() // 2
@@ -677,7 +724,9 @@ class Sidebar(QWidget):
         insert_idx = self._drop_insert_idx
 
         cal_info = self._cal_info_provider()
-        current_ids = [ci.id for ci in cal_info.values() if ci.account_id == source_account_id]
+        current_ids = [
+            ci.id for ci in cal_info.values() if ci.account_id == source_account_id
+        ]
         try:
             source_idx = current_ids.index(source_id)
         except ValueError:

@@ -159,7 +159,9 @@ def test_double_click_emits_no_signals(qapp):
     center = chip.boundingRect().center()
 
     def _dblclick(item, pos: QPointF) -> None:
-        ev = QGraphicsSceneMouseEvent(QGraphicsSceneMouseEvent.Type.GraphicsSceneMouseDoubleClick)
+        ev = QGraphicsSceneMouseEvent(
+            QGraphicsSceneMouseEvent.Type.GraphicsSceneMouseDoubleClick
+        )
         ev.setButton(Qt.MouseButton.LeftButton)
         ev.setButtons(Qt.MouseButton.LeftButton)
         ev.setPos(pos)

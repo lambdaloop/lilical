@@ -336,7 +336,9 @@ class EventStore(QObject):
                     return _row_to_event(row)
         return self.get_event(inst.uid, inst.calendar_id)
 
-    def events_for_instances(self, instances: list["EventInstanceRow"]) -> "dict[int, Event]":
+    def events_for_instances(
+        self, instances: list["EventInstanceRow"]
+    ) -> "dict[int, Event]":
         """Return {id(inst): Event} for a list of instances in one DB roundtrip.
 
         Prefers override rows for overridden instances; falls back to the master.
@@ -1021,8 +1023,11 @@ class EventStore(QObject):
                     s.delete(cal)
 
             next_order = (
-                (s.query(func.max(Calendar.sort_order)).filter(Calendar.account_id == account_id).scalar() or 0) + 1
-            )
+                s.query(func.max(Calendar.sort_order))
+                .filter(Calendar.account_id == account_id)
+                .scalar()
+                or 0
+            ) + 1
 
             for remote in calendars:
                 pid = remote.get("provider_id")

@@ -56,15 +56,11 @@ def _query_agenda_data(
     end_dt = _local_midnight(end)
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
-        instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=visible_ids
-        )
+        instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
     except Exception:
         log.exception("AgendaView: failed to query instances")
         return None
-    new_snapshot = frozenset(
-        (i.uid, i.dtstart_local, i.calendar_id) for i in instances
-    )
+    new_snapshot = frozenset((i.uid, i.dtstart_local, i.calendar_id) for i in instances)
     if new_snapshot == current_snapshot and snapshot_start == start:
         return None
     events = store.events_for_instances(instances)
@@ -138,7 +134,9 @@ class AgendaView(QWidget):
         end = start + timedelta(days=_DAYS_AHEAD)
         cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(start, end, self._snapshot, self._snapshot_start, cal_info_snap)
+            self._refresh_async(
+                start, end, self._snapshot, self._snapshot_start, cal_info_snap
+            )
         )
 
     async def _refresh_async(
@@ -151,7 +149,13 @@ class AgendaView(QWidget):
     ) -> None:
         try:
             plan = await asyncio.to_thread(
-                _query_agenda_data, self._store, start, end, cal_info_snap, snapshot, snapshot_start
+                _query_agenda_data,
+                self._store,
+                start,
+                end,
+                cal_info_snap,
+                snapshot,
+                snapshot_start,
             )
         except asyncio.CancelledError:
             return
@@ -211,7 +215,9 @@ class AgendaView(QWidget):
                     row.setText(0, t.strftime("%H:%M"))
                 row.setText(1, event.summary or "(no title)")
 
-                cal_name, cal_color = cal_info.get(inst.calendar_id, (inst.calendar_id, None))  # type: ignore[reportAttributeAccessIssue]
+                cal_name, cal_color = cal_info.get(
+                    inst.calendar_id, (inst.calendar_id, None)
+                )  # type: ignore[reportAttributeAccessIssue]
                 row.setText(2, cal_name)
 
                 color_hint = event.color or cal_color

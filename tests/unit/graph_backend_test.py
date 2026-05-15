@@ -879,7 +879,9 @@ async def test_drain_delta_hydrates_exceptions_from_master() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drain_delta_fetches_master_for_occurrence_regardless_of_subject() -> None:
+async def test_drain_delta_fetches_master_for_occurrence_regardless_of_subject() -> (
+    None
+):
     """Occurrences always trigger a master fetch for synthesis, even when the
     occurrence already has its own subject. Without the master we'd have no rrule."""
     delta_body = {

@@ -235,6 +235,7 @@ def format_rrule_human(rrule: str) -> str:
             raw = props["UNTIL"].replace("Z", "").replace("T000000", "")
             try:
                 from datetime import date
+
                 d = date.fromisoformat(
                     f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) == 8 else raw[:10]
                 )

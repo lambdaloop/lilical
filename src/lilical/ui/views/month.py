@@ -187,21 +187,28 @@ class _OverflowChip(QGraphicsItem):
             super().mousePressEvent(event)
 
 
-def _query_month_data(store, grid_start: date, end_day: date, cal_info_snap: dict) -> dict | None:
+def _query_month_data(
+    store, grid_start: date, end_day: date, cal_info_snap: dict
+) -> dict | None:
     """Off-thread: query DB for the month range."""
     start_dt = _local_midnight(grid_start)
     end_dt = _local_midnight(end_day)
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
-        instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=visible_ids
-        )
+        instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
     except Exception:
         log.exception("MonthView: failed to query instances")
         return None
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
-    return {"instances": instances, "events": events, "cal_color": cal_color, "grid_start": grid_start}
+    cal_color: dict[str, str | None] = {
+        ci.id: ci.color for ci in cal_info_snap.values()
+    }
+    return {
+        "instances": instances,
+        "events": events,
+        "cal_color": cal_color,
+        "grid_start": grid_start,
+    }
 
 
 class MonthView(QGraphicsView):
@@ -325,7 +332,9 @@ class MonthView(QGraphicsView):
             self._refresh_async(grid_start, end_day, cal_info_snap)
         )
 
-    async def _refresh_async(self, grid_start: date, end_day: date, cal_info_snap: dict) -> None:
+    async def _refresh_async(
+        self, grid_start: date, end_day: date, cal_info_snap: dict
+    ) -> None:
         try:
             data = await asyncio.to_thread(
                 _query_month_data, self._store, grid_start, end_day, cal_info_snap
@@ -479,7 +488,14 @@ class MonthView(QGraphicsView):
                         + 22
                         + placed_track * (CHIP_H + CHIP_GAP)
                     )
-                    _chip_key = (inst.calendar_id, inst.uid, inst.dtstart_local, "multi", row, col)  # type: ignore[reportAttributeAccessIssue]
+                    _chip_key = (
+                        inst.calendar_id,
+                        inst.uid,
+                        inst.dtstart_local,
+                        "multi",
+                        row,
+                        col,
+                    )  # type: ignore[reportAttributeAccessIssue]
                     self._place_event_chip(
                         _chip_key,
                         event,

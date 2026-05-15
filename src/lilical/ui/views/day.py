@@ -163,7 +163,6 @@ class DayGrid(QGraphicsItem):
             )
 
 
-
 class _DayNowLine(QGraphicsItem):
     """Current-time indicator for Day view, drawn above event chips (z=50)."""
 
@@ -291,19 +290,26 @@ def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
     end_dt = start_dt + timedelta(hours=28)
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
-        instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=visible_ids
-        )
+        instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
     except Exception:
         log.exception("DayView: failed to query instances")
         return None
 
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
-    return {"instances": instances, "events": events, "cal_color": cal_color, "day": day}
+    cal_color: dict[str, str | None] = {
+        ci.id: ci.color for ci in cal_info_snap.values()
+    }
+    return {
+        "instances": instances,
+        "events": events,
+        "cal_color": cal_color,
+        "day": day,
+    }
 
 
-def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_format: str) -> dict:
+def _compute_day_placements(
+    data: dict, col_w: float, px_per_hour: int, time_format: str
+) -> dict:
     """Pure geometry: compute chip placement rects from raw day data."""
     instances = data["instances"]
     events = data["events"]
@@ -320,7 +326,9 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
             if span and span[0] <= day <= span[1]:
                 all_day_count += 1
     rows_shown = min(all_day_count, ALL_DAY_MAX_ROWS)
-    band_h = float(ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H))
+    band_h = float(
+        ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H)
+    )
     body_top = DAY_HEADER_H + band_h
 
     first_event_minutes: int | None = None
@@ -366,7 +374,13 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
             start_day, end_day = span
             if not (start_day <= day <= end_day):
                 continue
-            key = (inst.calendar_id, inst.uid, inst.dtstart_local, "band", day.isoformat())
+            key = (
+                inst.calendar_id,
+                inst.uid,
+                inst.dtstart_local,
+                "band",
+                day.isoformat(),
+            )
             if all_day_idx < ALL_DAY_MAX_ROWS:
                 y = DAY_HEADER_H + 2 + all_day_idx * ALL_DAY_ROW_H
                 h = ALL_DAY_ROW_H - 2
@@ -399,16 +413,26 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
             end_min = start_min + 15
         if first_event_minutes is None or start_min < first_event_minutes:
             first_event_minutes = start_min
-        timed_bucket.append((float(start_min), float(end_min), {
-            "event": event, "start_dt": t,
-            "cal_color": cal_color.get(inst.calendar_id),
-            "instance_dtstart": t, "key": key,
-        }))
+        timed_bucket.append(
+            (
+                float(start_min),
+                float(end_min),
+                {
+                    "event": event,
+                    "start_dt": t,
+                    "cal_color": cal_color.get(inst.calendar_id),
+                    "instance_dtstart": t,
+                    "key": key,
+                },
+            )
+        )
 
     if timed_bucket:
         packed = pack_overlapping(timed_bucket)
         _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
-        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(packed, timed_bucket, strict=True):
+        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(
+            packed, timed_bucket, strict=True
+        ):
             sub_w = (col_w - 2) / cols
             chip_x = TIME_AXIS_WIDTH + 1 + col_i * sub_w
             chip_w = max(8.0, xspan * sub_w)
@@ -434,19 +458,21 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
     }
 
 
-def _build_mini_agenda_plan(store, now: datetime, count: int, cal_info_snap: dict) -> list[dict]:
+def _build_mini_agenda_plan(
+    store, now: datetime, count: int, cal_info_snap: dict
+) -> list[dict]:
     """Off-thread: query DB and build mini-agenda item data."""
     end = now + timedelta(days=14)
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
-        instances = store.list_instances(
-            now, end, calendar_ids=visible_ids
-        )
+        instances = store.list_instances(now, end, calendar_ids=visible_ids)
     except Exception:
         log.exception("DayView mini-agenda: failed to query instances")
         return []
 
-    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
+    cal_color: dict[str, str | None] = {
+        ci.id: ci.color for ci in cal_info_snap.values()
+    }
 
     upcoming: list[tuple[datetime, object]] = []
     for inst in instances:
@@ -618,7 +644,9 @@ class _DayCanvas(QGraphicsView):
     def refresh(self, *, data_dirty: bool = True) -> None:
         if not data_dirty and self._cached_data is not None:
             col_w = max(20.0, self._grid.boundingRect().width() - TIME_AXIS_WIDTH)
-            plan = _compute_day_placements(self._cached_data, col_w, self._px_per_hour, self._time_format)
+            plan = _compute_day_placements(
+                self._cached_data, col_w, self._px_per_hour, self._time_format
+            )
             self._apply_plan(plan)
             return
         if self._refresh_task and not self._refresh_task.done():
@@ -633,7 +661,12 @@ class _DayCanvas(QGraphicsView):
         )
 
     async def _refresh_async(
-        self, day: date, col_w: float, px_per_hour: int, time_format: str, cal_info_snap: dict
+        self,
+        day: date,
+        col_w: float,
+        px_per_hour: int,
+        time_format: str,
+        cal_info_snap: dict,
     ) -> None:
         try:
             data = await asyncio.to_thread(
@@ -712,7 +745,9 @@ class _DayCanvas(QGraphicsView):
         if self._needs_scroll:
             self._needs_scroll = False
             first_min = plan["first_event_minutes"]
-            target_minutes = first_min if first_min is not None else WORK_START_HOUR * 60
+            target_minutes = (
+                first_min if first_min is not None else WORK_START_HOUR * 60
+            )
             target_y = target_minutes * self._px_per_hour / 60
             sb = self.verticalScrollBar()
             sb.setValue(max(0, min(sb.maximum(), int(target_y - 8))))
@@ -1093,7 +1128,9 @@ class DayView(QWidget):
     MINI_AGENDA_COUNT = 3
     MINI_AGENDA_H = 96
 
-    def __init__(self, store: EventStore, day: date | None = None, cal_info_provider=None) -> None:
+    def __init__(
+        self, store: EventStore, day: date | None = None, cal_info_provider=None
+    ) -> None:
         super().__init__()
         self._store = store
         self._cal_info_provider = cal_info_provider or (lambda: {})
@@ -1200,7 +1237,9 @@ class DayView(QWidget):
             self._mini_refresh_async(now, self.MINI_AGENDA_COUNT, cal_info_snap)
         )
 
-    async def _mini_refresh_async(self, now: datetime, count: int, cal_info_snap: dict) -> None:
+    async def _mini_refresh_async(
+        self, now: datetime, count: int, cal_info_snap: dict
+    ) -> None:
         try:
             items = await asyncio.to_thread(
                 _build_mini_agenda_plan, self._store, now, count, cal_info_snap

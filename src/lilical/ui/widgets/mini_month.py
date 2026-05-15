@@ -113,7 +113,9 @@ class MiniMonthGrid(QGraphicsView):
             if cur == today:
                 pill = QPainterPath()
                 pill.addRoundedRect(x + 1, y + 1, cw - 3, ch - 3, 4, 4)
-                self._scene.addPath(pill, QPen(Qt.PenStyle.NoPen), QColor(theme.ACCENT_FILL))
+                self._scene.addPath(
+                    pill, QPen(Qt.PenStyle.NoPen), QColor(theme.ACCENT_FILL)
+                )
             elif cur == self._selected and not in_range:
                 ring = QPainterPath()
                 ring.addRoundedRect(x + 1, y + 1, cw - 3, ch - 3, 4, 4)
@@ -123,7 +125,9 @@ class MiniMonthGrid(QGraphicsView):
 
             item = self._scene.addText(str(cur.day), QFont(theme.FONT_FAMILY, 9))
             item.setTextWidth(cw)
-            item.document().setDefaultTextOption(QTextOption(Qt.AlignmentFlag.AlignHCenter))
+            item.document().setDefaultTextOption(
+                QTextOption(Qt.AlignmentFlag.AlignHCenter)
+            )
             item.setPos(x, y + (ch - item.boundingRect().height()) / 2)
             if cur == today:
                 item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))

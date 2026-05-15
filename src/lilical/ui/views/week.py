@@ -179,7 +179,6 @@ class WeekGrid(QGraphicsItem):
             )
 
 
-
 class _WeekNowLine(QGraphicsItem):
     """Current-time indicator for Week view, drawn above event chips (z=50)."""
 
@@ -198,7 +197,9 @@ class _WeekNowLine(QGraphicsItem):
     def refresh(self) -> None:
         today = date.today()
         is_today_visible = (
-            self._grid._start <= today < self._grid._start + timedelta(days=self._grid._day_count)
+            self._grid._start
+            <= today
+            < self._grid._start + timedelta(days=self._grid._day_count)
         )
         self.prepareGeometryChange()
         if is_today_visible:
@@ -224,7 +225,9 @@ class _WeekNowLine(QGraphicsItem):
         line_color = QColor(theme.DANGER)
         line_color.setAlphaF(0.65)
         painter.setPen(QPen(line_color, 2))
-        painter.drawLine(int(self._x_start), int(self._y), int(self._x_end), int(self._y))
+        painter.drawLine(
+            int(self._x_start), int(self._y), int(self._x_end), int(self._y)
+        )
         painter.setBrush(QColor(theme.DANGER))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(TIME_AXIS_WIDTH - 4, self._y - 4, 8, 8))
@@ -350,15 +353,15 @@ def _query_week_data(
     end_dt = _local_midnight(start + timedelta(days=day_count))
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
-        instances = store.list_instances(
-            start_dt, end_dt, calendar_ids=visible_ids
-        )
+        instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
     except Exception:
         log.exception("WeekView: failed to query instances")
         return None
 
     events = store.events_for_instances(instances)
-    cal_color: dict[str, str | None] = {ci.id: ci.color for ci in cal_info_snap.values()}
+    cal_color: dict[str, str | None] = {
+        ci.id: ci.color for ci in cal_info_snap.values()
+    }
     return {
         "instances": instances,
         "events": events,
@@ -416,7 +419,9 @@ def _compute_week_placements(
                     timed_instances.append((inst, t))
 
     # Greedy track assignment — longer spans get lower tracks so they don't overlap.
-    order = sorted(range(len(band_items)), key=lambda i: -(band_items[i][1] - band_items[i][0]))
+    order = sorted(
+        range(len(band_items)), key=lambda i: -(band_items[i][1] - band_items[i][0])
+    )
     item_track = [0] * len(band_items)
     track_spans: list[list[tuple[int, int]]] = []
     for i in order:
@@ -461,7 +466,13 @@ def _compute_week_placements(
             s_day, e_day = span
             continues_left = s_day < start
             continues_right = e_day > week_end
-            key = (inst.calendar_id, inst.uid, inst.dtstart_local, "band", start.isoformat())
+            key = (
+                inst.calendar_id,
+                inst.uid,
+                inst.dtstart_local,
+                "band",
+                start.isoformat(),
+            )
         else:
             continues_left = continues_right = False
             key = (inst.calendar_id, inst.uid, inst.dtstart_local)
@@ -498,11 +509,19 @@ def _compute_week_placements(
         if end_min <= start_min:
             end_min = start_min + 15
         key = (inst.calendar_id, inst.uid, inst.dtstart_local)
-        timed_by_day[day_offset].append((
-            float(start_min), float(end_min),
-            {"event": event, "start_dt": t, "cal_color": cal_color.get(inst.calendar_id),
-             "instance_dtstart": t, "key": key},
-        ))
+        timed_by_day[day_offset].append(
+            (
+                float(start_min),
+                float(end_min),
+                {
+                    "event": event,
+                    "start_dt": t,
+                    "cal_color": cal_color.get(inst.calendar_id),
+                    "instance_dtstart": t,
+                    "key": key,
+                },
+            )
+        )
 
     _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
     for day_offset, bucket in enumerate(timed_by_day):
@@ -510,7 +529,9 @@ def _compute_week_placements(
             continue
         packed = pack_overlapping(bucket)
         day_x = TIME_AXIS_WIDTH + day_offset * col_w
-        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(packed, bucket, strict=True):
+        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(
+            packed, bucket, strict=True
+        ):
             sub_w = (col_w - 2) / cols
             chip_x = day_x + 1 + col_i * sub_w
             chip_w = max(8.0, xspan * sub_w)
@@ -536,7 +557,10 @@ def _compute_week_placements(
             continue
         x = TIME_AXIS_WIDTH + col * col_w
         y = DAY_HEADER_H + 2 + (ALL_DAY_MAX_ROWS - 1) * ALL_DAY_ROW_H
-        more_markers[col] = (QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2), f"+{hidden} more")
+        more_markers[col] = (
+            QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2),
+            f"+{hidden} more",
+        )
 
     return {
         "new_placements": new_placements,
@@ -547,7 +571,9 @@ def _compute_week_placements(
 
 
 class WeekView(QGraphicsView):
-    def __init__(self, store: EventStore, day_count: int = 7, cal_info_provider=None) -> None:
+    def __init__(
+        self, store: EventStore, day_count: int = 7, cal_info_provider=None
+    ) -> None:
         super().__init__()
         self._store = store
         self._cal_info_provider = cal_info_provider or (lambda: {})
@@ -770,8 +796,13 @@ class WeekView(QGraphicsView):
 
     def refresh(self, *, data_dirty: bool = True) -> None:
         if not data_dirty and self._cached_data is not None:
-            col_w = max(20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
-            plan = _compute_week_placements(self._cached_data, self._px_per_hour, self._time_format, col_w)
+            col_w = max(
+                20.0,
+                (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count,
+            )
+            plan = _compute_week_placements(
+                self._cached_data, self._px_per_hour, self._time_format, col_w
+            )
             self._apply_plan(plan)
             return
         if self._refresh_task and not self._refresh_task.done():
@@ -780,14 +811,24 @@ class WeekView(QGraphicsView):
         day_count = self._day_count
         px_per_hour = self._px_per_hour
         time_format = self._time_format
-        col_w = max(20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / day_count)
+        col_w = max(
+            20.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / day_count
+        )
         cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
-            self._refresh_async(start, day_count, px_per_hour, time_format, col_w, cal_info_snap)
+            self._refresh_async(
+                start, day_count, px_per_hour, time_format, col_w, cal_info_snap
+            )
         )
 
     async def _refresh_async(
-        self, start: date, day_count: int, px_per_hour: int, time_format: str, col_w: float, cal_info_snap: dict
+        self,
+        start: date,
+        day_count: int,
+        px_per_hour: int,
+        time_format: str,
+        col_w: float,
+        cal_info_snap: dict,
     ) -> None:
         try:
             data = await asyncio.to_thread(
@@ -883,7 +924,9 @@ class WeekView(QGraphicsView):
         if self._needs_scroll:
             self._needs_scroll = False
             first_min = plan["first_event_minutes"]
-            target_minutes = first_min if first_min is not None else WORK_START_HOUR * 60
+            target_minutes = (
+                first_min if first_min is not None else WORK_START_HOUR * 60
+            )
             target_y = target_minutes * self._px_per_hour / 60
             sb = self.verticalScrollBar()
             sb.setValue(max(0, min(sb.maximum(), int(target_y - 8))))

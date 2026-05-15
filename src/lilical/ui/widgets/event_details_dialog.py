@@ -47,7 +47,11 @@ class EventDetailsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         summary = event.summary or ""
-        title = f"Event details — {summary[:50]}{'…' if len(summary) > 50 else ''}" if summary else "Event details"
+        title = (
+            f"Event details — {summary[:50]}{'…' if len(summary) > 50 else ''}"
+            if summary
+            else "Event details"
+        )
         self.setWindowTitle(title)
         self.setMinimumWidth(500)
 
@@ -109,7 +113,9 @@ class EventDetailsDialog(QDialog):
             lbl = QLabel(text)
             lbl.setWordWrap(True)
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            lbl.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             form.addRow(label, lbl)
 
         # ── When ─────────────────────────────────────────────────────────────
@@ -141,7 +147,9 @@ class EventDetailsDialog(QDialog):
                 Qt.TextInteractionFlag.TextSelectableByMouse
                 | Qt.TextInteractionFlag.LinksAccessibleByMouse
             )
-            notes_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            notes_lbl.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
             form.addRow("Notes:", notes_lbl)
 
         # ── Recurrence ────────────────────────────────────────────────────────
@@ -163,7 +171,9 @@ class EventDetailsDialog(QDialog):
 
         # ── Attendees ─────────────────────────────────────────────────────────
         if event.attendees:
-            _add_row("Attendees:", "\n".join(_format_attendee(a) for a in event.attendees))
+            _add_row(
+                "Attendees:", "\n".join(_format_attendee(a) for a in event.attendees)
+            )
 
         # ── Categories ────────────────────────────────────────────────────────
         if event.categories:
@@ -221,6 +231,7 @@ def _format_when(event: "Event", time_fmt: str = "24h") -> str:
     if event.tz and event.tz not in ("UTC",):
         try:
             from lilical.utils.timezone import local_iana_tz
+
             if event.tz != local_iana_tz():
                 tz_suffix = f"  ({event.tz})"
         except Exception:
@@ -261,7 +272,9 @@ def _format_when(event: "Event", time_fmt: str = "24h") -> str:
                 f"{tz_suffix}"
             )
         # Multi-day: "Mon, May 18, 14:00 → Tue, May 19, 09:00 (2026)"
-        year_suffix = f"  ({start_local.year})" if start_local.year == end_local.year else ""
+        year_suffix = (
+            f"  ({start_local.year})" if start_local.year == end_local.year else ""
+        )
         return (
             f"{start_date.strftime(_DFMT_NO_YEAR)}, {start_local.strftime(tfmt)}"
             f" → "

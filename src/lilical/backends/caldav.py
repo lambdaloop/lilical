@@ -203,9 +203,7 @@ def _vevent_to_event(
     # 3. Heuristic applied after dtend is resolved below.
     all_day = (
         isinstance(_dtstart_raw, _date_cls) and not isinstance(_dtstart_raw, datetime)
-    ) or bool(
-        dtstart_params and str(dtstart_params.get("VALUE", "")).upper() == "DATE"
-    )
+    ) or bool(dtstart_params and str(dtstart_params.get("VALUE", "")).upper() == "DATE")
     tz = str(dtstart_params.get("TZID", "UTC")) if dtstart_params else "UTC"
 
     dtstart = _safe(lambda: _prop_dt(dtstart_prop, tz), field="DTSTART")
@@ -642,7 +640,10 @@ class CalDavBackend:
         chunk = self._INITIAL_SYNC_CHUNK
         for i in range(0, len(changes), chunk):
             is_last = i + chunk >= len(changes)
-            yield changes[i : i + chunk], CalDavCursor(sync_token=sync_token if is_last else None)
+            yield (
+                changes[i : i + chunk],
+                CalDavCursor(sync_token=sync_token if is_last else None),
+            )
 
     @_classify_errors
     async def incremental_sync(
