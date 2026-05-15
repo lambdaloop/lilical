@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
+
+import httpx
+import pytest
 
 from lilical.backends._google_serializer import event_to_google_body
 from lilical.models.event import Event
@@ -86,41 +90,12 @@ def test_serializer_no_color_no_color_id():
     assert "colorId" not in body
 
 
-# ── Fake service and GoogleBackend write tests ────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-class _FakeService:
-    """Records calls to service.events().insert/update/delete/patch/instances."""
-
-    def __init__(self, resp=None):
-        self._resp = resp or {}
-        self.calls = []
-
-    def events(self):
-        return self
-
-    def insert(self, **kwargs):
-        self.calls.append(("insert", kwargs))
-        return self
-
-    def update(self, **kwargs):
-        self.calls.append(("update", kwargs))
-        return self
-
-    def delete(self, **kwargs):
-        self.calls.append(("delete", kwargs))
-        return self
-
-    def patch(self, **kwargs):
-        self.calls.append(("patch", kwargs))
-        return self
-
-    def instances(self, **kwargs):
-        self.calls.append(("instances", kwargs))
-        return self
-
-    def execute(self):
-        return self._resp
+def _attach_mock(backend, handler):
+    backend._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    backend._acquire_token = lambda: "fake-token"  # type: ignore[method-assign]
 
 
 def _make_backend():
@@ -129,26 +104,26 @@ def _make_backend():
     return GoogleBackend(account_id="test-account")
 
 
+# ── GoogleBackend write tests ─────────────────────────────────────────────────
+
+
 def test_create_event_sends_full_body():
-    fake = _FakeService(
-        resp={
-            "iCalUID": "uid-x",
-            "id": "server-id",
-            "etag": '"etag"',
-            "sequence": 0,
-        }
-    )
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(
+            200,
+            json={
+                "iCalUID": "uid-x",
+                "id": "server-id",
+                "etag": '"etag"',
+                "sequence": 0,
+            },
+        )
 
     backend = _make_backend()
-
-    async def _fake_ensure():
-        return fake
-
-    async def _fake_execute(req):
-        return req.execute()
-
-    backend._ensure_service = _fake_ensure
-    backend._execute = _fake_execute
+    _attach_mock(backend, handler)
 
     event = Event(
         uid="local-uid",
@@ -160,10 +135,13 @@ def test_create_event_sends_full_body():
 
     result = asyncio.run(backend.create_event("cal-1", event))
 
-    insert_calls = [c for c in fake.calls if c[0] == "insert"]
-    assert len(insert_calls) == 1
-    kwargs = insert_calls[0][1]
-    body = kwargs["body"]
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.method == "POST"
+    assert "/calendars/" in req.url.path
+    assert "/events" in req.url.path
+    assert "sendUpdates=none" in str(req.url)
+    body = json.loads(req.content)
     assert "summary" in body
     assert "start" in body
     assert "end" in body
@@ -171,25 +149,22 @@ def test_create_event_sends_full_body():
 
 
 def test_update_event_uses_provider_event_id():
-    fake = _FakeService(
-        resp={
-            "iCalUID": "uid-y",
-            "id": "pid-123",
-            "etag": '"etag2"',
-            "sequence": 1,
-        }
-    )
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(
+            200,
+            json={
+                "iCalUID": "uid-y",
+                "id": "pid-123",
+                "etag": '"etag2"',
+                "sequence": 1,
+            },
+        )
 
     backend = _make_backend()
-
-    async def _fake_ensure():
-        return fake
-
-    async def _fake_execute(req):
-        return req.execute()
-
-    backend._ensure_service = _fake_ensure
-    backend._execute = _fake_execute
+    _attach_mock(backend, handler)
 
     event = Event(
         uid="local-uid-y",
@@ -202,27 +177,27 @@ def test_update_event_uses_provider_event_id():
 
     asyncio.run(backend.update_event("cal-1", event, None))
 
-    update_calls = [c for c in fake.calls if c[0] == "update"]
-    assert len(update_calls) == 1
-    assert update_calls[0][1]["eventId"] == "pid-123"
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.method == "PUT"
+    assert "/events/pid-123" in req.url.path
+    assert "sendUpdates=none" in str(req.url)
 
 
 def test_delete_event_uses_provider_event_id():
-    fake = _FakeService(resp={})
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(204)
 
     backend = _make_backend()
-
-    async def _fake_ensure():
-        return fake
-
-    async def _fake_execute(req):
-        return req.execute()
-
-    backend._ensure_service = _fake_ensure
-    backend._execute = _fake_execute
+    _attach_mock(backend, handler)
 
     asyncio.run(backend.delete_event("cal-1", "pid-456", None))
 
-    delete_calls = [c for c in fake.calls if c[0] == "delete"]
-    assert len(delete_calls) == 1
-    assert delete_calls[0][1]["eventId"] == "pid-456"
+    assert len(captured) == 1
+    req = captured[0]
+    assert req.method == "DELETE"
+    assert "/events/pid-456" in req.url.path
+    assert "sendUpdates=none" in str(req.url)

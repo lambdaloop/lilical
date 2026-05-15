@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import os
+import urllib.parse
 import zoneinfo
 from pathlib import Path
 from collections.abc import AsyncIterator
@@ -16,8 +17,6 @@ from typing import Any, cast
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build  # type: ignore[reportMissingTypeStubs]
-from googleapiclient.errors import HttpError  # type: ignore[reportMissingTypeStubs]
 
 from lilical.backends.base import (
     AuthExpired,
@@ -32,6 +31,8 @@ from lilical.models.event import Event
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
+
+GOOGLE_BASE = "https://www.googleapis.com/calendar/v3"
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -120,6 +121,31 @@ class GoogleCursor(SyncCursor):
         return cls(sync_token=data.get("sync_token"))  # type: ignore[reportArgumentType]
 
 
+def _status_of(exc: Exception) -> int | None:
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int):
+            return status
+    return None
+
+
+def _classify_one(exc: Exception) -> Exception:
+    status = _status_of(exc)
+    if status in (401, 403):
+        # Note: Google returns 403 for some rate-limit responses too, not just
+        # auth failures. This pre-existing mapping is intentional — changing
+        # it would require a separate, careful fix.
+        return AuthExpired(str(exc))
+    if status == 410:
+        return CursorExpired()
+    if status == 412:
+        return ConflictError(str(exc))
+    if status is not None and (status == 429 or status >= 500):
+        return TransientError(str(exc))
+    return PermanentError(str(exc))
+
+
 def _classify_errors(f):
     if inspect.isasyncgenfunction(f):
 
@@ -128,46 +154,35 @@ def _classify_errors(f):
             try:
                 async for item in f(*args, **kwargs):
                     yield item
-            except HttpError as e:
-                if e.resp.status in (401, 403):
-                    raise AuthExpired(str(e)) from e
-                if e.resp.status == 410:
-                    raise CursorExpired() from e
-                if e.resp.status == 412:
-                    raise ConflictError(str(e)) from e
-                if e.resp.status >= 500 or e.resp.status == 429:
-                    raise TransientError(str(e)) from e
-                raise PermanentError(str(e)) from e
-            except CursorExpired:
+            except (
+                AuthExpired,
+                CursorExpired,
+                ConflictError,
+                TransientError,
+                PermanentError,
+            ):
                 raise
-            except Exception as e:
-                log.exception("unclassified error in %s", f.__name__)
-                raise PermanentError(str(e)) from e
+            except Exception as exc:
+                raise _classify_one(exc) from exc
 
         return wrapper
-    else:
 
-        @functools.wraps(f)
-        async def wrapper_coro(*args, **kwargs):
-            try:
-                return await f(*args, **kwargs)
-            except HttpError as e:
-                if e.resp.status in (401, 403):
-                    raise AuthExpired(str(e)) from e
-                if e.resp.status == 410:
-                    raise CursorExpired() from e
-                if e.resp.status == 412:
-                    raise ConflictError(str(e)) from e
-                if e.resp.status >= 500 or e.resp.status == 429:
-                    raise TransientError(str(e)) from e
-                raise PermanentError(str(e)) from e
-            except CursorExpired:
-                raise
-            except Exception as e:
-                log.exception("unclassified error in %s", f.__name__)
-                raise PermanentError(str(e)) from e
+    @functools.wraps(f)
+    async def wrapper_coro(*args, **kwargs):
+        try:
+            return await f(*args, **kwargs)
+        except (
+            AuthExpired,
+            CursorExpired,
+            ConflictError,
+            TransientError,
+            PermanentError,
+        ):
+            raise
+        except Exception as exc:
+            raise _classify_one(exc) from exc
 
-        return wrapper_coro
+    return wrapper_coro
 
 
 def _parse_google_dt(
@@ -431,7 +446,7 @@ class GoogleBackend:
         self._token_json = token_json
         self._on_token_refreshed = on_token_refreshed
         self._creds: Credentials | None = None
-        self._service: Any = None
+        self._http: Any = None  # httpx.AsyncClient, created lazily
 
     def _get_credentials(self) -> Credentials | None:
         if self._creds is not None:
@@ -444,38 +459,108 @@ class GoogleBackend:
             self._creds = None
         return self._creds
 
-    def _set_credentials(self, creds: Credentials) -> None:
-        self._creds = creds
-        self._token_json = creds.to_json()
-        self._service = None
-
-    async def _ensure_service(self):
-        if self._service is not None:
-            return self._service
-        creds = self._get_credentials()
-        if creds and creds.expired and creds.refresh_token:
-            await asyncio.to_thread(creds.refresh, Request())
-            self._token_json = creds.to_json()
-            if self._on_token_refreshed:
-                self._on_token_refreshed(self._token_json)
-        self._service = await asyncio.to_thread(
-            lambda: build("calendar", "v3", credentials=creds, cache_discovery=False)
-        )
-        return self._service
-
-    async def _execute(self, request):
-        return await asyncio.to_thread(request.execute)
-
     def get_token_json(self) -> str | None:
         return self._token_json
 
+    def _acquire_token(self) -> str:
+        creds = self._get_credentials()
+        if creds is None:
+            raise AuthExpired("no cached google credentials")
+        if creds.valid:
+            return str(creds.token)
+        if creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception as exc:
+                raise AuthExpired(f"google token refresh failed: {exc}") from exc
+            self._token_json = creds.to_json()
+            if self._on_token_refreshed is not None:
+                try:
+                    self._on_token_refreshed(self._token_json)
+                except Exception:
+                    log.exception("on_token_refreshed callback raised")
+            return str(creds.token)
+        raise AuthExpired("google credentials expired and no refresh token")
+
+    def _get_http(self):
+        if self._http is None:
+            import httpx
+
+            self._http = httpx.AsyncClient(timeout=30.0)
+        return self._http
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
+        import httpx
+
+        token = await asyncio.to_thread(self._acquire_token)
+        hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        if headers:
+            hdrs.update(headers)
+        full = url if url.startswith("http") else f"{GOOGLE_BASE}{url}"
+        client = self._get_http()
+        try:
+            resp = await client.request(
+                method, full, params=params, json=json_body, headers=hdrs
+            )
+        except httpx.HTTPError as exc:
+            raise TransientError(str(exc)) from exc
+        if resp.status_code >= 400:
+            body_snippet = ""
+            with contextlib.suppress(Exception):
+                body_snippet = resp.text[:500]
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if body_snippet:
+                    exc.args = (
+                        f"{exc.args[0] if exc.args else ''} body={body_snippet}",
+                    )
+                raise
+        return resp
+
+    async def aclose(self) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    async def _drain_list(
+        self, calendar_id: str, initial_params: dict[str, str]
+    ) -> AsyncIterator[tuple[list[EventChange], GoogleCursor]]:
+        encoded = urllib.parse.quote(calendar_id, safe="")
+        url = f"/calendars/{encoded}/events"
+        params: dict[str, str] = dict(initial_params)
+        while True:
+            resp = await self._request("GET", url, params=params)
+            data = resp.json()
+            batch = [
+                c
+                for c in (
+                    _google_event_to_change(ev, calendar_id)
+                    for ev in data.get("items", [])
+                )
+                if c is not None
+            ]
+            next_page = data.get("nextPageToken")
+            sync_token = None if next_page else data.get("nextSyncToken")
+            yield batch, GoogleCursor(sync_token=sync_token)
+            if not next_page:
+                return
+            params = {"pageToken": next_page}
+
     @_classify_errors
     async def list_calendars(self) -> list[dict[str, object]]:
-        service = await self._ensure_service()
-        resp = await self._execute(service.calendarList().list())
+        resp = await self._request("GET", "/users/me/calendarList")
+        data = resp.json()
         out = []
-        for cal in resp.get("items", []):
-            # Google returns backgroundColor as a `#rrggbb` hex string.
+        for cal in data.get("items", []):
             colour = cal.get("backgroundColor")
             if colour and not colour.startswith("#"):
                 colour = "#" + colour
@@ -493,54 +578,36 @@ class GoogleBackend:
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
-        service = await self._ensure_service()
-        req = service.events().list(
-            calendarId=calendar_id,
-            singleEvents=False,
-            showDeleted=True,
-            maxResults=250,
-        )
-        while req is not None:
-            resp = await self._execute(req)
-            page: list[EventChange] = []
-            for ev in resp.get("items", []):
-                change = _google_event_to_change(ev, calendar_id)
-                if change is not None:
-                    page.append(change)
-            has_next = "nextPageToken" in resp
-            sync_token = None if has_next else resp.get("nextSyncToken")
-            yield page, GoogleCursor(sync_token=sync_token)
-            req = service.events().list_next(req, resp) if has_next else None
+        async for batch, cursor in self._drain_list(
+            calendar_id,
+            {
+                "singleEvents": "false",
+                "showDeleted": "true",
+                "maxResults": "250",
+            },
+        ):
+            yield batch, cursor
 
     @_classify_errors
     async def incremental_sync(
         self, calendar_id: str, cursor: SyncCursor
     ) -> tuple[list[EventChange], SyncCursor]:
-        service = await self._ensure_service()
         if not isinstance(cursor, GoogleCursor) or not cursor.sync_token:
             raise CursorExpired(calendar_id)
-        sync_token = cursor.sync_token
-        req = service.events().list(
-            calendarId=calendar_id,
-            syncToken=sync_token,
-            singleEvents=False,
-            showDeleted=True,
-            maxResults=250,
-        )
         changes: list[EventChange] = []
-        new_token = sync_token
-        while req is not None:
-            resp = await self._execute(req)
-            for ev in resp.get("items", []):
-                change = _google_event_to_change(ev, calendar_id)
-                if change is not None:
-                    changes.append(change)
-            if "nextPageToken" in resp:
-                req = service.events().list_next(req, resp)
-            else:
-                new_token = resp.get("nextSyncToken", sync_token)
-                req = None
-        return changes, GoogleCursor(sync_token=new_token)
+        new_cursor: GoogleCursor = GoogleCursor(sync_token=cursor.sync_token)
+        async for batch, c in self._drain_list(
+            calendar_id,
+            {
+                "syncToken": cursor.sync_token,
+                "singleEvents": "false",
+                "showDeleted": "true",
+                "maxResults": "250",
+            },
+        ):
+            changes.extend(batch)
+            new_cursor = c
+        return changes, new_cursor
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
@@ -548,19 +615,21 @@ class GoogleBackend:
 
         from lilical.backends._google_serializer import event_to_google_body
 
-        service = await self._ensure_service()
+        encoded = urllib.parse.quote(calendar_id, safe="")
         body = event_to_google_body(event)
-        resp = await self._execute(
-            service.events().insert(
-                calendarId=calendar_id, body=body, sendUpdates="none"
-            )
+        resp = await self._request(
+            "POST",
+            f"/calendars/{encoded}/events",
+            params={"sendUpdates": "none"},
+            json_body=body,
         )
+        data = resp.json()
         return _dc.replace(
             event,
-            uid=resp.get("iCalUID") or resp["id"],
-            provider_event_id=resp["id"],
-            etag=resp.get("etag"),
-            sequence=int(resp.get("sequence", 0)),
+            uid=data.get("iCalUID") or data["id"],
+            provider_event_id=data["id"],
+            etag=data.get("etag"),
+            sequence=int(data.get("sequence", 0)),
         )
 
     @_classify_errors
@@ -571,36 +640,39 @@ class GoogleBackend:
 
         from lilical.backends._google_serializer import event_to_google_body
 
-        service = await self._ensure_service()
-        body = event_to_google_body(event)
+        encoded_cal = urllib.parse.quote(calendar_id, safe="")
         pid = event.provider_event_id or event.uid
-        req = service.events().update(
-            calendarId=calendar_id,
-            eventId=pid,
-            body=body,
-            sendUpdates="none",
-        )
+        encoded_ev = urllib.parse.quote(pid, safe="")
+        body = event_to_google_body(event)
+        extra_headers: dict[str, str] = {}
         if if_match:
-            req.headers = getattr(req, "headers", {}) or {}
-            req.headers["If-Match"] = if_match
-        resp = await self._execute(req)
+            extra_headers["If-Match"] = if_match
+        resp = await self._request(
+            "PUT",
+            f"/calendars/{encoded_cal}/events/{encoded_ev}",
+            params={"sendUpdates": "none"},
+            json_body=body,
+            headers=extra_headers or None,
+        )
+        data = resp.json()
         return _dc.replace(
             event,
-            uid=resp.get("iCalUID") or resp["id"],
-            provider_event_id=resp["id"],
-            etag=resp.get("etag"),
-            sequence=int(resp.get("sequence", 0)),
+            uid=data.get("iCalUID") or data["id"],
+            provider_event_id=data["id"],
+            etag=data.get("etag"),
+            sequence=int(data.get("sequence", 0)),
         )
 
     @_classify_errors
     async def delete_event(
         self, calendar_id: str, provider_event_id: str, if_match: str | None
     ) -> None:
-        service = await self._ensure_service()
-        await self._execute(
-            service.events().delete(
-                calendarId=calendar_id, eventId=provider_event_id, sendUpdates="none"
-            )
+        encoded_cal = urllib.parse.quote(calendar_id, safe="")
+        encoded_ev = urllib.parse.quote(provider_event_id, safe="")
+        await self._request(
+            "DELETE",
+            f"/calendars/{encoded_cal}/events/{encoded_ev}",
+            params={"sendUpdates": "none"},
         )
 
     @_classify_errors
@@ -615,21 +687,19 @@ class GoogleBackend:
 
         from lilical.backends._google_serializer import event_to_google_body
 
-        service = await self._ensure_service()
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        instances_resp = await self._execute(
-            service.events().instances(
-                calendarId=calendar_id,
-                eventId=master_provider_id,
-                timeMin=win_start,
-                timeMax=win_end,
-            )
+        encoded_cal = urllib.parse.quote(calendar_id, safe="")
+        encoded_master = urllib.parse.quote(master_provider_id, safe="")
+        instances_resp = await self._request(
+            "GET",
+            f"/calendars/{encoded_cal}/events/{encoded_master}/instances",
+            params={"timeMin": win_start, "timeMax": win_end},
         )
         instance_id: str | None = None
-        for item in instances_resp.get("items", []):
+        for item in instances_resp.json().get("items", []):
             start_part = item.get("start") or {}
             raw = start_part.get("dateTime") or start_part.get("date")
             if not raw:
@@ -649,13 +719,12 @@ class GoogleBackend:
             )
 
         body = event_to_google_body(event)
-        await self._execute(
-            service.events().patch(
-                calendarId=calendar_id,
-                eventId=instance_id,
-                body=body,
-                sendUpdates="none",
-            )
+        encoded_inst = urllib.parse.quote(instance_id, safe="")
+        await self._request(
+            "PATCH",
+            f"/calendars/{encoded_cal}/events/{encoded_inst}",
+            params={"sendUpdates": "none"},
+            json_body=body,
         )
 
     @_classify_errors
@@ -667,21 +736,19 @@ class GoogleBackend:
     ) -> None:
         from datetime import timedelta
 
-        service = await self._ensure_service()
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        instances_resp = await self._execute(
-            service.events().instances(
-                calendarId=calendar_id,
-                eventId=master_provider_id,
-                timeMin=win_start,
-                timeMax=win_end,
-            )
+        encoded_cal = urllib.parse.quote(calendar_id, safe="")
+        encoded_master = urllib.parse.quote(master_provider_id, safe="")
+        instances_resp = await self._request(
+            "GET",
+            f"/calendars/{encoded_cal}/events/{encoded_master}/instances",
+            params={"timeMin": win_start, "timeMax": win_end},
         )
         instance_id: str | None = None
-        for item in instances_resp.get("items", []):
+        for item in instances_resp.json().get("items", []):
             start_part = item.get("start") or {}
             raw = start_part.get("dateTime") or start_part.get("date")
             if not raw:
@@ -700,8 +767,9 @@ class GoogleBackend:
                 f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
             )
 
-        await self._execute(
-            service.events().delete(
-                calendarId=calendar_id, eventId=instance_id, sendUpdates="none"
-            )
+        encoded_inst = urllib.parse.quote(instance_id, safe="")
+        await self._request(
+            "DELETE",
+            f"/calendars/{encoded_cal}/events/{encoded_inst}",
+            params={"sendUpdates": "none"},
         )
