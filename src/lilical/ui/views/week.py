@@ -522,6 +522,7 @@ class WeekView(QGraphicsView):
         self._chips: dict[tuple[str, str, str], EventChip] = {}
         self._more_markers: dict[int, _MoreMarker] = {}
         self._refresh_task: asyncio.Task | None = None
+        self._rendered_start: date | None = None
         self._needs_scroll: bool = True
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
@@ -568,6 +569,7 @@ class WeekView(QGraphicsView):
         self._sticky = _StickyHeader(week_start, self._day_count, 1)
         self._scene.addItem(self._sticky)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_start = self._start
 
         # Pin the sticky header to the viewport top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
@@ -590,6 +592,7 @@ class WeekView(QGraphicsView):
         self._sticky.set_start(self._start)
         self._sticky.set_day_count(self._day_count)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_start = self._start
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -694,14 +697,12 @@ class WeekView(QGraphicsView):
 
     def navigate(self, weeks: int) -> None:
         self._start = self._start + timedelta(weeks=weeks)
-        self._rebuild_grid()
         self._needs_scroll = True
         self.refresh()
 
     def go_today(self) -> None:
         today = date.today()
         self._start = today - timedelta(days=today.weekday())
-        self._rebuild_grid()
         self._needs_scroll = True
         self.refresh()
 
@@ -711,7 +712,6 @@ class WeekView(QGraphicsView):
 
     def go_to_date(self, d: date) -> None:
         self._start = d - timedelta(days=d.weekday())
-        self._rebuild_grid()
         self._needs_scroll = True
         self.refresh()
 
@@ -757,6 +757,8 @@ class WeekView(QGraphicsView):
     # ── Chip placement ───────────────────────────────────────────────────
 
     def _apply_plan(self, plan: dict) -> None:
+        if self._rendered_start != self._start:
+            self._rebuild_grid()
         band_h = plan["band_h"]
         if abs(band_h - self._grid.all_day_band_h) > 0.5:
             self._grid.set_all_day_band_h(band_h)

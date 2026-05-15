@@ -464,6 +464,7 @@ class _DayCanvas(QGraphicsView):
         self._time_format: str = "24h"
         self._chips: dict[tuple[str, str, str], EventChip] = {}
         self._refresh_task: asyncio.Task | None = None
+        self._rendered_day: date | None = None
         self._needs_scroll: bool = True
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
@@ -491,6 +492,7 @@ class _DayCanvas(QGraphicsView):
         self._sticky = _DayStickyHeader(self._day, 1)
         self._scene.addItem(self._sticky)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_day = self._day
 
         # Keep the sticky header pinned to viewport-top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
@@ -530,11 +532,11 @@ class _DayCanvas(QGraphicsView):
         self._sticky.set_width(w)
         self._sticky.set_day(self._day)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_day = self._day
 
     def set_day(self, d: date) -> None:
         self._day = d
         self._needs_scroll = True
-        self._rebuild_grid()
         self.refresh()
 
     def set_px_per_hour(self, px: int) -> None:
@@ -604,6 +606,8 @@ class _DayCanvas(QGraphicsView):
         self._apply_plan(plan)
 
     def _apply_plan(self, plan: dict) -> None:
+        if self._rendered_day != self._day:
+            self._rebuild_grid()
         band_h: float = plan["band_h"]
         new_placements: dict = plan["new_placements"]
 

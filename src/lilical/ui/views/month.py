@@ -217,6 +217,7 @@ class MonthView(QGraphicsView):
         self._chips: list[QGraphicsItem] = []
         self._event_chips: dict[tuple, EventChip] = {}
         self._refresh_task: asyncio.Task | None = None
+        self._rendered_month: tuple[int, int] | None = None
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -229,6 +230,7 @@ class MonthView(QGraphicsView):
         self._grid = MonthGrid(now.year, now.month)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_month = (self._year, self._month)
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -269,6 +271,7 @@ class MonthView(QGraphicsView):
         self._grid = MonthGrid(self._year, self._month)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
+        self._rendered_month = (self._year, self._month)
 
     def navigate(self, months: int) -> None:
         m = self._month + months
@@ -280,13 +283,11 @@ class MonthView(QGraphicsView):
             m += 12
             y -= 1
         self._year, self._month = y, m
-        self._rebuild_grid()
         self.refresh()
 
     def go_today(self) -> None:
         today = date.today()
         self._year, self._month = today.year, today.month
-        self._rebuild_grid()
         self.refresh()
 
     def refresh_theme(self) -> None:
@@ -295,7 +296,6 @@ class MonthView(QGraphicsView):
 
     def go_to_date(self, d: date) -> None:
         self._year, self._month = d.year, d.month
-        self._rebuild_grid()
         self.refresh()
 
     def range_label(self) -> str:
@@ -317,7 +317,8 @@ class MonthView(QGraphicsView):
             return
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
-        grid_start = self._grid.grid_start
+        first = date(self._year, self._month, 1)
+        grid_start = first - timedelta(days=first.weekday())
         end_day = grid_start + timedelta(days=42)
         cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
@@ -340,6 +341,8 @@ class MonthView(QGraphicsView):
         self._apply_plan(data)
 
     def _apply_plan(self, plan: dict) -> None:
+        if self._rendered_month != (self._year, self._month):
+            self._rebuild_grid()
         instances = plan["instances"]
         events = plan["events"]
         cal_color: dict[str, str | None] = plan["cal_color"]
