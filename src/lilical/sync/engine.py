@@ -142,10 +142,15 @@ class SyncEngine(QObject):
             import dataclasses as _dc
             event = _event_from_payload(op.payload)
             row = self._store.get_event(op.uid, op.calendar_id)
+            if row is None:
+                op = self._store.get_pending_op(op.id) or op
+                row = self._store.get_event(op.uid, op.calendar_id)
             pid = (row.provider_event_id if row else None) or event.provider_event_id
-            if pid and pid != event.provider_event_id:
+            if not pid:
+                return
+            if pid != event.provider_event_id:
                 event = _dc.replace(event, provider_event_id=pid)
-            canonical = await backend.update_event(provider_cal_id, event, if_match=op.if_match)
+            canonical = await backend.update_event(provider_cal_id, event, if_match=row.etag if row else op.if_match)
             if canonical is not None:
                 self._store.mark_synced(
                     op.uid,
@@ -157,11 +162,15 @@ class SyncEngine(QObject):
                 )
         elif op.op == "delete":
             row = self._store.get_event(op.uid, op.calendar_id)
+            if row is None:
+                op = self._store.get_pending_op(op.id) or op
+                row = self._store.get_event(op.uid, op.calendar_id)
             pid = row.provider_event_id if row else None
             if not pid:
-                log.info("delete op for %s has no provider_event_id; skipping remote call", op.uid)
+                self._store.remove_event(op.uid, op.calendar_id)
                 return
-            await backend.delete_event(provider_cal_id, pid, if_match=op.if_match)
+            await backend.delete_event(provider_cal_id, pid, if_match=row.etag if row else op.if_match)
+            self._store.remove_event(op.uid, op.calendar_id)
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
             if event.recurrence_id:
@@ -206,6 +215,8 @@ class SyncEngine(QObject):
                 await self._apply_pending_op(backend, op)
                 self._store.delete_pending_op(op.id)
             except ConflictError:
+                log.warning("conflict on %s op for %s; dropping", op.op, op.uid)
+                self._store.delete_pending_op(op.id)
                 self.conflict_detected.emit(op.uid)
             except TransientError:
                 raise

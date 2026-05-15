@@ -751,7 +751,8 @@ class CalDavBackend:
         if override_ve is not None:
             rebuilt.add_component(override_ve)
 
-        await self._run(event_obj.set_data, rebuilt.to_ical().decode())
+        event_obj.data = rebuilt.to_ical().decode()
+        await self._run(event_obj.save)
 
     @_classify_errors
     async def delete_instance(
@@ -770,4 +771,5 @@ class CalDavBackend:
             if comp.name == "VEVENT" and not comp.get("RECURRENCE-ID"):
                 comp.add("exdate", recurrence_id_dt)
 
-        await self._run(event_obj.set_data, master_cal.to_ical().decode())
+        event_obj.data = master_cal.to_ical().decode()
+        await self._run(event_obj.save)

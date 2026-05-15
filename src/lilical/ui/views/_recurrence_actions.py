@@ -127,7 +127,15 @@ def _dispatch_edit(
             etag=master.etag,
             sequence=(master.sequence or 0) + 1,
         )
-        store.queue_update(updated, master.etag)
+        if updated.calendar_id != master.calendar_id:
+            store.queue_move(
+                uid=master.uid,
+                old_calendar_id=master.calendar_id,
+                new_calendar_id=updated.calendar_id,
+                moved_event=updated,
+            )
+        else:
+            store.queue_update(updated, master.etag)
 
 
 def _dispatch_delete(

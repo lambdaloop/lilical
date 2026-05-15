@@ -401,6 +401,82 @@ class EventStore(QObject):
                     )
         self.events_changed.emit(calendar_id, {uid})
 
+    def queue_move(
+        self,
+        uid: str,
+        old_calendar_id: str,
+        new_calendar_id: str,
+        moved_event: Event,
+    ) -> str:
+        """Move an event from one calendar to another.
+
+        Creates a new event row in the target calendar with a fresh uid and a
+        pending create op. Marks the source event as deleted with a delete op.
+
+        Returns the new event uid.
+        """
+        import uuid as _uuid
+
+        account_id = self._account_id_for_calendar(old_calendar_id)
+        new_uid = str(_uuid.uuid4())
+        with Session(self._engine) as s, s.begin():
+            # Mark the old event as deleted
+            old_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=old_calendar_id, recurrence_id="")
+                .first()
+            )
+            if old_row is not None:
+                old_row.deleted_locally = True
+                old_row.local_dirty = True
+                s.query(EventInstanceRow).filter_by(
+                    uid=uid, calendar_id=old_calendar_id
+                ).delete()
+                if account_id:
+                    s.add(
+                        PendingOpRow(
+                            account_id=account_id,
+                            calendar_id=old_calendar_id,
+                            uid=uid,
+                            op="delete",
+                            payload="{}",
+                            if_match=old_row.etag,
+                            created_at=_utc_now(),
+                        )
+                    )
+
+            # Create the event in the new calendar
+            moved = dataclasses.replace(
+                moved_event,
+                uid=new_uid,
+                calendar_id=new_calendar_id,
+                provider_event_id=None,
+                etag=None,
+                sequence=0,
+                local_dirty=True,
+            )
+            new_row = _event_to_row(moved)
+            new_row.local_dirty = True
+            s.add(new_row)
+            self._rebuild_instances_for(s, moved)
+
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=new_calendar_id,
+                        uid=new_uid,
+                        op="create",
+                        payload=_event_to_json(moved),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
+
+        self.events_changed.emit(old_calendar_id, {uid})
+        self.events_changed.emit(new_calendar_id, {new_uid})
+        return new_uid
+
     def queue_update_instance(
         self,
         uid: str,
@@ -858,6 +934,21 @@ class EventStore(QObject):
 
         with Session(self._engine) as s, s.begin():
             s.query(PendingOpRow).filter(PendingOpRow.id == op_id).delete()
+
+    def get_pending_op(self, op_id: int):
+        from lilical.models.pending_op import PendingOpRow
+
+        with Session(self._engine) as s:
+            return s.query(PendingOpRow).filter(PendingOpRow.id == op_id).first()
+
+    def remove_event(self, uid: str, calendar_id: str) -> None:
+        with Session(self._engine) as s, s.begin():
+            s.query(EventRow).filter_by(
+                uid=uid, calendar_id=calendar_id
+            ).delete()
+            s.query(EventInstanceRow).filter_by(
+                uid=uid, calendar_id=calendar_id
+            ).delete()
 
     def mark_synced(
         self,

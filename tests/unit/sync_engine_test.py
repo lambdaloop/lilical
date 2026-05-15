@@ -659,7 +659,13 @@ class _PendingOpStore:
         # Return a minimal row so delete ops (which now require
         # provider_event_id) reach the backend. Tests that need to
         # simulate "never synced" override this per-instance.
-        return SimpleNamespace(provider_event_id=uid)
+        return SimpleNamespace(provider_event_id=uid, etag='"mock-etag"')
+
+    def get_pending_op(self, op_id: int):
+        return None
+
+    def remove_event(self, uid: str, calendar_id: str) -> None:
+        pass
 
     def mark_synced(self, local_uid: str, calendar_id: str, *, canonical_uid, provider_event_id, etag, sequence) -> None:
         self.mark_synced_calls.append({"uid": local_uid, "calendar_id": calendar_id,
@@ -742,7 +748,7 @@ async def test_tick_deletes_pending_op_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_conflict_error_emits_conflict_detected_and_leaves_op_queued() -> None:
+async def test_conflict_error_emits_conflict_detected_and_drops_op() -> None:
     op = _op("update", uid="u-conflict")
     op.id = 77
     store = _PendingOpStore([op])
@@ -755,7 +761,7 @@ async def test_conflict_error_emits_conflict_detected_and_leaves_op_queued() -> 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
     assert "u-conflict" in conflicts
-    assert 77 not in store.deleted_op_ids
+    assert 77 in store.deleted_op_ids
 
 
 @pytest.mark.asyncio

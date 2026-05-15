@@ -796,6 +796,11 @@ class MainWindow(QMainWindow):
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()
         self._update_range_label()
+        # Wake the sync engine so pending ops are pushed immediately.
+        if uids:
+            cal = self._store.get_calendar(calendar_id)
+            if cal is not None:
+                self._sync.force_refresh(cal.account_id)
 
     # ── Account management ────────────────────────────────────────────────
 
