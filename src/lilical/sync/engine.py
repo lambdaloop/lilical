@@ -44,14 +44,14 @@ class SyncEngine(QObject):
         self._wake_events: dict[str, asyncio.Event] = {}
 
     async def start_all(self) -> None:
-        for acc in self._store.list_accounts(enabled_only=True):
+        for acc in await asyncio.to_thread(self._store.list_accounts, True):
             if acc.id not in self._tasks:
                 self._tasks[acc.id] = asyncio.create_task(self._run_account(acc))
 
     async def start_account(self, account_id: str) -> None:
         if account_id in self._tasks:
             return
-        acc = self._store.get_account(account_id)
+        acc = await asyncio.to_thread(self._store.get_account, account_id)
         if acc is None:
             return
         self._wake_events[account_id] = asyncio.Event()
@@ -83,7 +83,10 @@ class SyncEngine(QObject):
         if account_id in self._tasks:
             # Task is mid-teardown; let it finish.
             return
-        acc = self._store.get_account(account_id)
+        asyncio.get_event_loop().create_task(self._resurrect_account(account_id))
+
+    async def _resurrect_account(self, account_id: str) -> None:
+        acc = await asyncio.to_thread(self._store.get_account, account_id)
         if acc is None:
             return
         self._tasks[account_id] = asyncio.create_task(self._run_account(acc))

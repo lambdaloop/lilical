@@ -348,13 +348,15 @@ async def test_force_refresh_restarts_dead_task_after_auth_expired() -> None:
 
     engine._tick = succeeding_tick
 
-    # force_refresh on a dead account must restart it.
+    # force_refresh on a dead account must restart it. The resurrection is
+    # async (DB fetch via to_thread), so _tasks is populated only after the
+    # first tick fires — confirmed below.
     engine.force_refresh("acc-resurrect")
-    assert "acc-resurrect" in engine._tasks
 
     # Give the new task one tick of the event loop, then confirm the second
     # _tick fired and a fresh wake_event was registered.
     await asyncio.wait_for(second_tick_called.wait(), timeout=5)
+    assert "acc-resurrect" in engine._tasks
     assert "acc-resurrect" in engine._wake_events
 
     # Clean up the still-running resurrected task.

@@ -158,6 +158,7 @@ class MainWindow(QMainWindow):
         self._account_display_names: dict[str, str] = {
             acc.id: acc.display_name for acc in self._store.list_accounts()
         }
+        self._theme_qss_cache: dict[str, str] = {}
 
         # Persistent prefs. QSettings reads/writes under the org/app names set
         # in app.py ("lilical"/"lilical") → ~/.config/lilical/lilical.conf.
@@ -684,20 +685,26 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self, name: str) -> None:
         _theme_module.apply(name)
-        try:
-            theme_path = Path(__file__).parent / "styles" / f"{name}.qss"
-            if theme_path.exists():
-                with open(theme_path) as f:
-                    qss = f.read()
-                # Resolve relative url(./…) to absolute so referenced assets
-                # (e.g. SVG checkmarks) load correctly regardless of cwd.
-                styles_dir = theme_path.parent.as_posix()
-                qss = qss.replace("url(./", f"url({styles_dir}/")
-                self.setStyleSheet(qss)
-            else:
-                log.warning("Theme file not found: %s", theme_path)
-        except Exception:
-            log.exception("Failed to apply theme '%s'", name)
+        if name not in self._theme_qss_cache:
+            try:
+                theme_path = Path(__file__).parent / "styles" / f"{name}.qss"
+                if theme_path.exists():
+                    with open(theme_path) as f:
+                        qss = f.read()
+                    # Resolve relative url(./…) to absolute so referenced assets
+                    # (e.g. SVG checkmarks) load correctly regardless of cwd.
+                    styles_dir = theme_path.parent.as_posix()
+                    qss = qss.replace("url(./", f"url({styles_dir}/")
+                    self._theme_qss_cache[name] = qss
+                else:
+                    log.warning("Theme file not found: %s", theme_path)
+                    self._theme_qss_cache[name] = ""
+            except Exception:
+                log.exception("Failed to apply theme '%s'", name)
+                self._theme_qss_cache[name] = ""
+        qss = self._theme_qss_cache.get(name, "")
+        if qss:
+            self.setStyleSheet(qss)
         # Repaint all custom-drawn views with the new palette.
         for v in self._views.values():
             if v is self._current_view and hasattr(v, "refresh_theme"):

@@ -726,12 +726,12 @@ class EventStore(QObject):
                 s.query(Calendar).filter(Calendar.id == calendar_id).update(
                     {"sync_cursor": new_cursor_json}
                 )
-        # EventRows are now committed. Rebuild event_instances in a separate
-        # transaction so the main write lock stays short.
-        if masters_to_rebuild:
+        # EventRows are now committed. Rebuild event_instances one master at a
+        # time so the write lock is released between expansions — GUI writes can
+        # interleave between masters.
+        for event in masters_to_rebuild.values():
             with self._write_session() as s:
-                for event in masters_to_rebuild.values():
-                    self._rebuild_instances_for(s, event)
+                self._rebuild_instances_for(s, event)
         changed_uids = {c.uid for c in changes if hasattr(c, "uid")}
         self.events_changed.emit(calendar_id, changed_uids)
         return count

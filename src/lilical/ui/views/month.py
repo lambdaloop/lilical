@@ -261,7 +261,7 @@ class MonthView(QGraphicsView):
         self.refresh()
 
     def refresh_theme(self) -> None:
-        self.refresh()
+        self._scene.update()
         self.viewport().update()
 
     def go_to_date(self, d: date) -> None:

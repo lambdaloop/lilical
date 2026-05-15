@@ -578,6 +578,8 @@ class CalDavBackend:
             days=self._SYNC_WINDOW_DAYS
         )
 
+    _INITIAL_SYNC_CHUNK = 250  # max EventChanges per yield to keep write-lock short
+
     @_classify_errors
     async def initial_sync(
         self, calendar_id: str
@@ -588,9 +590,15 @@ class CalDavBackend:
         events = await self._run(
             lambda: cal_obj.search(start=start, end=end, event=True, expand=False)
         )
-        changes = self._events_to_changes(events, calendar_id)
         sync_token = await self._fetch_sync_token(cal_obj)
-        yield changes, CalDavCursor(sync_token=sync_token)
+        changes = self._events_to_changes(events, calendar_id)
+        if not changes:
+            yield [], CalDavCursor(sync_token=sync_token)
+            return
+        chunk = self._INITIAL_SYNC_CHUNK
+        for i in range(0, len(changes), chunk):
+            is_last = i + chunk >= len(changes)
+            yield changes[i : i + chunk], CalDavCursor(sync_token=sync_token if is_last else None)
 
     @_classify_errors
     async def incremental_sync(
