@@ -10,6 +10,7 @@ from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -57,6 +58,7 @@ class EventDetailsDialog(QDialog):
 
         self.edit_requested: bool = False
         self.delete_requested: bool = False
+        self.response_choice: str | None = None
 
         time_fmt = str(QSettings().value("time_format", "24h") or "24h")
 
@@ -83,7 +85,7 @@ class EventDetailsDialog(QDialog):
         title_font = QFont()
         title_font.setPointSize(14)
         title_font.setBold(True)
-        if event.status == "CANCELLED":
+        if event.status == "CANCELLED" or (event.self_response or "").upper() == "DECLINED":
             title_font.setStrikeOut(True)
         title_label.setFont(title_font)
         title_label.setWordWrap(True)
@@ -166,9 +168,6 @@ class EventDetailsDialog(QDialog):
         if event.transparency == "TRANSPARENT":
             _add_row("Show as:", "Free")
 
-        # ── My response ───────────────────────────────────────────────────────
-        if event.self_response:
-            _add_row("My response:", event.self_response.title())
 
         # ── Attendees ─────────────────────────────────────────────────────────
         if event.attendees:
@@ -195,6 +194,30 @@ class EventDetailsDialog(QDialog):
         btn_bar_layout.setContentsMargins(12, 8, 12, 12)
         btn_bar_layout.addStretch()
 
+        # RSVP buttons — only shown when the user is an invited attendee.
+        if event.self_response is not None:
+            current = (event.self_response or "").upper()
+            for label, value in (
+                ("Accept", "ACCEPTED"),
+                ("Tentative", "TENTATIVE"),
+                ("Decline", "DECLINED"),
+            ):
+                btn = QPushButton(label)
+                btn.setCheckable(True)
+                if current == value:
+                    btn.setChecked(True)
+                    btn.setEnabled(False)
+                else:
+                    btn.clicked.connect(
+                        lambda _checked, v=value: self._on_respond(v)
+                    )
+                btn_bar_layout.addWidget(btn)
+
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.VLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            btn_bar_layout.addWidget(sep)
+
         edit_btn = QPushButton("Edit")
         delete_btn = QPushButton("Delete")
         close_btn = QPushButton("Close")
@@ -217,6 +240,10 @@ class EventDetailsDialog(QDialog):
 
     def _on_delete(self) -> None:
         self.delete_requested = True
+        self.accept()
+
+    def _on_respond(self, response: str) -> None:
+        self.response_choice = response
         self.accept()
 
 

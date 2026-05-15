@@ -1171,6 +1171,28 @@ class GraphBackend:
         )
 
     @_classify_errors
+    async def respond_to_event(
+        self, calendar_id: str, event: Event, response: str
+    ) -> Event | None:
+        if not event.provider_event_id:
+            return None
+        _endpoints: dict[str, str] = {
+            "ACCEPTED": "accept",
+            "TENTATIVE": "tentativelyAccept",
+            "DECLINED": "decline",
+        }
+        action = _endpoints.get(response.upper())
+        if not action:
+            return None
+        # Graph RSVP endpoints return HTTP 202 with no body.
+        await self._request(
+            "POST",
+            f"/me/events/{event.provider_event_id}/{action}",
+            json_body={"sendResponse": True, "comment": ""},
+        )
+        return None  # etag will be refreshed by the next incremental sync
+
+    @_classify_errors
     async def delete_instance(
         self,
         calendar_id: str,

@@ -231,6 +231,9 @@ class EventChip(QGraphicsObject):
             reason = self._dim_reason()
             if reason:
                 parts.append(f"({reason})")
+        elif self._is_needs_action():
+            sr = (self._event.self_response or "").upper()
+            parts.append("(tentative)" if sr == "TENTATIVE" else "(awaiting response)")
         return "\n".join(parts)
 
     def _is_dimmed(self) -> bool:
@@ -240,6 +243,10 @@ class EventChip(QGraphicsObject):
             return True
         sr = (self._event.self_response or "").upper()
         return sr == "DECLINED"
+
+    def _is_needs_action(self) -> bool:
+        """True when the user hasn't committed to this invitation (no response or tentative)."""
+        return (self._event.self_response or "").upper() in ("NEEDS-ACTION", "TENTATIVE")
 
     def _dim_reason(self) -> str | None:
         status = (self._event.status or "").upper()
@@ -330,9 +337,17 @@ class EventChip(QGraphicsObject):
 
     # ── Bars mode ────────────────────────────────────────────────────────
     def _paint_bars_mode(self, painter: QPainter, base: QColor) -> None:
-        painter.setBrush(base)
-        painter.setPen(QPen(base.darker(160), 0))
         body = self._rect.adjusted(0, 0, -1, -1)
+        if self._is_needs_action():
+            fill = QColor(base)
+            fill.setAlphaF(0.55)
+            painter.setBrush(fill)
+            pen = QPen(base.darker(160), 1.2, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+        else:
+            painter.setBrush(base)
+            painter.setPen(QPen(base.darker(160), 0))
         painter.drawRoundedRect(body, 3, 3)
 
         text_color = _readable_text_color(base)
@@ -499,7 +514,12 @@ class EventChip(QGraphicsObject):
         _bar_w = 3
         body = self._rect.adjusted(0, 0, -1, -1)
         painter.setBrush(QColor(theme.BG_SURFACE_ALT))
-        painter.setPen(Qt.PenStyle.NoPen)
+        if self._is_needs_action():
+            outline_pen = QPen(base.darker(140), 1.0, Qt.PenStyle.DashLine)
+            outline_pen.setCosmetic(True)
+            painter.setPen(outline_pen)
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(body, 2, 2)
 
         bar_rect = QRectF(
@@ -666,11 +686,17 @@ class EventChip(QGraphicsObject):
 
     # ── Dot mode (Agenda children, very dense rows) ──────────────────────
     def _paint_dot(self, painter: QPainter, base: QColor) -> None:
-        painter.setBrush(base)
-        painter.setPen(Qt.PenStyle.NoPen)
         dot_d = 6
         cy = self._rect.center().y()
         dot_x = self._rect.x() + 4
+        if self._is_needs_action():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            dot_pen = QPen(base, 1.5, Qt.PenStyle.DashLine)
+            dot_pen.setCosmetic(True)
+            painter.setPen(dot_pen)
+        else:
+            painter.setBrush(base)
+            painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(dot_x, cy - dot_d / 2, dot_d, dot_d))
 
         text_x = dot_x + dot_d + 6

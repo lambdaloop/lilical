@@ -80,3 +80,14 @@ class Backend(Protocol):
         master_provider_id: str,
         recurrence_id_dt: "datetime",
     ) -> None: ...
+
+    async def respond_to_event(
+        self, calendar_id: str, event: Event, response: str
+    ) -> "Event | None":
+        """Send an RSVP response for an event the user is invited to.
+
+        `response` must be one of "ACCEPTED", "TENTATIVE", or "DECLINED".
+        Returns the updated canonical Event (refreshed etag/sequence) when the
+        backend echoes state, or None when it does not (e.g. Graph's 202).
+        """
+        ...

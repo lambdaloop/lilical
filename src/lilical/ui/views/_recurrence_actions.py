@@ -29,6 +29,14 @@ def open_details_dialog(
     dlg = EventDetailsDialog(parent, store=store, event=event)
     if not dlg.exec():
         return
+    if dlg.response_choice is not None:
+        master = event
+        if event.recurrence_id is not None:
+            m = store.get_event(event.uid, event.calendar_id)
+            if m:
+                master = m
+        store.queue_respond(master.uid, master.calendar_id, dlg.response_choice)
+        return
     if dlg.delete_requested:
         open_delete_dialog(parent, store, event, instance_dtstart)
     elif dlg.edit_requested:

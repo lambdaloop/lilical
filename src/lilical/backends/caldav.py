@@ -848,3 +848,45 @@ class CalDavBackend:
 
         event_obj.data = master_cal.to_ical().decode()
         await self._run(event_obj.save)
+
+    @_classify_errors
+    async def respond_to_event(
+        self, calendar_id: str, event: Event, response: str
+    ) -> Event | None:
+        import dataclasses as _dc
+
+        if not event.provider_event_id:
+            return None
+        _partstat = {"ACCEPTED": "ACCEPTED", "TENTATIVE": "TENTATIVE", "DECLINED": "DECLINED"}
+        partstat = _partstat.get(response.upper())
+        if not partstat:
+            return None
+        user_mailto = f"mailto:{self._username.lower()}"
+        client = await self._get_client()
+        event_obj = caldav.CalendarObjectResource(client=client, url=event.provider_event_id)  # type: ignore[reportGeneralTypeIssues]
+        raw = await self._run(event_obj.get_data)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        cal = icalendar.Calendar.from_ical(raw)
+        updated = False
+        for comp in cal.subcomponents:
+            if comp.name != "VEVENT" or comp.get("RECURRENCE-ID") is not None:
+                continue
+            attendee_prop = comp.get("ATTENDEE")
+            attendees = attendee_prop if isinstance(attendee_prop, list) else ([attendee_prop] if attendee_prop else [])
+            for att in attendees:
+                if str(att).lower() == user_mailto:
+                    att.params["PARTSTAT"] = partstat
+                    att.params.pop("RSVP", None)
+                    updated = True
+            if updated:
+                seq = int(str(comp.get("SEQUENCE", 0)))
+                comp["SEQUENCE"] = icalendar.vInt(seq + 1)
+        if not updated:
+            return None
+        event_obj.data = cal.to_ical().decode()
+        if event.etag:
+            event_obj.etag = event.etag
+        await self._run(event_obj.save)
+        new_etag = getattr(event_obj, "etag", None)
+        return _dc.replace(event, etag=new_etag, self_response=response)

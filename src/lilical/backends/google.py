@@ -732,6 +732,49 @@ class GoogleBackend:
         )
 
     @_classify_errors
+    async def respond_to_event(
+        self, calendar_id: str, event: Event, response: str
+    ) -> Event | None:
+        import dataclasses as _dc
+
+        _to_google = {"ACCEPTED": "accepted", "TENTATIVE": "tentative", "DECLINED": "declined"}
+        g_status = _to_google.get(response.upper())
+        if not g_status or not event.provider_event_id:
+            return None
+        encoded_cal = urllib.parse.quote(calendar_id, safe="")
+        encoded_ev = urllib.parse.quote(event.provider_event_id, safe="")
+        # GET the current event to find the self attendee's email and full object.
+        # GET the current attendees list so we can patch only the self entry.
+        get_resp = await self._request(
+            "GET",
+            f"/calendars/{encoded_cal}/events/{encoded_ev}",
+            params={"fields": "attendees"},
+        )
+        attendees_raw: list[dict[str, object]] = get_resp.json().get("attendees") or []
+        found_self = any(isinstance(a, dict) and a.get("self") is True for a in attendees_raw)
+        if not found_self:
+            return None
+        patched_attendees = [
+            dict(a, responseStatus=g_status) if (isinstance(a, dict) and a.get("self") is True) else a
+            for a in attendees_raw
+        ]
+        resp = await self._request(
+            "PATCH",
+            f"/calendars/{encoded_cal}/events/{encoded_ev}",
+            params={"sendUpdates": "all"},
+            json_body={"attendees": patched_attendees},
+        )
+        data = resp.json()
+        return _dc.replace(
+            event,
+            uid=data.get("iCalUID") or data.get("id") or event.uid,
+            provider_event_id=data.get("id") or event.provider_event_id,
+            etag=data.get("etag") or event.etag,
+            sequence=int(data.get("sequence", event.sequence or 0)),
+            self_response=response,
+        )
+
+    @_classify_errors
     async def delete_instance(
         self,
         calendar_id: str,

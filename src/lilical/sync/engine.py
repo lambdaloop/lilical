@@ -229,6 +229,27 @@ class SyncEngine(QObject):
                     )
             else:
                 log.warning("delete_instance op missing recurrence_id for %s", op.uid)
+        elif op.op == "respond":
+            import json as _json
+
+            payload = _json.loads(op.payload or "{}")
+            response = payload.get("response", "")
+            if not response:
+                return
+            row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
+            if row is None:
+                return
+            canonical = await backend.respond_to_event(provider_cal_id, row, response)
+            if canonical is not None:
+                await asyncio.to_thread(
+                    self._store.mark_synced,
+                    op.uid,
+                    op.calendar_id,
+                    canonical_uid=canonical.uid,
+                    provider_event_id=canonical.provider_event_id,
+                    etag=canonical.etag,
+                    sequence=canonical.sequence or row.sequence or 0,
+                )
 
     async def _initial_sync_cal(self, account_id: str, cal, backend) -> int:
         """Initial-sync one calendar, pre-fetching the next page during each DB write."""  # noqa: E501

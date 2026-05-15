@@ -478,6 +478,36 @@ class EventStore(QObject):
         self.events_changed.emit(calendar_id, {uid})
         self.local_events_changed.emit()
 
+    def queue_respond(self, uid: str, calendar_id: str, response: str) -> None:
+        """Record a local RSVP response and enqueue it for sync to the backend."""
+        import json as _json
+
+        account_id = self._account_id_for_calendar(calendar_id)
+        with self._write_session() as s:
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if row is not None:
+                row.self_response = response
+                row.local_dirty = True
+                row.local_modified_at = _utc_now()
+                if account_id:
+                    s.add(
+                        PendingOpRow(
+                            account_id=account_id,
+                            calendar_id=calendar_id,
+                            uid=uid,
+                            op="respond",
+                            payload=_json.dumps({"response": response}),
+                            if_match=row.etag,
+                            created_at=_utc_now(),
+                        )
+                    )
+        self.events_changed.emit(calendar_id, {uid})
+        self.local_events_changed.emit()
+
     def queue_move(
         self,
         uid: str,
