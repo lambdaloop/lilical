@@ -125,13 +125,14 @@ class SyncEngine(QObject):
     async def _apply_pending_op(self, backend, op) -> None:
         # Pending ops store the internal DB calendar_id. Backends need the
         # provider_id (CalDAV URL, Google calendar ID, Graph calendar ID).
-        cal = self._store.get_calendar(op.calendar_id)
+        cal = await asyncio.to_thread(self._store.get_calendar, op.calendar_id)
         provider_cal_id = cal.provider_id if cal else op.calendar_id
 
         if op.op == "create":
             event = _event_from_payload(op.payload)
             canonical = await backend.create_event(provider_cal_id, event)
-            self._store.mark_synced(
+            await asyncio.to_thread(
+                self._store.mark_synced,
                 event.uid,
                 op.calendar_id,
                 canonical_uid=canonical.uid,
@@ -143,10 +144,10 @@ class SyncEngine(QObject):
             import dataclasses as _dc
 
             event = _event_from_payload(op.payload)
-            row = self._store.get_event(op.uid, op.calendar_id)
+            row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             if row is None:
-                op = self._store.get_pending_op(op.id) or op
-                row = self._store.get_event(op.uid, op.calendar_id)
+                op = await asyncio.to_thread(self._store.get_pending_op, op.id) or op
+                row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             pid = (row.provider_event_id if row else None) or event.provider_event_id
             if not pid:
                 return
@@ -156,7 +157,8 @@ class SyncEngine(QObject):
                 provider_cal_id, event, if_match=row.etag if row else op.if_match
             )
             if canonical is not None:
-                self._store.mark_synced(
+                await asyncio.to_thread(
+                    self._store.mark_synced,
                     op.uid,
                     op.calendar_id,
                     canonical_uid=canonical.uid,
@@ -165,22 +167,22 @@ class SyncEngine(QObject):
                     sequence=canonical.sequence or 0,
                 )
         elif op.op == "delete":
-            row = self._store.get_event(op.uid, op.calendar_id)
+            row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             if row is None:
-                op = self._store.get_pending_op(op.id) or op
-                row = self._store.get_event(op.uid, op.calendar_id)
+                op = await asyncio.to_thread(self._store.get_pending_op, op.id) or op
+                row = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
             pid = row.provider_event_id if row else None
             if not pid:
-                self._store.remove_event(op.uid, op.calendar_id)
+                await asyncio.to_thread(self._store.remove_event, op.uid, op.calendar_id)
                 return
             await backend.delete_event(
                 provider_cal_id, pid, if_match=row.etag if row else op.if_match
             )
-            self._store.remove_event(op.uid, op.calendar_id)
+            await asyncio.to_thread(self._store.remove_event, op.uid, op.calendar_id)
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
             if event.recurrence_id:
-                master = self._store.get_event(op.uid, op.calendar_id)
+                master = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.update_instance(
@@ -201,7 +203,7 @@ class SyncEngine(QObject):
                 from datetime import datetime as _dt
 
                 rid = _dt.fromisoformat(rid_str)
-                master = self._store.get_event(op.uid, op.calendar_id)
+                master = await asyncio.to_thread(self._store.get_event, op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.delete_instance(provider_cal_id, master_pid, rid)
@@ -219,16 +221,16 @@ class SyncEngine(QObject):
         # 0) Discover/reconcile calendars (replaces the bootstrap placeholder
         # row with real provider IDs from the backend; picks up new calendars).
         remote_cals = await backend.list_calendars()
-        self._store.upsert_calendars(account.id, remote_cals)
+        await asyncio.to_thread(self._store.upsert_calendars, account.id, remote_cals)
 
         # 1) Drain pending writes
-        for op in self._store.list_pending_ops(account.id):
+        for op in await asyncio.to_thread(self._store.list_pending_ops, account.id):
             try:
                 await self._apply_pending_op(backend, op)
-                self._store.delete_pending_op(op.id)
+                await asyncio.to_thread(self._store.delete_pending_op, op.id)
             except ConflictError:
                 log.warning("conflict on %s op for %s; dropping", op.op, op.uid)
-                self._store.delete_pending_op(op.id)
+                await asyncio.to_thread(self._store.delete_pending_op, op.id)
                 self.conflict_detected.emit(op.uid)
             except TransientError:
                 raise
@@ -237,11 +239,11 @@ class SyncEngine(QObject):
                 # etc). Drop it so we don't crash sync every tick — surface the
                 # error but keep pulling remote changes.
                 log.error("dropping pending %s op for %s: %s", op.op, op.uid, e)
-                self._store.delete_pending_op(op.id)
+                await asyncio.to_thread(self._store.delete_pending_op, op.id)
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
         # 2) Pull incremental changes per calendar
-        for cal in self._store.list_calendars(account.id, visible_only=False):
+        for cal in await asyncio.to_thread(self._store.list_calendars, account.id, False):
             from lilical.sync.cursor import cursor_from_json
 
             cursor = cursor_from_json(
@@ -282,7 +284,7 @@ class SyncEngine(QObject):
         # CursorExpired), so skip the second discovery round-trip and
         # read from the store instead. New calendars surface within
         # one normal tick (≤300s).
-        cals = self._store.list_calendars(account.id, visible_only=False)
+        cals = await asyncio.to_thread(self._store.list_calendars, account.id, False)
         for cal in cals:
             if calendar_id and cal.provider_id != calendar_id:
                 continue

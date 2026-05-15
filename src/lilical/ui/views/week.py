@@ -589,6 +589,11 @@ class WeekView(QGraphicsView):
             return
 
         events = self._store.events_for_instances(instances)
+        cal_color: dict[str, str | None] = {
+            cal.id: cal.color
+            for acc in self._store.list_accounts()
+            for cal in self._store.list_calendars(acc.id, visible_only=False)
+        }
         # First pass: count all-day-per-day to size the all-day band.
         all_day_rows_per_col = [0] * self._day_count
         for inst in instances:
@@ -616,7 +621,6 @@ class WeekView(QGraphicsView):
             self._sticky.set_all_day_band_h(band_h)
 
         body_top = self._grid.hour_top()
-        cal_color: dict[str, str | None] = {}
         per_col_all_day_idx = [0] * self._day_count
         # Timed events bucketed per day_offset; we lay them out after this
         # pass via the cascade packer so that overlaps render side-by-side.
@@ -635,10 +639,6 @@ class WeekView(QGraphicsView):
             day_offset = (t.date() - self._start).days
             if day_offset < 0 or day_offset >= self._day_count:
                 continue
-
-            if inst.calendar_id not in cal_color:
-                cal = self._store.get_calendar(inst.calendar_id)
-                cal_color[inst.calendar_id] = cal.color if cal else None
 
             if inst.all_day:
                 row = per_col_all_day_idx[day_offset]

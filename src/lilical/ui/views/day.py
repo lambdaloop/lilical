@@ -429,6 +429,11 @@ class _DayCanvas(QGraphicsView):
             return
 
         events = self._store.events_for_instances(instances)
+        cal_color: dict[str, str | None] = {
+            cal.id: cal.color
+            for acc in self._store.list_accounts()
+            for cal in self._store.list_calendars(acc.id, visible_only=False)
+        }
         # Count all-day events for band sizing.
         all_day_count = sum(
             1 for inst in instances if inst.all_day and _is_on(inst, self._day)
@@ -445,7 +450,6 @@ class _DayCanvas(QGraphicsView):
             self._sticky.set_all_day_band_h(band_h)
 
         body_top = self._grid.hour_top()
-        cal_color: dict[str, str | None] = {}
         all_day_idx = 0
         timed_bucket: list[tuple[float, float, dict[str, object]]] = []
 
@@ -459,10 +463,6 @@ class _DayCanvas(QGraphicsView):
                 continue
             if t.date() != self._day:
                 continue
-
-            if inst.calendar_id not in cal_color:
-                cal = self._store.get_calendar(inst.calendar_id)
-                cal_color[inst.calendar_id] = cal.color if cal else None
 
             if inst.all_day:
                 if all_day_idx >= ALL_DAY_MAX_ROWS:
@@ -1026,8 +1026,16 @@ class DayView(QWidget):
             upcoming.append((t, inst))
         upcoming.sort(key=lambda x: x[0])
 
+        cal_color_mini: dict[str, str | None] = {
+            cal.id: cal.color
+            for acc in self._store.list_accounts()
+            for cal in self._store.list_calendars(acc.id, visible_only=False)
+        }
+        mini_instances = [inst for _t, inst in upcoming[: self.MINI_AGENDA_COUNT]]
+        mini_events = self._store.events_for_instances(mini_instances)  # type: ignore[reportArgumentType]
+
         for t, inst in upcoming[: self.MINI_AGENDA_COUNT]:
-            event = self._store.get_event(inst.uid, inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
+            event = mini_events.get(id(inst))
             if event is None:
                 continue
             if t.date() == now.date():
@@ -1041,10 +1049,7 @@ class DayView(QWidget):
             if event.location:
                 label += f"   · {event.location}"
             item = QListWidgetItem(label)
-            color_hint = event.color
-            if not color_hint:
-                cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
-                color_hint = cal.color if cal else None
+            color_hint = event.color or cal_color_mini.get(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
             if color_hint:
                 c = QColor(color_hint)
                 if c.isValid():

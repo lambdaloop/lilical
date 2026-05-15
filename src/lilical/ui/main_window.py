@@ -155,6 +155,9 @@ class MainWindow(QMainWindow):
         self._secrets = secrets
         self._current_view: QWidget | None = None
         self._view_actions: dict[str, QAction] = {}
+        self._account_display_names: dict[str, str] = {
+            acc.id: acc.display_name for acc in self._store.list_accounts()
+        }
 
         # Persistent prefs. QSettings reads/writes under the org/app names set
         # in app.py ("lilical"/"lilical") → ~/.config/lilical/lilical.conf.
@@ -270,12 +273,14 @@ class MainWindow(QMainWindow):
         # ── Signal wiring ──────────────────────────────────────────────────
         self._events_changed_pending: set[str] = set()
         self._events_changed_calendars: set[str] = set()
+        self._local_events_pending = False
         self._events_changed_timer = QTimer(self)
         self._events_changed_timer.setSingleShot(True)
         self._events_changed_timer.setInterval(150)
         self._events_changed_timer.timeout.connect(self._flush_events_changed)
 
         self._store.events_changed.connect(self._on_events_changed)
+        self._store.local_events_changed.connect(self._on_local_events_changed)
         self._sync.sync_started.connect(self._on_sync_started)
         self._sync.sync_progress.connect(self._on_sync_progress)
         self._sync.sync_finished.connect(self._on_sync_finished)
@@ -781,8 +786,7 @@ class MainWindow(QMainWindow):
     # ── Sync signal handlers ──────────────────────────────────────────────
 
     def _account_label(self, account_id: str) -> str:
-        acc = self._store.get_account(account_id)
-        return acc.display_name if acc is not None else account_id
+        return self._account_display_names.get(account_id, account_id)
 
     def _on_sync_started(self, account_id: str) -> None:
         self._syncing_accounts.add(account_id)
@@ -798,7 +802,7 @@ class MainWindow(QMainWindow):
         self._syncing_accounts.discard(account_id)
         label = self._account_label(account_id)
         self._sync_status.set_ok(f"{label} ({n_changes} changes)")
-        self._sidebar.refresh()
+        self._sidebar.refresh_for_account(account_id)
 
     def _on_sync_failed(self, account_id: str, message: str) -> None:
         self._syncing_accounts.discard(account_id)
@@ -816,20 +820,24 @@ class MainWindow(QMainWindow):
         self._sync_status.set_auth_expired(label, message)
         log.warning("Auth failed for account %s (%s): %s", account_id, label, message)
 
+    def _on_local_events_changed(self) -> None:
+        self._local_events_pending = True
+
     def _on_events_changed(self, calendar_id: str, uids: set[str]) -> None:
         self._events_changed_calendars.add(calendar_id)
         self._events_changed_pending |= uids
         self._events_changed_timer.start()
 
     def _flush_events_changed(self) -> None:
-        uids = self._events_changed_pending
         cals = self._events_changed_calendars
+        local = self._local_events_pending
         self._events_changed_pending = set()
         self._events_changed_calendars = set()
+        self._local_events_pending = False
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
         self._update_range_label()
-        if uids:
+        if local:
             for cal_id in cals:
                 cal = self._store.get_calendar(cal_id)
                 if cal is not None:
@@ -858,6 +866,7 @@ class MainWindow(QMainWindow):
             calendar_id=calendar_id,
             calendar_display_name=display_name or identity or "Calendar",
         )
+        self._account_display_names[account_id] = display_name or identity or ""
         self._sidebar.refresh()
         self._fire_async(
             self._sync.start_account(account_id), f"start_account/{account_id}"
@@ -880,6 +889,7 @@ class MainWindow(QMainWindow):
         if not new_name or new_name == acc.display_name:
             return
         self._store.update_account(account_id, display_name=new_name)
+        self._account_display_names[account_id] = new_name
         self._sidebar.refresh()
 
     def _on_reauth_account(self, account_id: str) -> None:
@@ -941,6 +951,7 @@ class MainWindow(QMainWindow):
         await self._sync.stop_account(account_id)
         self._secrets.delete(account_id)
         await asyncio.to_thread(self._store.delete_account, account_id)
+        self._account_display_names.pop(account_id, None)
         self._sidebar.refresh()
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]

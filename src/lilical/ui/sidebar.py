@@ -6,7 +6,6 @@ from functools import partial
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
-    QCheckBox,
     QColorDialog,
     QFrame,
     QHBoxLayout,
@@ -15,8 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QStyle,
-    QStyleOptionButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -26,33 +23,53 @@ from lilical.storage.event_store import EventStore
 from lilical.ui.widgets.mini_month import MiniMonthGrid
 
 
-class _CalendarSwatch(QToolButton):
-    """A small color square next to each calendar; click to pick a new color."""
+class _CalendarChip(QToolButton):
+    """Colored chip showing calendar visibility; click to toggle, right-click for color."""
 
+    visibility_changed = Signal(str, bool)  # calendar_id, is_visible
     color_changed = Signal(str, str)  # calendar_id, new_hex
 
-    def __init__(self, calendar_id: str, color_hex: str, store: EventStore) -> None:
+    def __init__(
+        self, calendar_id: str, color_hex: str, is_visible: bool, store: EventStore
+    ) -> None:
         super().__init__()
         self._calendar_id = calendar_id
         self._color = color_hex
+        self._visible = bool(is_visible)
         self._store = store
-        self.setFixedSize(14, 14)
-        self.setToolTip("Click to change calendar color")
+        self.setFixedSize(16, 16)
+        self.setToolTip("Click to hide/show · Right-click to change color")
         self.setAutoRaise(True)
         self._apply_style()
         self.clicked.connect(self._on_clicked)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            f"QToolButton {{"
-            f"  background-color: {self._color};"
-            f"  border: 1px solid #7a7a7a;"
-            f"  border-radius: 3px;"
-            f"}}"
-            f"QToolButton:hover {{ border-color: #ffffff; }}"
-        )
+        border_color = QColor(self._color).darker(130).name()
+        if self._visible:
+            self.setStyleSheet(
+                f"QToolButton {{"
+                f"  background-color: {self._color};"
+                f"  border: 2px solid {border_color};"
+                f"  border-radius: 4px;"
+                f"}}"
+                f"QToolButton:hover {{ border-color: #ffffff; }}"
+            )
+        else:
+            self.setStyleSheet(
+                f"QToolButton {{"
+                f"  background-color: transparent;"
+                f"  border: 2px solid {self._color};"
+                f"  border-radius: 4px;"
+                f"}}"
+                f"QToolButton:hover {{ border-color: #ffffff; }}"
+            )
 
     def _on_clicked(self) -> None:
+        self._visible = not self._visible
+        self._apply_style()
+        self.visibility_changed.emit(self._calendar_id, self._visible)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: ANN001
         initial = QColor(self._color)
         if not initial.isValid():
             initial = QColor("#5e9fff")
@@ -68,8 +85,8 @@ class _CalendarSwatch(QToolButton):
         if new_hex == self._color.lower():
             return
         self._color = new_hex
-        self._apply_style()
         self._store.set_calendar_color(self._calendar_id, new_hex)
+        self._apply_style()
         self.color_changed.emit(self._calendar_id, new_hex)
 
 
@@ -102,29 +119,6 @@ class _ElidedLabel(QLabel):
         )
 
 
-class _ElidedCheckBox(QCheckBox):
-    """QCheckBox that elides its label with '…' when the row is narrowed."""
-
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        super().__init__("", parent)
-        self._full_text = text
-        self.setToolTip(text)
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-
-    def paintEvent(self, event) -> None:  # noqa: ANN001
-        opt = QStyleOptionButton()
-        self.initStyleOption(opt)
-        fm = QFontMetrics(self.font())
-        style = self.style()
-        indicator_w = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, opt, self)
-        spacing = style.pixelMetric(QStyle.PixelMetric.PM_CheckBoxLabelSpacing, opt, self)
-        text_w = max(0, self.width() - indicator_w - spacing - 4)
-        opt.text = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight, text_w)
-        painter = QPainter(self)
-        style.drawControl(QStyle.ControlElement.CE_CheckBox, opt, painter, self)
-
-
 class Sidebar(QWidget):
     rename_account_requested = Signal(str)
     reauth_account_requested = Signal(str)
@@ -142,22 +136,26 @@ class Sidebar(QWidget):
         super().__init__()
         self._store = store
         self._add_account_callback = add_account_callback
+        self.setObjectName("sidebar")
         self.setMinimumWidth(180)
         self.setMaximumWidth(420)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 10, 8, 8)
+        layout.setSpacing(8)
 
         # ── Mini-month picker ──────────────────────────────────────────────
         mini_header = QHBoxLayout()
         self._mini_prev = QToolButton()
-        self._mini_prev.setText("◀")
+        self._mini_prev.setText("‹")
+        self._mini_prev.setObjectName("mini-nav")
         self._mini_prev.setAutoRaise(True)
         self._mini_label = QLabel()
         self._mini_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._mini_label.setObjectName("mini-month-label")
         self._mini_next = QToolButton()
-        self._mini_next.setText("▶")
+        self._mini_next.setText("›")
+        self._mini_next.setObjectName("mini-nav")
         self._mini_next.setAutoRaise(True)
         mini_header.addWidget(self._mini_prev)
         mini_header.addWidget(self._mini_label, 1)
@@ -172,15 +170,9 @@ class Sidebar(QWidget):
         self._mini_next.clicked.connect(self._on_mini_next)
         self._mini_month.selected.connect(self.date_selected)
 
-        # ── Divider ────────────────────────────────────────────────────────
-        div = QFrame()
-        div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet("color: #555555;")
-        layout.addWidget(div)
-
         # ── Calendars label ────────────────────────────────────────────────
-        cal_title = QLabel("Calendars")
-        cal_title.setStyleSheet("font-weight: bold; padding: 2px 4px;")
+        cal_title = QLabel("CALENDARS")
+        cal_title.setObjectName("section-heading")
         layout.addWidget(cal_title)
 
         # ── Calendar list (scrollable) ─────────────────────────────────────
@@ -197,11 +189,12 @@ class Sidebar(QWidget):
         layout.addWidget(scroll, 1)
 
         add_btn = QPushButton("+ Add account")
+        add_btn.setObjectName("add-account")
         if add_account_callback is not None:
             add_btn.clicked.connect(add_account_callback)
         layout.addWidget(add_btn)
 
-        self._checkboxes: dict[str, QCheckBox] = {}
+        self._chips: dict[str, _CalendarChip] = {}
         self._account_widgets: list[QWidget] = []
         self.refresh()
 
@@ -244,7 +237,7 @@ class Sidebar(QWidget):
             w.setParent(None)
             w.deleteLater()
         self._account_widgets.clear()
-        self._checkboxes.clear()
+        self._chips.clear()
 
         # Stretch item is always last; insert account groups before it.
         insert_at = max(self._cal_layout.count() - 1, 0)
@@ -258,16 +251,17 @@ class Sidebar(QWidget):
     def _build_account_group(self, account) -> QWidget:
         container = QWidget()
         v = QVBoxLayout(container)
-        v.setContentsMargins(0, 4, 0, 4)
+        v.setContentsMargins(0, 10, 0, 6)
         v.setSpacing(2)
 
         header = QWidget()
+        header.setObjectName("account-header")
         h = QHBoxLayout(header)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(4)
 
-        label = _ElidedLabel(account.display_name)
-        label.setStyleSheet("font-weight: bold;")
+        label = _ElidedLabel(account.display_name.upper())
+        label.setObjectName("account-heading")
         label.setToolTip(f"{account.identity} ({account.kind})")
         h.addWidget(label, 1)
 
@@ -309,32 +303,27 @@ class Sidebar(QWidget):
         cals = self._store.list_calendars(account.id, visible_only=False)
         for cal in cals:
             row = QWidget()
+            row.setObjectName("cal-row")
             row_h = QHBoxLayout(row)
-            row_h.setContentsMargins(12, 0, 0, 0)
-            row_h.setSpacing(6)
+            row_h.setContentsMargins(14, 2, 4, 2)
+            row_h.setSpacing(8)
 
-            swatch = _CalendarSwatch(cal.id, cal.color or "#5e9fff", self._store)
-            swatch.color_changed.connect(self._on_calendar_color_changed)
-            row_h.addWidget(swatch)
-
-            cb = _ElidedCheckBox(cal.display_name)
-            cb.setObjectName("cal-cb")
-            cb.setChecked(bool(cal.is_visible))
-            cb.toggled.connect(
-                partial(
-                    lambda cid, checked: self.calendar_visibility_changed.emit(
-                        cid, bool(checked)
-                    ),
-                    cal.id,
-                )
+            chip = _CalendarChip(cal.id, cal.color or "#5e9fff", cal.is_visible, self._store)
+            chip.visibility_changed.connect(
+                lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
-            row_h.addWidget(cb, 1)
+            chip.color_changed.connect(self._on_calendar_color_changed)
+            row_h.addWidget(chip)
+
+            name_label = _ElidedLabel(cal.display_name)
+            name_label.setObjectName("cal-name")
+            row_h.addWidget(name_label, 1)
             v.addWidget(row)
-            self._checkboxes[cal.id] = cb
+            self._chips[cal.id] = chip
 
         if not cals:
             placeholder = QLabel("(no calendars yet)")
-            placeholder.setStyleSheet("color: #888; padding-left: 12px;")
+            placeholder.setObjectName("cal-placeholder")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignLeft)
             v.addWidget(placeholder)
 

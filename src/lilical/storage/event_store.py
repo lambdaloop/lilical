@@ -140,6 +140,7 @@ def _event_to_row(event: Event) -> EventRow:
 class EventStore(QObject):
     events_changed = Signal(str, set)
     instances_changed = Signal(str, datetime, datetime)
+    local_events_changed = Signal()  # fired after any locally-originated mutation
 
     _instances_window_years = 1
 
@@ -388,6 +389,7 @@ class EventStore(QObject):
                     )
                 )
         self.events_changed.emit(event.calendar_id, {event.uid})
+        self.local_events_changed.emit()
 
     def queue_update(self, event: Event, prev_etag: str | None) -> None:
         account_id = self._account_id_for_calendar(event.calendar_id)
@@ -426,6 +428,7 @@ class EventStore(QObject):
                         )
                     )
         self.events_changed.emit(event.calendar_id, {event.uid})
+        self.local_events_changed.emit()
 
     def queue_delete(self, uid: str, calendar_id: str) -> None:
         account_id = self._account_id_for_calendar(calendar_id)
@@ -454,6 +457,7 @@ class EventStore(QObject):
                         )
                     )
         self.events_changed.emit(calendar_id, {uid})
+        self.local_events_changed.emit()
 
     def queue_move(
         self,
@@ -529,6 +533,7 @@ class EventStore(QObject):
 
         self.events_changed.emit(old_calendar_id, {uid})
         self.events_changed.emit(new_calendar_id, {new_uid})
+        self.local_events_changed.emit()
         return new_uid
 
     def queue_update_instance(
@@ -588,6 +593,7 @@ class EventStore(QObject):
                     )
                 )
         self.events_changed.emit(calendar_id, {uid})
+        self.local_events_changed.emit()
 
     def queue_delete_instance(
         self,
@@ -635,6 +641,7 @@ class EventStore(QObject):
                     )
                 )
         self.events_changed.emit(calendar_id, {uid})
+        self.local_events_changed.emit()
 
     def apply_remote_changes(
         self,
@@ -1156,6 +1163,7 @@ class EventStore(QObject):
                 )
 
         self.events_changed.emit(calendar_id, {uid, new_uid})
+        self.local_events_changed.emit()
         return new_uid
 
     def queue_truncate_series(
@@ -1218,3 +1226,4 @@ class EventStore(QObject):
                 )
 
         self.events_changed.emit(calendar_id, {uid})
+        self.local_events_changed.emit()

@@ -301,8 +301,12 @@ class MonthView(QGraphicsView):
             return
 
         events = self._store.events_for_instances(instances)
-        # Precompute calendar colours.
-        cal_color: dict[str, str | None] = {}
+        # Pre-fetch calendar colours once for the whole refresh.
+        cal_color: dict[str, str | None] = {
+            cal.id: cal.color
+            for acc in self._store.list_accounts()
+            for cal in self._store.list_calendars(acc.id, visible_only=False)
+        }
 
         # Build per-day buckets, distinguishing multi-day from single-day.
         # An instance is "multi-day" when its end-date (exclusive at midnight)
@@ -371,10 +375,6 @@ class MonthView(QGraphicsView):
                 inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
             except (ValueError, TypeError):
                 inst_t = None
-            if inst.calendar_id not in cal_color:  # type: ignore[reportAttributeAccessIssue]
-                cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
-                cal_color[inst.calendar_id] = cal.color if cal else None  # type: ignore[reportAttributeAccessIssue]
-
             # Clip span to visible grid.
             visible_start = max(s_day, grid_start)
             visible_end = min(e_day, grid_start + timedelta(days=41))
@@ -491,9 +491,6 @@ class MonthView(QGraphicsView):
                 event = events.get(id(inst))
                 if event is None:
                     continue
-                if inst.calendar_id not in cal_color:
-                    cal = self._store.get_calendar(inst.calendar_id)
-                    cal_color[inst.calendar_id] = cal.color if cal else None
                 x = col * CELL_W + 2
                 y = HEADER_H + row * CELL_H + 22 + track * (CHIP_H + CHIP_GAP)
                 time_prefix = None

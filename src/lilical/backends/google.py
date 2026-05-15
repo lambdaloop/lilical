@@ -500,19 +500,17 @@ class GoogleBackend:
             showDeleted=True,
             maxResults=250,
         )
-        all_changes: list[EventChange] = []
         while req is not None:
             resp = await self._execute(req)
+            page: list[EventChange] = []
             for ev in resp.get("items", []):
                 change = _google_event_to_change(ev, calendar_id)
                 if change is not None:
-                    all_changes.append(change)
-            if "nextPageToken" in resp:
-                req = service.events().list_next(req, resp)
-            else:
-                sync_token = resp.get("nextSyncToken")
-                yield all_changes, GoogleCursor(sync_token=sync_token)
-                req = None
+                    page.append(change)
+            has_next = "nextPageToken" in resp
+            sync_token = None if has_next else resp.get("nextSyncToken")
+            yield page, GoogleCursor(sync_token=sync_token)
+            req = service.events().list_next(req, resp) if has_next else None
 
     @_classify_errors
     async def incremental_sync(
