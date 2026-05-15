@@ -23,15 +23,15 @@ from lilical.sync.engine import SyncEngine
 class FakeStore:
     def __init__(self) -> None:
         self.applied: list[tuple[str, list[EventChange], object]] = []
-        self.visible_only_args: list[bool] = []
+        self.included_only_args: list[bool] = []
 
     def list_pending_ops(self, account_id: str) -> list:
         assert account_id == "acc-1"
         return []
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         assert account_id == "acc-1"
-        self.visible_only_args.append(visible_only)
+        self.included_only_args.append(included_only)
         return [
             SimpleNamespace(
                 id="cal-1",
@@ -56,7 +56,7 @@ class FakeStoreMultiCal:
     def list_pending_ops(self, account_id: str) -> list:
         return []
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return [
             SimpleNamespace(
                 id="cal-1",
@@ -110,7 +110,7 @@ async def test_tick_runs_initial_sync_and_applies_remote_changes() -> None:
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
-    assert store.visible_only_args == [True]
+    assert store.included_only_args == [True]
     assert backend.initial_sync_calendar_ids == ["provider-cal-1"]
     assert len(store.applied) == 1
     calendar_id, changes, cursor = store.applied[0]
@@ -421,7 +421,7 @@ class _RecordingStore:
         self.calls.append(f"list_pending_ops({account_id})")
         return []
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         self.calls.append(f"list_calendars({account_id})")
         return self.calendars
 
@@ -637,7 +637,7 @@ class _PendingOpStore:
     def list_pending_ops(self, account_id: str) -> list:
         return list(self._ops)
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return []
 
     def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:

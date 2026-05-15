@@ -77,7 +77,7 @@ class QuickAddDialog(QDialog):
         self._cal_combo = QComboBox()
         accs = store.list_accounts()
         for acc in accs:
-            cals = store.list_calendars(acc.id, visible_only=False)
+            cals = store.list_calendars(acc.id, included_only=True)
             for cal in cals:
                 self._cal_combo.addItem(
                     f"{acc.display_name} / {cal.display_name}", cal.id

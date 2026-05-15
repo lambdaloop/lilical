@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         for acc in self._store.list_accounts():
             self._account_display_names[acc.id] = acc.display_name
             self._account_meta[acc.id] = (acc.display_name, acc.identity, acc.kind)
-            for cal in self._store.list_calendars(acc.id, visible_only=False):
+            for cal in self._store.list_calendars(acc.id, included_only=True):
                 self._cal_info[cal.id] = CalInfo(
                     id=cal.id,
                     display_name=cal.display_name,
@@ -859,7 +859,7 @@ class MainWindow(QMainWindow):
         if acc is None:
             return {}, None
         acc_meta = (acc.display_name, acc.identity, acc.kind)
-        cals = self._store.list_calendars(account_id, visible_only=False)
+        cals = self._store.list_calendars(account_id, included_only=True)
         cal_info = {
             cal.id: CalInfo(
                 id=cal.id,
@@ -892,11 +892,33 @@ class MainWindow(QMainWindow):
             self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 
     def _on_cal_metadata_changed(self, calendar_id: str) -> None:
-        """Patch _cal_info when a calendar's visibility or color changes in the store."""
-        if calendar_id not in self._cal_info:
-            return
+        """Patch _cal_info when a calendar's visibility, inclusion, or color changes."""
         cal = self._store.get_calendar(calendar_id)
         if cal is None:
+            return
+        if not cal.is_included:
+            if calendar_id in self._cal_info:
+                account_id = self._cal_info[calendar_id].account_id
+                self._cal_info = {k: v for k, v in self._cal_info.items() if k != calendar_id}
+                self._sidebar.refresh_for_account(account_id)
+                if self._current_view is not None and hasattr(self._current_view, "refresh"):
+                    self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
+            return
+        if calendar_id not in self._cal_info:
+            # Newly re-included calendar — add it to the cache.
+            self._cal_info = {
+                **self._cal_info,
+                calendar_id: CalInfo(
+                    id=cal.id,
+                    display_name=cal.display_name,
+                    color=cal.color,
+                    account_id=cal.account_id,
+                    visible=bool(cal.is_visible),
+                ),
+            }
+            self._sidebar.refresh_for_account(cal.account_id)
+            if self._current_view is not None and hasattr(self._current_view, "refresh"):
+                self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
             return
         old = self._cal_info[calendar_id]
         self._cal_info = {
@@ -1079,7 +1101,7 @@ class MainWindow(QMainWindow):
         acc = self._store.get_account(account_id)
         if acc is None:
             return
-        cals = self._store.list_calendars(account_id, visible_only=False)
+        cals = self._store.list_calendars(account_id, included_only=False)
         confirm = QMessageBox(self)
         confirm.setIcon(QMessageBox.Icon.Warning)
         confirm.setWindowTitle("Delete account?")

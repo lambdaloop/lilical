@@ -25,7 +25,7 @@ class _FakeStore:
     def list_accounts(self, enabled_only=True):
         return []
 
-    def list_calendars(self, account_id, visible_only=True):
+    def list_calendars(self, account_id, included_only=True):
         return []
 
 

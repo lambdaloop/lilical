@@ -59,6 +59,7 @@ def _create_test_schema(engine) -> None:
                 server_url TEXT,
                 secret_ref TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1
             )
             """
@@ -73,6 +74,8 @@ def _create_test_schema(engine) -> None:
                 color TEXT,
                 is_primary INTEGER DEFAULT 0,
                 is_visible INTEGER DEFAULT 1,
+                is_included INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
                 is_favorite INTEGER DEFAULT 0,
                 access_role TEXT,
                 sync_cursor TEXT,
@@ -396,15 +399,15 @@ def test_delete_account_only_removes_targeted_account(engine) -> None:
 
 def test_set_calendar_visibility_toggles_flag(engine) -> None:
     store = EventStore(engine)
-    cals_before = store.list_calendars("acc-1", visible_only=False)
+    cals_before = store.list_calendars("acc-1", included_only=False)
     assert cals_before[0].is_visible == 1
 
     store.set_calendar_visibility("cal-1", False)
-    cals = store.list_calendars("acc-1", visible_only=False)
+    cals = store.list_calendars("acc-1", included_only=False)
     assert cals[0].is_visible == 0
 
     store.set_calendar_visibility("cal-1", True)
-    cals = store.list_calendars("acc-1", visible_only=False)
+    cals = store.list_calendars("acc-1", included_only=False)
     assert cals[0].is_visible == 1
 
 

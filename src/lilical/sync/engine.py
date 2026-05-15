@@ -246,7 +246,9 @@ class SyncEngine(QObject):
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 
         # 2) Pull incremental changes per calendar
-        for cal in await asyncio.to_thread(self._store.list_calendars, account.id, True):
+        for cal in await asyncio.to_thread(
+            self._store.list_calendars, account.id, True
+        ):
             from lilical.sync.cursor import cursor_from_json
 
             cursor = cursor_from_json(
@@ -287,7 +289,7 @@ class SyncEngine(QObject):
         # CursorExpired), so skip the second discovery round-trip and
         # read from the store instead. New calendars surface within
         # one normal tick (≤300s).
-        cals = await asyncio.to_thread(self._store.list_calendars, account.id, False)
+        cals = await asyncio.to_thread(self._store.list_calendars, account.id, True)
         for cal in cals:
             if calendar_id and cal.provider_id != calendar_id:
                 continue

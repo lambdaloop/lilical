@@ -854,6 +854,15 @@ class EventStore(QObject):
             )
         self.cal_metadata_changed.emit(calendar_id)
 
+    def set_calendar_inclusion(self, calendar_id: str, is_included: bool) -> None:
+        from lilical.models.calendar import Calendar
+
+        with self._write_session() as s:
+            s.query(Calendar).filter(Calendar.id == calendar_id).update(
+                {"is_included": 1 if is_included else 0}
+            )
+        self.cal_metadata_changed.emit(calendar_id)
+
     def get_calendar(self, calendar_id: str):
         from lilical.models.calendar import Calendar
 
@@ -916,13 +925,13 @@ class EventStore(QObject):
                 )
             )
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list[Any]:
+    def list_calendars(self, account_id: str, included_only: bool = True) -> list[Any]:
         from lilical.models.calendar import Calendar
 
         with Session(self._engine) as s:
             q = s.query(Calendar).filter(Calendar.account_id == account_id)
-            if visible_only:
-                q = q.filter(Calendar.is_visible == 1)
+            if included_only:
+                q = q.filter(Calendar.is_included == 1)
             return q.order_by(Calendar.sort_order, Calendar.display_name).all()
 
     def set_calendar_orders(self, orders: list[tuple[str, int]]) -> None:
@@ -945,7 +954,11 @@ class EventStore(QObject):
         from lilical.models.calendar import Calendar
 
         with Session(self._engine) as s:
-            rows = s.query(Calendar.id).filter(Calendar.is_visible == 1).all()
+            rows = (
+                s.query(Calendar.id)
+                .filter(Calendar.is_visible == 1, Calendar.is_included == 1)
+                .all()
+            )
             return {row[0] for row in rows}
 
     # 12-colour fallback palette for calendars the backend doesn't tint.

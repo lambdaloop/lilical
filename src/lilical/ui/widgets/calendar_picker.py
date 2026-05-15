@@ -76,9 +76,9 @@ class CalendarPickerDialog(QDialog):
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
-        for cal in self._store.list_calendars(self._account_id, visible_only=False):
+        for cal in self._store.list_calendars(self._account_id, included_only=False):
             row = _CalendarRow(
-                cal.id, cal.display_name, cal.color or "#5e9fff", bool(cal.is_visible)
+                cal.id, cal.display_name, cal.color or "#5e9fff", bool(cal.is_included)
             )
             self._rows.append(row)
             self._list_layout.insertWidget(self._list_layout.count() - 1, row)
@@ -93,5 +93,5 @@ class CalendarPickerDialog(QDialog):
 
     def _on_accept(self) -> None:
         for row in self._rows:
-            self._store.set_calendar_visibility(row.calendar_id, row.is_checked)
+            self._store.set_calendar_inclusion(row.calendar_id, row.is_checked)
         self.accept()

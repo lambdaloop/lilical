@@ -274,7 +274,7 @@ def _format_when(event: "Event", time_fmt: str = "24h") -> str:
 
 def _format_calendar(store: "EventStore", calendar_id: str) -> str:
     for acc in store.list_accounts():
-        for cal in store.list_calendars(acc.id, visible_only=False):
+        for cal in store.list_calendars(acc.id, included_only=False):
             if cal.id == calendar_id:
                 return f"{acc.display_name} / {cal.display_name}"
     return calendar_id
