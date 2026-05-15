@@ -238,6 +238,10 @@ class MonthView(QGraphicsView):
         self._rebuild_grid()
         self.refresh()
 
+    def refresh_theme(self) -> None:
+        self.refresh()
+        self.viewport().update()
+
     def go_to_date(self, d: date) -> None:
         self._year, self._month = d.year, d.month
         self._rebuild_grid()

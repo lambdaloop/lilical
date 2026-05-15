@@ -77,6 +77,9 @@ class AgendaView(QWidget):
         self._start = d
         self.refresh()
 
+    def refresh_theme(self) -> None:
+        self.refresh()
+
     def range_label(self) -> str:
         end = self._start + timedelta(days=_DAYS_AHEAD - 1)
         return f"{self._start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"

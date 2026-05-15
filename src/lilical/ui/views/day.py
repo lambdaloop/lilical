@@ -966,6 +966,18 @@ class DayView(QWidget):
         self._canvas.refresh()
         self._refresh_mini_agenda()
 
+    def refresh_theme(self) -> None:
+        self._mini_label.setStyleSheet(
+            f"padding: 4px 8px; color: {theme.TEXT_SECONDARY}; "
+            f"background: {theme.BG_SURFACE}; "
+            f"border-top: 1px solid {theme.BORDER_STRONG};"
+        )
+        self._mini_list.setStyleSheet(
+            f"background: {theme.BG_BASE}; color: {theme.TEXT_PRIMARY}; border: none;"
+        )
+        self._canvas.viewport().update()
+        self._refresh_mini_agenda()
+
     def zoom_in(self) -> None:
         self._canvas.zoom_in()
 

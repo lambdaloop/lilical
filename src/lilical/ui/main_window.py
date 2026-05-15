@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lilical.ui import theme as _theme_module
 from lilical.ui.sidebar import Sidebar
 from lilical.ui.tray import SystemTray
 from lilical.ui.views.agenda import AgendaView
@@ -645,6 +646,7 @@ class MainWindow(QMainWindow):
                         v.set_time_format(dlg.time_format)
 
     def _apply_theme(self, name: str) -> None:
+        _theme_module.apply(name)
         try:
             theme_path = Path(__file__).parent / "styles" / f"{name}.qss"
             if theme_path.exists():
@@ -654,6 +656,13 @@ class MainWindow(QMainWindow):
                 log.warning("Theme file not found: %s", theme_path)
         except Exception:
             log.exception("Failed to apply theme '%s'", name)
+        # Repaint all custom-drawn views with the new palette.
+        for v in self._views.values():
+            if hasattr(v, "refresh_theme"):
+                v.refresh_theme()
+        # Sidebar mini-month uses hardcoded scene text — re-render it.
+        if hasattr(self, "_sidebar"):
+            self._sidebar._mini_month._render()
 
     # ── Zoom (Week/Day vertical pixel-per-hour) ──────────────────────────
 

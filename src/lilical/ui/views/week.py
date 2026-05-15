@@ -526,6 +526,10 @@ class WeekView(QGraphicsView):
         self.refresh()
         QTimer.singleShot(0, self._scroll_to_first_event)
 
+    def refresh_theme(self) -> None:
+        self.refresh()
+        self.viewport().update()
+
     def go_to_date(self, d: date) -> None:
         self._start = d - timedelta(days=d.weekday())
         self._rebuild_grid()

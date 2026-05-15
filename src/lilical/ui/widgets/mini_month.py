@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+from lilical.ui import theme
+
 _DOW_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 _HEADER_H = 20
 _CELL_H = 24
@@ -86,7 +88,7 @@ class MiniMonthGrid(QGraphicsView):
         dow_font = QFont("sans-serif", 7)
         for i, label in enumerate(_DOW_LABELS):
             item = self._scene.addText(label, dow_font)
-            item.setDefaultTextColor(QColor("#888888"))
+            item.setDefaultTextColor(QColor(theme.TEXT_DISABLED))
             item.setPos(i * cw + 3, 2)
 
         for d in range(42):
@@ -103,25 +105,25 @@ class MiniMonthGrid(QGraphicsView):
                 a_start is not None and a_end is not None and a_start <= cur <= a_end
             )
             if in_range:
-                band_color = QColor("#3b82f6")
+                band_color = QColor(theme.ACCENT_FILL)
                 band_color.setAlpha(70)
                 self._scene.addRect(
                     x, y, cw - 1, ch - 1, QPen(Qt.PenStyle.NoPen), band_color
                 )
 
             if cur == today:
-                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor("#9ec5ff")))
+                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT)))
             if cur == self._selected and not in_range:
-                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor("#3b82f6")))
+                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT_FILL)))
 
             item = self._scene.addText(str(cur.day), QFont("sans-serif", 8))
             item.setPos(x + max(3, (cw - 16) // 2), y + 3)
             if cur == today:
-                item.setDefaultTextColor(QColor("#9ec5ff"))
+                item.setDefaultTextColor(QColor(theme.ACCENT))
             elif in_range:
-                item.setDefaultTextColor(QColor("#ffffff"))
+                item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
             else:
-                item.setDefaultTextColor(QColor("#c8c8c8"))
+                item.setDefaultTextColor(QColor(theme.TEXT_SECONDARY))
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001
         if event.button() != Qt.MouseButton.LeftButton:
