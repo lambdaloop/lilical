@@ -61,6 +61,8 @@ class AgendaView(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._tree)
 
         self.refresh()
@@ -161,8 +163,6 @@ class AgendaView(QWidget):
             day_item.setExpanded(True)
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
-        import dataclasses
-
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
@@ -170,43 +170,28 @@ class AgendaView(QWidget):
         event = self._store.get_event_for_instance(inst)
         if event is None:
             return
+        from lilical.ui.views._recurrence_actions import open_edit_dialog
+        open_edit_dialog(self, self._store, event, instance_dtstart)
 
-        from lilical.ui.widgets.event_dialog import EventDialog
-
-        is_recurring = bool(event.rrule or event.recurrence_id is not None)
-        choice = "series"
-        if is_recurring:
-            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
-            rad = RecurrenceActionDialog(self, action="edit")
-            if not rad.exec():
-                return
-            choice = rad.choice or "series"
-
-        if choice == "occurrence" and instance_dtstart is not None:
-            dlg = EventDialog(self, store=self._store, event=event)
-            if dlg.exec():
-                rid = event.recurrence_id or instance_dtstart
-                edited = dlg.build_event(event.uid)
-                self._store.queue_update_instance(
-                    uid=event.uid,
-                    calendar_id=dlg.calendar_id or event.calendar_id,
-                    recurrence_id_dt=rid,
-                    edited=dataclasses.replace(
-                        edited, calendar_id=dlg.calendar_id or event.calendar_id
-                    ),
-                )
-        else:
-            edit_event = event
-            if event.recurrence_id is not None:
-                master = self._store.get_event(event.uid, event.calendar_id)
-                if master:
-                    edit_event = master
-            dlg = EventDialog(self, store=self._store, event=edit_event)
-            if dlg.exec():
-                updated = dataclasses.replace(
-                    dlg.build_event(edit_event.uid),
-                    calendar_id=dlg.calendar_id or edit_event.calendar_id,
-                    etag=edit_event.etag,
-                    sequence=edit_event.sequence + 1,
-                )
-                self._store.queue_update(updated, edit_event.etag)
+    def _on_context_menu(self, pos) -> None:
+        from PySide6.QtWidgets import QMenu
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        inst, instance_dtstart = data
+        event = self._store.get_event_for_instance(inst)
+        if event is None:
+            return
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit")
+        delete_action = menu.addAction("Delete")
+        action = menu.exec(self._tree.viewport().mapToGlobal(pos))
+        if action == edit_action:
+            from lilical.ui.views._recurrence_actions import open_edit_dialog
+            open_edit_dialog(self, self._store, event, instance_dtstart)
+        elif action == delete_action:
+            from lilical.ui.views._recurrence_actions import open_delete_dialog
+            open_delete_dialog(self, self._store, event, instance_dtstart)

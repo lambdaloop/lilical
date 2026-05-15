@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 
 
 class RecurrenceActionDialog(QDialog):
-    """Ask whether an edit/delete should apply to 'This occurrence' or 'Entire series'."""
+    """Ask whether an edit/delete should apply to one occurrence, following, or the whole series."""
 
     def __init__(
         self,
@@ -33,12 +33,16 @@ class RecurrenceActionDialog(QDialog):
         btn_occurrence.setDefault(True)
         btn_occurrence.clicked.connect(lambda: self._pick("occurrence"))
 
+        btn_following = QPushButton("This and all following")
+        btn_following.clicked.connect(lambda: self._pick("following"))
+
         btn_series = QPushButton("Entire series")
         btn_series.clicked.connect(lambda: self._pick("series"))
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self.reject)
         buttons.addButton(btn_occurrence, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton(btn_following, QDialogButtonBox.ButtonRole.AcceptRole)
         buttons.addButton(btn_series, QDialogButtonBox.ButtonRole.AcceptRole)
 
         layout.addWidget(buttons)
@@ -49,5 +53,5 @@ class RecurrenceActionDialog(QDialog):
 
     @property
     def choice(self) -> str | None:
-        """'occurrence', 'series', or None if cancelled."""
+        """'occurrence', 'following', 'series', or None if cancelled."""
         return self._choice

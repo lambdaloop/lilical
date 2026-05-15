@@ -983,7 +983,10 @@ async def test_create_event_builds_vevent_and_calls_save_event() -> None:
     assert "BEGIN:VEVENT" in saved[0]
     assert "test-uid" in saved[0]
     assert "My meeting" in saved[0]
-    assert returned is event
+    # create_event returns a new Event with provider_event_id set (not identity-equal)
+    assert returned.uid == event.uid
+    assert returned.summary == event.summary
+    assert returned.provider_event_id is not None
 
 
 # ── _normalise_hex_color matrix ───────────────────────────────────────────────

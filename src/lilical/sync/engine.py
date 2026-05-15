@@ -125,36 +125,53 @@ class SyncEngine(QObject):
         if op.op == "create":
             event = _event_from_payload(op.payload)
             canonical = await backend.create_event(op.calendar_id, event)
-            self._store.queue_update(canonical, prev_etag=None)
+            self._store.mark_synced(
+                event.uid,
+                op.calendar_id,
+                provider_event_id=canonical.provider_event_id,
+                etag=canonical.etag,
+                sequence=canonical.sequence if canonical.sequence else 0,
+            )
         elif op.op == "update":
+            import dataclasses as _dc
             event = _event_from_payload(op.payload)
+            row = self._store.get_event(op.uid, op.calendar_id)
+            pid = (row.provider_event_id if row else None) or event.provider_event_id
+            if pid and pid != event.provider_event_id:
+                event = _dc.replace(event, provider_event_id=pid)
             await backend.update_event(op.calendar_id, event, if_match=op.if_match)
         elif op.op == "delete":
-            await backend.delete_event(op.calendar_id, op.uid, if_match=op.if_match)
+            row = self._store.get_event(op.uid, op.calendar_id)
+            pid = (row.provider_event_id if row else None) or op.uid
+            await backend.delete_event(op.calendar_id, pid, if_match=op.if_match)
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
-            if hasattr(backend, "update_instance") and event.recurrence_id:
+            if event.recurrence_id:
                 master = self._store.get_event(op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.update_instance(
                         op.calendar_id, master_pid, event.recurrence_id, event
                     )
+                else:
+                    log.warning("update_instance: no provider_event_id for master %s", op.uid)
             else:
-                log.warning("update_instance not supported by backend %s", type(backend).__name__)
+                log.warning("update_instance op has no recurrence_id for %s", op.uid)
         elif op.op == "delete_instance":
             import json as _json
             payload = _json.loads(op.payload or "{}")
             rid_str = payload.get("recurrence_id")
-            if rid_str and hasattr(backend, "delete_instance"):
+            if rid_str:
                 from datetime import datetime as _dt
                 rid = _dt.fromisoformat(rid_str)
                 master = self._store.get_event(op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.delete_instance(op.calendar_id, master_pid, rid)
+                else:
+                    log.warning("delete_instance: no provider_event_id for master %s", op.uid)
             else:
-                log.warning("delete_instance not supported by backend %s", type(backend).__name__)
+                log.warning("delete_instance op missing recurrence_id for %s", op.uid)
 
     async def _tick(self, account, backend) -> None:
         self.sync_started.emit(account.id)

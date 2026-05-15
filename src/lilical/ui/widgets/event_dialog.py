@@ -252,6 +252,13 @@ class EventDialog(QDialog):
             self._notes_edit.setPlainText(event.description)
         form.addRow("Notes:", self._notes_edit)
 
+        # ── Recurrence ─────────────────────────────────────────────────────────
+        from lilical.ui.widgets.recurrence_editor import RecurrenceEditor
+        self._rrule_editor = RecurrenceEditor()
+        if event and event.rrule:
+            self._rrule_editor.set_value(event.rrule)
+        form.addRow("Repeat:", self._rrule_editor)
+
         # ── Status / Visibility ────────────────────────────────────────────────
         status_box = QGroupBox()
         status_layout = QHBoxLayout(status_box)
@@ -259,7 +266,6 @@ class EventDialog(QDialog):
         for label, val in [
             ("Confirmed", "CONFIRMED"),
             ("Tentative", "TENTATIVE"),
-            ("Cancelled", "CANCELLED"),
         ]:
             rb = QRadioButton(label)
             self._status_group.addButton(rb)
@@ -286,16 +292,30 @@ class EventDialog(QDialog):
         layout.addLayout(form)
 
         # ── Buttons ────────────────────────────────────────────────────────────
+        self.delete_requested = False
+        btn_row = QHBoxLayout()
+        if self._editing:
+            from PySide6.QtWidgets import QPushButton
+            delete_btn = QPushButton("Delete")
+            delete_btn.setObjectName("deleteButton")
+            delete_btn.clicked.connect(self._on_delete)
+            btn_row.addWidget(delete_btn)
+        btn_row.addStretch()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Save
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        btn_row.addWidget(buttons)
+        layout.addLayout(btn_row)
 
         # Focus the title field
         self._title_edit.setFocus()
+
+    def _on_delete(self) -> None:
+        self.delete_requested = True
+        self.accept()
 
     def _on_all_day_toggled(self, checked: bool) -> None:
         fmt = "yyyy-MM-dd" if checked else "yyyy-MM-dd  HH:mm"
@@ -358,16 +378,15 @@ class EventDialog(QDialog):
         cal_id = self.calendar_id or ""
         color = self._selected_color() or None
         url = self._url_edit.text().strip() or None
+        rrule = self._rrule_editor.value()
 
-        # Preserve recurrence and identity fields from the source event so that
-        # saving an existing recurring event doesn't strip its RRULE or etag.
         src = self._event
         return Event(
             uid=uid,
             calendar_id=cal_id,
             provider_event_id=src.provider_event_id if src else None,
             recurrence_id=src.recurrence_id if src else None,
-            rrule=src.rrule if src else None,
+            rrule=rrule,
             exdates=src.exdates if src else (),
             rdates=src.rdates if src else (),
             sequence=src.sequence if src else 0,

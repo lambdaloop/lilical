@@ -630,6 +630,7 @@ class _PendingOpStore:
         self._ops = ops
         self.deleted_op_ids: list[int] = []
         self.queue_update_calls: list[tuple] = []
+        self.mark_synced_calls: list[dict] = []
 
     def list_pending_ops(self, account_id: str) -> list:
         return list(self._ops)
@@ -648,6 +649,14 @@ class _PendingOpStore:
 
     def queue_update(self, event, prev_etag) -> None:
         self.queue_update_calls.append((event, prev_etag))
+
+    def get_event(self, uid: str, calendar_id: str):
+        return None
+
+    def mark_synced(self, uid: str, calendar_id: str, *, provider_event_id, etag, sequence) -> None:
+        self.mark_synced_calls.append({"uid": uid, "calendar_id": calendar_id,
+                                       "provider_event_id": provider_event_id,
+                                       "etag": etag, "sequence": sequence})
 
 
 class _WriteBackend:
@@ -772,8 +781,10 @@ async def test_transient_error_during_drain_propagates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_pending_create_calls_queue_update_with_canonical() -> None:
-    canonical = Event(uid="u-can", calendar_id="cal-1", summary="Canonical")
+async def test_apply_pending_create_marks_synced_with_canonical() -> None:
+    """After a successful create, engine calls mark_synced (not queue_update)."""
+    canonical = Event(uid="u-new", calendar_id="cal-1", summary="Canonical",
+                      provider_event_id="server-id-123", etag='"abc"')
     op = _op("create", uid="u-new")
     op.id = 11
     store = _PendingOpStore([op])
@@ -782,10 +793,14 @@ async def test_apply_pending_create_calls_queue_update_with_canonical() -> None:
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
-    assert len(store.queue_update_calls) == 1
-    saved_event, prev_etag = store.queue_update_calls[0]
-    assert saved_event.uid == "u-can"
-    assert prev_etag is None
+    # No re-queue via queue_update
+    assert len(store.queue_update_calls) == 0
+    # mark_synced called once with provider_event_id from canonical
+    assert len(store.mark_synced_calls) == 1
+    call = store.mark_synced_calls[0]
+    assert call["uid"] == "u-new"
+    assert call["provider_event_id"] == "server-id-123"
+    assert call["etag"] == '"abc"'
 
 
 # ── _event_from_payload edge cases ────────────────────────────────────────────

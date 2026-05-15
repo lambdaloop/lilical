@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         month_view = self._views["Month"]
         if isinstance(month_view, MonthView):
             month_view.day_activated.connect(self._on_month_day_activated)
+            month_view.new_event_requested.connect(self._on_month_new_event_requested)
         for view in self._views.values():
             self._view_stack_layout.addWidget(view)
             view.hide()
@@ -534,6 +535,13 @@ class MainWindow(QMainWindow):
             day_view.set_day(d)
         self._switch_view("Day")
 
+    def _on_month_new_event_requested(self, d) -> None:
+        """User double-clicked an empty day cell in Month view: open new-event dialog."""
+        from datetime import datetime, timezone
+        dt_start = datetime(d.year, d.month, d.day, 9, 0, 0).astimezone()
+        dt_end = datetime(d.year, d.month, d.day, 10, 0, 0).astimezone()
+        self._new_event(default_dt=dt_start, default_dtend=dt_end)
+
     # ── View switching ─────────────────────────────────────────────────────
 
     def _switch_view(self, name: str) -> None:
@@ -570,10 +578,10 @@ class MainWindow(QMainWindow):
 
     # ── Events ─────────────────────────────────────────────────────────────
 
-    def _new_event(self) -> None:
+    def _new_event(self, default_dt=None, default_dtend=None) -> None:
         from lilical.ui.widgets.event_dialog import EventDialog
 
-        dlg = EventDialog(self, store=self._store)
+        dlg = EventDialog(self, store=self._store, default_dt=default_dt, default_dtend=default_dtend)
         if dlg.exec() == QDialog.Accepted:
             cal_id = dlg.calendar_id
             if not cal_id:
@@ -651,7 +659,12 @@ class MainWindow(QMainWindow):
             theme_path = Path(__file__).parent / "styles" / f"{name}.qss"
             if theme_path.exists():
                 with open(theme_path) as f:
-                    self.setStyleSheet(f.read())
+                    qss = f.read()
+                # Resolve relative url(./…) to absolute so referenced assets
+                # (e.g. SVG checkmarks) load correctly regardless of cwd.
+                styles_dir = theme_path.parent.as_posix()
+                qss = qss.replace("url(./", f"url({styles_dir}/")
+                self.setStyleSheet(qss)
             else:
                 log.warning("Theme file not found: %s", theme_path)
         except Exception:

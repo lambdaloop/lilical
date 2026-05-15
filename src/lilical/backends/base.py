@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import AsyncIterator, Literal, Protocol
 
 from lilical.models.event import Event
@@ -61,5 +62,20 @@ class Backend(Protocol):
     ) -> Event: ...
 
     async def delete_event(
-        self, calendar_id: str, uid: str, if_match: str | None
+        self, calendar_id: str, provider_event_id: str, if_match: str | None
+    ) -> None: ...
+
+    async def update_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: "datetime",
+        event: Event,
+    ) -> None: ...
+
+    async def delete_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: "datetime",
     ) -> None: ...

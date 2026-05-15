@@ -25,7 +25,7 @@ HEADER_H = 24
 COLS = 7
 ROWS = 6
 PAD = 4
-CHIP_H = 18
+CHIP_H = 16
 CHIP_GAP = 2
 TODAY_RING_RADIUS = 11
 
@@ -188,6 +188,7 @@ class _OverflowChip(QGraphicsItem):
 
 class MonthView(QGraphicsView):
     day_activated = Signal(object)  # emits date — for switching to Day view
+    new_event_requested = Signal(object)  # emits date — double-click to create
 
     def __init__(self, store: EventStore) -> None:
         super().__init__()
@@ -212,6 +213,28 @@ class MonthView(QGraphicsView):
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         self._scene.setSceneRect(self._grid.boundingRect())
+
+    @override
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
+        # If a scene item captured the double-click (a chip), let it handle it.
+        scene_pos = self.mapToScene(event.position().toPoint())
+        top = self._scene.itemAt(scene_pos, self.transform())
+        if top is not None and top is not self._grid:
+            super().mouseDoubleClickEvent(event)
+            return
+        # Map scene Y to a day cell (Y must be below the header strip).
+        if scene_pos.y() < HEADER_H:
+            super().mouseDoubleClickEvent(event)
+            return
+        col = int(scene_pos.x() // CELL_W)
+        row = int((scene_pos.y() - HEADER_H) // CELL_H)
+        if col < 0 or col >= COLS or row < 0 or row >= ROWS:
+            super().mouseDoubleClickEvent(event)
+            return
+        offset = row * COLS + col
+        d = self._grid.grid_start + timedelta(days=offset)
+        self.new_event_requested.emit(d)
+        event.accept()
 
     def _rebuild_grid(self) -> None:
         self._scene.removeItem(self._grid)
@@ -524,73 +547,9 @@ class MonthView(QGraphicsView):
         self.day_activated.emit(d)
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
-        import dataclasses
-        from lilical.ui.widgets.event_dialog import EventDialog
-
-        is_recurring = bool(event.rrule or event.recurrence_id is not None)
-        choice = "series"
-        if is_recurring:
-            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
-            rad = RecurrenceActionDialog(self.parent(), action="edit")
-            if not rad.exec():
-                return
-            choice = rad.choice or "series"
-
-        if choice == "occurrence" and instance_dtstart is not None:
-            dlg = EventDialog(self.parent(), store=self._store, event=event)
-            if dlg.exec():
-                rid = event.recurrence_id or instance_dtstart
-                edited = dlg.build_event(event.uid)
-                self._store.queue_update_instance(
-                    uid=event.uid,
-                    calendar_id=dlg.calendar_id or event.calendar_id,
-                    recurrence_id_dt=rid,
-                    edited=dataclasses.replace(
-                        edited, calendar_id=dlg.calendar_id or event.calendar_id
-                    ),
-                )
-        else:
-            edit_event = event
-            if event.recurrence_id is not None:
-                master = self._store.get_event(event.uid, event.calendar_id)
-                if master:
-                    edit_event = master
-            dlg = EventDialog(self.parent(), store=self._store, event=edit_event)
-            if dlg.exec():
-                updated = dataclasses.replace(
-                    dlg.build_event(edit_event.uid),
-                    calendar_id=dlg.calendar_id or edit_event.calendar_id,
-                    etag=edit_event.etag,
-                    sequence=edit_event.sequence + 1,
-                )
-                self._store.queue_update(updated, edit_event.etag)
+        from lilical.ui.views._recurrence_actions import open_edit_dialog
+        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
-        is_recurring = bool(event.rrule or event.recurrence_id is not None)
-        choice = "series"
-        if is_recurring:
-            from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
-            rad = RecurrenceActionDialog(self.parent(), action="delete")
-            if not rad.exec():
-                return
-            choice = rad.choice or "series"
-
-        if choice == "occurrence" and instance_dtstart is not None:
-            rid = event.recurrence_id or instance_dtstart
-            self._store.queue_delete_instance(
-                uid=event.uid,
-                calendar_id=event.calendar_id,
-                recurrence_id_dt=rid,
-            )
-        else:
-            if (
-                QMessageBox.question(
-                    self.parent(),
-                    "Delete event",
-                    f'Delete "{event.summary}"?',
-                )
-                == QMessageBox.StandardButton.Yes
-            ):
-                self._store.queue_delete(event.uid, event.calendar_id)
+        from lilical.ui.views._recurrence_actions import open_delete_dialog
+        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)

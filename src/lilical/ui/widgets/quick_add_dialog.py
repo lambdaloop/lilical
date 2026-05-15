@@ -118,12 +118,16 @@ class QuickAddDialog(QDialog):
     def _on_save(self) -> None:
         import uuid
         from lilical.models.event import Event
+        from PySide6.QtWidgets import QMessageBox
 
         text = self._input.text().strip()
         if not text:
             return
 
         cal_id = self._cal_combo.currentData() or ""
+        if not cal_id:
+            QMessageBox.warning(self, "No calendar", "Please add an account first.")
+            return
         now = datetime.now(timezone.utc)
 
         if self._parsed and self._parsed.get("dtstart"):

@@ -668,24 +668,104 @@ class CalDavBackend:
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
+        import dataclasses as _dc
+        from lilical.backends._ical_serializer import event_to_vcalendar
+
         client = await self._get_client()
         cal_obj = caldav.Calendar(client=client, url=calendar_id)
-        ve = icalendar.Event()
-        ve.add("UID", event.uid)
-        ve.add("SUMMARY", event.summary)
-        ve.add("DTSTART", event.dtstart or datetime.utcnow())
-        data = ve.to_ical().decode()
-        await self._run(cal_obj.save_event, data)
-        return event
+        ical_data = event_to_vcalendar(event).to_ical().decode()
+        saved = await self._run(cal_obj.save_event, ical_data)
+        href = str(saved.url) if saved and getattr(saved, "url", None) else None
+        etag = getattr(saved, "etag", None) if saved else None
+        return _dc.replace(
+            event,
+            provider_event_id=href or event.uid,
+            etag=etag,
+        )
 
     @_classify_errors
     async def update_event(
         self, calendar_id: str, event: Event, if_match: str | None
     ) -> Event:
+        from lilical.backends._ical_serializer import event_to_vcalendar
+
+        ical_data = event_to_vcalendar(event, sequence_bump=True).to_ical().decode()
+        href = event.provider_event_id or f"{calendar_id}/{event.uid}.ics"
+        client = await self._get_client()
+        event_obj = caldav.CalendarObjectResource(client=client, url=href)
+        headers = {}
+        if if_match:
+            headers["If-Match"] = if_match
+        await self._run(event_obj.set_data, ical_data)
         return event
 
     @_classify_errors
     async def delete_event(
-        self, calendar_id: str, uid: str, if_match: str | None
+        self, calendar_id: str, provider_event_id: str, if_match: str | None
     ) -> None:
-        pass
+        client = await self._get_client()
+        event_obj = caldav.CalendarObjectResource(client=client, url=provider_event_id)
+        await self._run(event_obj.delete)
+
+    @_classify_errors
+    async def update_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: datetime,
+        event: Event,
+    ) -> None:
+        """Update a single occurrence by appending a VEVENT override to the master VCALENDAR."""
+        import dataclasses as _dc
+        from lilical.backends._ical_serializer import event_to_vcalendar, _add_dt_with_tzid
+
+        client = await self._get_client()
+        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)
+        raw = await self._run(event_obj.get_data)
+
+        master_cal = icalendar.Calendar.from_ical(raw)
+        # Find and remove any existing override for this recurrence-id
+        new_components = []
+        for comp in master_cal.subcomponents:
+            if comp.name == "VEVENT":
+                rid = comp.get("RECURRENCE-ID")
+                if rid is not None:
+                    rid_dt = rid.dt if hasattr(rid, "dt") else rid
+                    if isinstance(rid_dt, datetime):
+                        if abs((rid_dt.replace(tzinfo=None) - recurrence_id_dt.replace(tzinfo=None)).total_seconds()) < 60:
+                            continue  # drop old override
+            new_components.append(comp)
+
+        # Build override VEVENT
+        override = _dc.replace(event, recurrence_id=recurrence_id_dt, rrule=None)
+        override_cal = event_to_vcalendar(override)
+        override_ve = next(
+            (c for c in override_cal.subcomponents if c.name == "VEVENT"), None
+        )
+
+        rebuilt = icalendar.Calendar()
+        for comp in new_components:
+            rebuilt.add_component(comp)
+        if override_ve is not None:
+            rebuilt.add_component(override_ve)
+
+        await self._run(event_obj.set_data, rebuilt.to_ical().decode())
+
+    @_classify_errors
+    async def delete_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: datetime,
+    ) -> None:
+        """Delete a single occurrence by appending an EXDATE to the master VCALENDAR."""
+        client = await self._get_client()
+        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)
+        raw = await self._run(event_obj.get_data)
+
+        master_cal = icalendar.Calendar.from_ical(raw)
+        for comp in master_cal.subcomponents:
+            if comp.name == "VEVENT" and not comp.get("RECURRENCE-ID"):
+                comp.add("exdate", recurrence_id_dt)
+
+        await self._run(event_obj.set_data, master_cal.to_ical().decode())

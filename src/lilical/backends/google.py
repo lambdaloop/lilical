@@ -494,52 +494,161 @@ class GoogleBackend:
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
+        import dataclasses as _dc
+        from lilical.backends._google_serializer import event_to_google_body
+
         service = await self._ensure_service()
-        body: dict[str, Any] = {
-            "summary": event.summary,
-        }
+        body = event_to_google_body(event)
         resp = await self._execute(
             service.events().insert(
                 calendarId=calendar_id, body=body, sendUpdates="none"
             )
         )
-        return Event(
-            uid=resp.get("iCalUID", resp["id"]),
-            calendar_id=calendar_id,
+        return _dc.replace(
+            event,
+            uid=resp.get("iCalUID") or resp["id"],
             provider_event_id=resp["id"],
-            summary=resp.get("summary", ""),
             etag=resp.get("etag"),
+            sequence=int(resp.get("sequence", 0)),
         )
 
     @_classify_errors
     async def update_event(
         self, calendar_id: str, event: Event, if_match: str | None
     ) -> Event:
+        import dataclasses as _dc
+        from lilical.backends._google_serializer import event_to_google_body
+
         service = await self._ensure_service()
-        body: dict[str, Any] = {
-            "summary": event.summary,
-        }
-        resp = await self._execute(
-            service.events().update(
-                calendarId=calendar_id,
-                eventId=event.provider_event_id,
-                body=body,
-                sendUpdates="none",
-            )
+        body = event_to_google_body(event)
+        pid = event.provider_event_id or event.uid
+        req = service.events().update(
+            calendarId=calendar_id,
+            eventId=pid,
+            body=body,
+            sendUpdates="none",
         )
-        return Event(
-            uid=resp.get("iCalUID", resp["id"]),
-            calendar_id=calendar_id,
+        if if_match:
+            req.headers = getattr(req, "headers", {}) or {}
+            req.headers["If-Match"] = if_match
+        resp = await self._execute(req)
+        return _dc.replace(
+            event,
+            uid=resp.get("iCalUID") or resp["id"],
             provider_event_id=resp["id"],
-            summary=resp.get("summary", ""),
             etag=resp.get("etag"),
+            sequence=int(resp.get("sequence", 0)),
         )
 
     @_classify_errors
     async def delete_event(
-        self, calendar_id: str, uid: str, if_match: str | None
+        self, calendar_id: str, provider_event_id: str, if_match: str | None
     ) -> None:
         service = await self._ensure_service()
         await self._execute(
-            service.events().delete(calendarId=calendar_id, eventId=uid)
+            service.events().delete(
+                calendarId=calendar_id, eventId=provider_event_id, sendUpdates="none"
+            )
+        )
+
+    @_classify_errors
+    async def update_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: datetime,
+        event: Event,
+    ) -> None:
+        from datetime import timedelta
+        from lilical.backends._google_serializer import event_to_google_body
+
+        service = await self._ensure_service()
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
+        win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        instances_resp = await self._execute(
+            service.events().instances(
+                calendarId=calendar_id,
+                eventId=master_provider_id,
+                timeMin=win_start,
+                timeMax=win_end,
+            )
+        )
+        instance_id: str | None = None
+        for item in instances_resp.get("items", []):
+            start_part = item.get("start") or {}
+            raw = start_part.get("dateTime") or start_part.get("date")
+            if not raw:
+                continue
+            try:
+                item_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            item_utc = item_dt.astimezone(timezone.utc)
+            if abs((item_utc - rid_utc).total_seconds()) < 300:
+                instance_id = item.get("id")
+                break
+
+        if not instance_id:
+            raise PermanentError(
+                f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
+            )
+
+        body = event_to_google_body(event)
+        await self._execute(
+            service.events().patch(
+                calendarId=calendar_id,
+                eventId=instance_id,
+                body=body,
+                sendUpdates="none",
+            )
+        )
+
+    @_classify_errors
+    async def delete_instance(
+        self,
+        calendar_id: str,
+        master_provider_id: str,
+        recurrence_id_dt: datetime,
+    ) -> None:
+        from datetime import timedelta
+
+        service = await self._ensure_service()
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
+        win_start = (rid_utc - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        instances_resp = await self._execute(
+            service.events().instances(
+                calendarId=calendar_id,
+                eventId=master_provider_id,
+                timeMin=win_start,
+                timeMax=win_end,
+            )
+        )
+        instance_id: str | None = None
+        for item in instances_resp.get("items", []):
+            start_part = item.get("start") or {}
+            raw = start_part.get("dateTime") or start_part.get("date")
+            if not raw:
+                continue
+            try:
+                item_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            item_utc = item_dt.astimezone(timezone.utc)
+            if abs((item_utc - rid_utc).total_seconds()) < 300:
+                instance_id = item.get("id")
+                break
+
+        if not instance_id:
+            raise PermanentError(
+                f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
+            )
+
+        await self._execute(
+            service.events().delete(
+                calendarId=calendar_id, eventId=instance_id, sendUpdates="none"
+            )
         )

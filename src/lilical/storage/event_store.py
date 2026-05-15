@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
@@ -833,3 +833,182 @@ class EventStore(QObject):
 
         with Session(self._engine) as s, s.begin():
             s.query(PendingOpRow).filter(PendingOpRow.id == op_id).delete()
+
+    def mark_synced(
+        self,
+        uid: str,
+        calendar_id: str,
+        *,
+        provider_event_id: str | None,
+        etag: str | None,
+        sequence: int,
+    ) -> None:
+        """Mark a locally-created event as synced without re-queueing an update."""
+        with Session(self._engine) as s, s.begin():
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if row is not None:
+                if provider_event_id is not None:
+                    row.provider_event_id = provider_event_id
+                if etag is not None:
+                    row.etag = etag
+                row.sequence = sequence
+                row.local_dirty = 0
+
+    def queue_split_series(
+        self,
+        uid: str,
+        calendar_id: str,
+        split_at_dt: datetime,
+        edited_event_for_tail: Event,
+    ) -> str:
+        """Split a recurring series at split_at_dt.
+
+        Appends UNTIL=<split_at_dt - 1 second> to the master's RRULE (converting
+        COUNT to UNTIL when present), enqueues an update op for the master, then
+        creates a new series tail starting at split_at_dt with a new UID.
+
+        Returns the new tail event UID.
+        """
+        import uuid
+        import re as _re
+
+        account_id = self._account_id_for_calendar(calendar_id)
+        with Session(self._engine) as s, s.begin():
+            master_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is None:
+                raise ValueError(f"No master event {uid} in calendar {calendar_id}")
+
+            master_event = _row_to_event(master_row)
+
+            # Compute UNTIL = one second before the split point (inclusive boundary)
+            until_dt = split_at_dt - timedelta(seconds=1)
+            until_str = until_dt.strftime("%Y%m%dT%H%M%SZ")
+
+            # Update master RRULE: remove COUNT, set UNTIL
+            rrule = master_event.rrule or ""
+            rrule = _re.sub(r";?COUNT=\d+", "", rrule)
+            rrule = _re.sub(r";?UNTIL=[^;]+", "", rrule)
+            rrule = rrule.rstrip(";") + f";UNTIL={until_str}"
+
+            master_row.rrule = rrule
+            master_row.local_dirty = True
+
+            # Rebuild instances for the truncated master
+            updated_master = dataclasses.replace(master_event, rrule=rrule)
+            self._rebuild_instances_for(s, updated_master)
+
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        op="update",
+                        payload=_event_to_json(updated_master),
+                        if_match=master_event.etag,
+                        created_at=_utc_now(),
+                    )
+                )
+
+            # Build the tail event
+            new_uid = str(uuid.uuid4())
+            tail = dataclasses.replace(
+                edited_event_for_tail,
+                uid=new_uid,
+                calendar_id=calendar_id,
+                recurrence_id=None,
+                provider_event_id=None,
+                etag=None,
+                sequence=0,
+                dtstart=split_at_dt,
+                local_dirty=True,
+            )
+            tail_row = _event_to_row(tail)
+            tail_row.local_dirty = True
+            s.add(tail_row)
+            self._rebuild_instances_for(s, tail)
+
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=new_uid,
+                        op="create",
+                        payload=_event_to_json(tail),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
+
+        self.events_changed.emit(calendar_id, {uid, new_uid})
+        return new_uid
+
+    def queue_truncate_series(
+        self,
+        uid: str,
+        calendar_id: str,
+        until_dt: datetime,
+    ) -> None:
+        """Truncate a recurring series so no occurrences exist at or after until_dt.
+
+        Sets UNTIL=<until_dt - 1 second> on the master's RRULE, deletes override
+        instances from until_dt onwards, and enqueues an update op.
+        """
+        import re as _re
+
+        account_id = self._account_id_for_calendar(calendar_id)
+        with Session(self._engine) as s, s.begin():
+            master_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is None:
+                raise ValueError(f"No master event {uid} in calendar {calendar_id}")
+
+            master_event = _row_to_event(master_row)
+            cut = until_dt - timedelta(seconds=1)
+            until_str = cut.strftime("%Y%m%dT%H%M%SZ")
+
+            rrule = master_event.rrule or ""
+            rrule = _re.sub(r";?COUNT=\d+", "", rrule)
+            rrule = _re.sub(r";?UNTIL=[^;]+", "", rrule)
+            rrule = rrule.rstrip(";") + f";UNTIL={until_str}"
+
+            master_row.rrule = rrule
+            master_row.local_dirty = True
+
+            # Remove override rows on or after the cutoff
+            s.query(EventRow).filter(
+                EventRow.uid == uid,
+                EventRow.calendar_id == calendar_id,
+                EventRow.recurrence_id != "",
+                EventRow.recurrence_id >= until_dt.isoformat(),
+            ).delete(synchronize_session=False)
+
+            updated_master = dataclasses.replace(master_event, rrule=rrule)
+            self._rebuild_instances_for(s, updated_master)
+
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        op="update",
+                        payload=_event_to_json(updated_master),
+                        if_match=master_event.etag,
+                        created_at=_utc_now(),
+                    )
+                )
+
+        self.events_changed.emit(calendar_id, {uid})

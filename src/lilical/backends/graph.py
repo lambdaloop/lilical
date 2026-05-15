@@ -676,6 +676,19 @@ def _event_to_graph_json(event: Event) -> dict[str, Any]:
         rec = _rrule_to_graph_recurrence(event.rrule, event.dtstart, event.dtend)
         if rec:
             body["recurrence"] = rec
+    if event.transparency:
+        body["showAs"] = "free" if event.transparency == "TRANSPARENT" else "busy"
+    if event.categories:
+        body["categories"] = list(event.categories)
+    if event.attendees:
+        attendees_list = []
+        for att in event.attendees:
+            if isinstance(att, dict):
+                email = att.get("email", "")
+                name = att.get("name", "")
+                attendees_list.append({"emailAddress": {"address": email, "name": name}})
+        if attendees_list:
+            body["attendees"] = attendees_list
     return body
 
 
@@ -1068,14 +1081,21 @@ class GraphBackend:
         )
         items = resp.json().get("value", [])
         instance_id: str | None = None
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         for item in items:
-            start_raw = (item.get("start") or {}).get("dateTime", "")
+            start_part = item.get("start") or {}
+            start_raw = start_part.get("dateTime", "")
+            item_tz_name = start_part.get("timeZone") or "UTC"
             try:
-                item_dt = datetime.fromisoformat(start_raw.rstrip("Z"))
-            except ValueError:
-                continue
-            if abs((item_dt - rid_utc).total_seconds()) < 60:
+                import zoneinfo as _zi
+                item_tz = _zi.ZoneInfo(item_tz_name)
+                item_dt = datetime.fromisoformat(start_raw).replace(tzinfo=item_tz)
+            except Exception:
+                try:
+                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+            if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
                 instance_id = item.get("id")
                 break
         if not instance_id:
@@ -1112,14 +1132,21 @@ class GraphBackend:
         )
         items = resp.json().get("value", [])
         instance_id: str | None = None
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         for item in items:
-            start_raw = (item.get("start") or {}).get("dateTime", "")
+            start_part = item.get("start") or {}
+            start_raw = start_part.get("dateTime", "")
+            item_tz_name = start_part.get("timeZone") or "UTC"
             try:
-                item_dt = datetime.fromisoformat(start_raw.rstrip("Z"))
-            except ValueError:
-                continue
-            if abs((item_dt - rid_utc).total_seconds()) < 60:
+                import zoneinfo as _zi
+                item_tz = _zi.ZoneInfo(item_tz_name)
+                item_dt = datetime.fromisoformat(start_raw).replace(tzinfo=item_tz)
+            except Exception:
+                try:
+                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+            if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
                 instance_id = item.get("id")
                 break
         if not instance_id:
