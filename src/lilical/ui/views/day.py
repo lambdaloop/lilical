@@ -668,8 +668,7 @@ class _DayCanvas(QGraphicsView):
             tz = datetime.now().astimezone().tzinfo
             start_dt = datetime(self._day.year, self._day.month, self._day.day,
                                 start_min // 60, start_min % 60, tzinfo=tz)
-            end_dt = datetime(self._day.year, self._day.month, self._day.day,
-                              end_min // 60, end_min % 60, tzinfo=tz)
+            end_dt = start_dt + timedelta(minutes=end_min - start_min)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=False)
@@ -687,6 +686,9 @@ class _DayCanvas(QGraphicsView):
             if self._drag_kind is not None:
                 self._teardown_preview()
                 self._drag_kind = None
+                self._drag_start_min = None
+                self._drag_current_min = None
+                self._press_scene_pos = None
                 event.accept()
                 return
             if self._drag_chip_event is not None:
@@ -706,13 +708,16 @@ class _DayCanvas(QGraphicsView):
         pph = self._px_per_hour
         body_top = self._grid.hour_top()
 
+        if event.all_day:
+            return
+
         if self._drag_chip_event is None:
             self._drag_chip_event = event
             self._drag_chip_mode = mode
-            self._press_scene_pos = scene_pos
             for chip in self._chips:
                 if chip._event is event:
                     r = chip.sceneBoundingRect()
+                    self._press_scene_pos = chip._press_scene_pos
                     origin_start = int((r.top() - body_top) * 60 / pph)
                     origin_end = int((r.bottom() - body_top) * 60 / pph)
                     self._drag_chip_origin = (0, origin_start, origin_end)
@@ -725,9 +730,8 @@ class _DayCanvas(QGraphicsView):
         duration = origin_end - origin_start
 
         if mode == "move":
-            dy = scene_pos.y() - press.y()
-            delta_min = round(dy * 60 / pph / self._snap_minutes) * self._snap_minutes
-            new_start = self._snap_minutes_to(origin_start + delta_min)
+            cursor_min = self._scene_y_to_minutes(scene_pos.y())
+            new_start = self._snap_minutes_to(cursor_min)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
         elif mode == "resize_top":
@@ -769,6 +773,13 @@ class _DayCanvas(QGraphicsView):
         if self._drag_chip_event is None or self._drag_chip_origin is None:
             self._teardown_preview()
             return
+        if event.all_day:
+            self._teardown_preview()
+            self._drag_chip_event = None
+            self._drag_chip_mode = None
+            self._drag_chip_origin = None
+            self._press_scene_pos = None
+            return
 
         pph = self._px_per_hour
         _origin_day, origin_start, origin_end = self._drag_chip_origin
@@ -776,9 +787,8 @@ class _DayCanvas(QGraphicsView):
         duration = origin_end - origin_start
 
         if mode == "move":
-            dy = scene_pos.y() - press.y()
-            delta_min = round(dy * 60 / pph / self._snap_minutes) * self._snap_minutes
-            new_start = self._snap_minutes_to(origin_start + delta_min)
+            cursor_min = self._scene_y_to_minutes(scene_pos.y())
+            new_start = self._snap_minutes_to(cursor_min)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
         elif mode == "resize_top":

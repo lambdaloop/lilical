@@ -895,8 +895,7 @@ class WeekView(QGraphicsView):
             tz = datetime.now().astimezone().tzinfo
             start_dt = datetime(day_date.year, day_date.month, day_date.day,
                                 start_min // 60, start_min % 60, tzinfo=tz)
-            end_dt = datetime(day_date.year, day_date.month, day_date.day,
-                              end_min // 60, end_min % 60, tzinfo=tz)
+            end_dt = start_dt + timedelta(minutes=end_min - start_min)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=False)
@@ -919,6 +918,11 @@ class WeekView(QGraphicsView):
             if self._drag_kind is not None:
                 self._teardown_preview()
                 self._drag_kind = None
+                self._drag_start_min = None
+                self._drag_day_offset = None
+                self._drag_end_day_offset = None
+                self._drag_current_min = None
+                self._press_scene_pos = None
                 event.accept()
                 return
             if self._drag_chip_event is not None:
@@ -942,14 +946,17 @@ class WeekView(QGraphicsView):
         if self._drag_chip_event is None:
             self._drag_chip_event = event
             self._drag_chip_mode = mode
-            self._press_scene_pos = scene_pos
             for chip in self._chips:
                 if chip._event is event:
                     r = chip.sceneBoundingRect()
-                    origin_start = int((r.top() - body_top) * 60 / pph)
-                    origin_end = int((r.bottom() - body_top) * 60 / pph)
+                    self._press_scene_pos = chip._press_scene_pos
                     origin_day = int((r.left() - TIME_AXIS_WIDTH) / col_w)
-                    self._drag_chip_origin = (origin_day, origin_start, origin_end)
+                    if event.all_day:
+                        self._drag_chip_origin = (origin_day, 0, 0)
+                    else:
+                        origin_start = int((r.top() - body_top) * 60 / pph)
+                        origin_end = int((r.bottom() - body_top) * 60 / pph)
+                        self._drag_chip_origin = (origin_day, origin_start, origin_end)
                     break
             else:
                 return
@@ -958,15 +965,33 @@ class WeekView(QGraphicsView):
         press = self._press_scene_pos
         duration = origin_end - origin_start
 
-        if mode == "move":
-            dy = scene_pos.y() - press.y()
+        if event.all_day:
             dx = scene_pos.x() - press.x()
-            delta_min = round(dy * 60 / pph / self._snap_minutes) * self._snap_minutes
             delta_day = int(round(dx / col_w))
-            new_start = self._snap_minutes_to(origin_start + delta_min)
+            new_day = max(0, min(self._day_count - 1, origin_day + delta_day))
+            if event.dtstart and event.dtend:
+                span = max(1, (event.dtend.date() - event.dtstart.date()).days)
+            else:
+                span = 1
+            end_day = min(self._day_count - 1, new_day + span - 1)
+            rect = self._compute_allday_chip_rect(new_day, end_day)
+            day_name = (self._start + timedelta(days=new_day)).strftime("%a")
+            label = f"→ {day_name}"
+            if self._drag_preview is None:
+                self._drag_preview = DragPreview(rect, label)
+                self._scene.addItem(self._drag_preview)
+            else:
+                self._drag_preview.set_rect(rect)
+                self._drag_preview.set_label(label)
+            return
+
+        if mode == "move":
+            cursor_min = self._scene_y_to_minutes(scene_pos.y())
+            new_start = self._snap_minutes_to(cursor_min)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
-            new_day = max(0, min(self._day_count - 1, origin_day + delta_day))
+            new_day_x = self._scene_x_to_day_offset(scene_pos.x())
+            new_day = new_day_x if new_day_x is not None else origin_day
         elif mode == "resize_top":
             cursor_min = self._scene_y_to_minutes(scene_pos.y())
             new_start = self._snap_minutes_to(cursor_min)
@@ -1005,15 +1030,34 @@ class WeekView(QGraphicsView):
         press = self._press_scene_pos
         duration = origin_end - origin_start
 
-        if mode == "move":
-            dy = scene_pos.y() - press.y()
+        if event.all_day:
             dx = scene_pos.x() - press.x()
-            delta_min = round(dy * 60 / pph / self._snap_minutes) * self._snap_minutes
             delta_day = int(round(dx / col_w))
-            new_start = self._snap_minutes_to(origin_start + delta_min)
+            new_day = max(0, min(self._day_count - 1, origin_day + delta_day))
+            if event.dtstart:
+                new_dtstart = event.dtstart + timedelta(days=new_day - origin_day)
+                new_dtend = (event.dtend + timedelta(days=new_day - origin_day)) if event.dtend else (new_dtstart + timedelta(days=1))
+            else:
+                new_day_date = self._start + timedelta(days=new_day)
+                tz_local = datetime.now().astimezone().tzinfo
+                new_dtstart = datetime(new_day_date.year, new_day_date.month, new_day_date.day, tzinfo=tz_local)
+                new_dtend = new_dtstart + timedelta(days=1)
+            updated = dataclasses.replace(event, dtstart=new_dtstart, dtend=new_dtend, sequence=event.sequence + 1, local_dirty=True)
+            self._store.queue_update(updated, event.etag)
+            self._teardown_preview()
+            self._drag_chip_event = None
+            self._drag_chip_mode = None
+            self._drag_chip_origin = None
+            self._press_scene_pos = None
+            return
+
+        if mode == "move":
+            cursor_min = self._scene_y_to_minutes(scene_pos.y())
+            new_start = self._snap_minutes_to(cursor_min)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
-            new_day = max(0, min(self._day_count - 1, origin_day + delta_day))
+            new_day_x = self._scene_x_to_day_offset(scene_pos.x())
+            new_day = new_day_x if new_day_x is not None else origin_day
         elif mode == "resize_top":
             cursor_min = self._scene_y_to_minutes(scene_pos.y())
             new_start = self._snap_minutes_to(cursor_min)

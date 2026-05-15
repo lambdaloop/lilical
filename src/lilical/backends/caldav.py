@@ -14,7 +14,8 @@ from urllib.parse import urljoin, urlparse
 
 import caldav
 import icalendar
-from caldav.lib.error import AuthorizationError, DAVError
+from caldav.elements import dav as _dav_elements
+from caldav.lib.error import AuthorizationError, DAVError, ReportError
 
 from lilical.backends.base import (
     AuthExpired,
@@ -32,14 +33,18 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class CalDavCursor(SyncCursor):
+    _TYPE = "caldav"
+
     sync_token: str | None = None
     ctag: str | None = None
 
     def to_json(self) -> dict:
-        return {"sync_token": self.sync_token, "ctag": self.ctag}
+        return {"_type": self._TYPE, "sync_token": self.sync_token, "ctag": self.ctag}
 
     @classmethod
     def from_json(cls, data: dict) -> CalDavCursor:
+        if data.get("_type") != cls._TYPE:
+            raise ValueError(f"not a caldav cursor: {data!r}")
         return cls(sync_token=data.get("sync_token"), ctag=data.get("ctag"))
 
 
@@ -437,15 +442,52 @@ class CalDavBackend:
             if "tag" in str(exc):
                 raise self._bad_server_response(exc) from exc
             raise
-        calendars = await self._run(principal.calendars)
+        return await self._run(
+            lambda: self._fetch_calendars_with_colors(client, principal)
+        )
+
+    def _fetch_calendars_with_colors(self, client, principal) -> list:
+        """Fetch calendar list AND colors in two PROPFINDs instead of N+2.
+
+        `client.get_calendars()` already includes `calendar-color` in its
+        depth-1 PROPFIND but discards it. We replicate the same two requests
+        here and parse color alongside calendar metadata.
+        """
+        from caldav.collection import _extract_calendar_home_set_from_results as _home
+        from caldav.collection import _is_calendar_resource
+
+        # PROPFIND 1 (depth=0): get calendar-home-set URL from the principal.
+        resp = client.propfind(
+            str(principal.url),
+            props=["{urn:ietf:params:xml:ns:caldav}calendar-home-set"],
+            depth=0,
+        )
+        home_raw = _home(resp.results)
+        home_url = client._make_absolute_url(home_raw) if home_raw else str(principal.url)
+
+        # PROPFIND 2 (depth=1): calendar list + display names + colors in one shot.
+        resp = client.propfind(
+            home_url,
+            props=client.CALENDAR_LIST_PROPS,  # already includes calendar-color
+            depth=1,
+        )
+
         result = []
-        for cal in calendars:
-            color = await asyncio.to_thread(_caldav_calendar_color, cal)
+        for item in resp.results or []:
+            if not _is_calendar_resource(item.properties):
+                continue
+            url = str(item.href)
+            if not url.startswith("http"):
+                url = client._make_absolute_url(url)
+            name = item.properties.get("{DAV:}displayname")
+            raw_color = item.properties.get("{http://apple.com/ns/ical/}calendar-color")
+            color = _normalise_hex_color(str(raw_color) if raw_color is not None else None)
+            cal_id = url.rstrip("/").rsplit("/", 1)[-1] or url
             result.append(
                 {
-                    "id": str(cal.id) if cal.id is not None else "",
-                    "display_name": getattr(cal, "name", None) or str(cal.id or ""),
-                    "provider_id": str(cal.url) if cal.url is not None else "",
+                    "id": cal_id,
+                    "display_name": str(name) if name else cal_id,
+                    "provider_id": url,
                     "color": color,
                 }
             )
@@ -509,12 +551,31 @@ class CalDavBackend:
             lambda: cal_obj.search(start=start, end=end, event=True, expand=False)
         )
         changes = self._events_to_changes(events, calendar_id)
-        yield changes, CalDavCursor(sync_token=None)
+        sync_token = await self._fetch_sync_token(cal_obj)
+        yield changes, CalDavCursor(sync_token=sync_token)
 
     @_classify_errors
     async def incremental_sync(
         self, calendar_id: str, cursor: SyncCursor
     ) -> tuple[list[EventChange], SyncCursor]:
+        sync_token = cursor.sync_token if isinstance(cursor, CalDavCursor) else None
+        if sync_token and not sync_token.startswith("fake-"):
+            client = await self._get_client()
+            cal_obj = caldav.Calendar(client=client, url=calendar_id)
+            try:
+                result = await self._run(
+                    lambda: cal_obj.get_objects_by_sync_token(
+                        sync_token=sync_token,
+                        load_objects=True,
+                        disable_fallback=True,
+                    )
+                )
+            except (ReportError, DAVError) as e:
+                raise CursorExpired(calendar_id) from e
+            changes = self._sync_result_to_changes(result, calendar_id)
+            return changes, CalDavCursor(sync_token=result.sync_token)
+
+        # No real sync token — fall back to full date-windowed query.
         client = await self._get_client()
         cal_obj = caldav.Calendar(client=client, url=calendar_id)
         start, end = self._sync_window()
@@ -523,6 +584,57 @@ class CalDavBackend:
         )
         changes = self._events_to_changes(events, calendar_id)
         return changes, cursor
+
+    async def _fetch_sync_token(self, cal_obj) -> str | None:
+        try:
+            props = await self._run(
+                lambda: cal_obj.get_properties([_dav_elements.SyncToken()])
+            )
+            token = props.get(_dav_elements.SyncToken.tag)
+            return str(token) if token else None
+        except Exception:
+            log.debug("could not fetch sync-token for %s", cal_obj.url, exc_info=True)
+            return None
+
+    def _sync_result_to_changes(self, result, calendar_id: str) -> list[EventChange]:
+        """Convert a SynchronizableCalendarObjectCollection delta into EventChanges.
+
+        Objects with data → upsert; objects without data (404d/deleted) → delete.
+        """
+        changes: list[EventChange] = []
+        for obj in result:
+            if obj.data:
+                try:
+                    vevents = _parse_vevents(obj.data)
+                except Exception:
+                    log.exception("error parsing caldav delta object %s", obj.url)
+                    continue
+                href = str(obj.url) if obj.url is not None else ""
+                etag = obj.etag or ""
+                for ve in vevents:
+                    if ve.get("RECURRENCE-ID") is not None:
+                        continue
+                    try:
+                        event = _vevent_to_event(
+                            ve,
+                            calendar_id=calendar_id,
+                            href=href,
+                            etag=etag,
+                            user_email=self._username,
+                        )
+                    except Exception:
+                        log.exception("error mapping delta VEVENT for %s", href)
+                        continue
+                    changes.append(EventChange(kind="upsert", event=event, uid=event.uid))
+            else:
+                # Deleted: derive UID from the .ics filename in the URL.
+                href = str(obj.url) if obj.url is not None else ""
+                uid = href.rstrip("/").rsplit("/", 1)[-1]
+                if uid.lower().endswith(".ics"):
+                    uid = uid[:-4]
+                if uid:
+                    changes.append(EventChange(kind="delete", event=None, uid=uid))
+        return changes
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:

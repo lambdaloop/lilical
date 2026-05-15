@@ -68,14 +68,18 @@ _GOOGLE_RESPONSE_MAP: dict[str, str] = {
 
 
 class GoogleCursor(SyncCursor):
+    _TYPE = "google"
+
     def __init__(self, sync_token: str | None = None) -> None:
         self.sync_token = sync_token
 
     def to_json(self) -> dict:
-        return {"sync_token": self.sync_token}
+        return {"_type": self._TYPE, "sync_token": self.sync_token}
 
     @classmethod
     def from_json(cls, data: dict) -> GoogleCursor:
+        if data.get("_type") != cls._TYPE:
+            raise ValueError(f"not a google cursor: {data!r}")
         return cls(sync_token=data.get("sync_token"))
 
 
@@ -413,24 +417,29 @@ class GoogleBackend:
         self, calendar_id: str, cursor: SyncCursor
     ) -> tuple[list[EventChange], SyncCursor]:
         service = await self._ensure_service()
-        sync_token = cursor.to_json().get("sync_token")
-        if not sync_token:
+        if not isinstance(cursor, GoogleCursor) or not cursor.sync_token:
             raise CursorExpired(calendar_id)
+        sync_token = cursor.sync_token
         req = service.events().list(
             calendarId=calendar_id,
             syncToken=sync_token,
             singleEvents=False,
             showDeleted=True,
+            maxResults=250,
         )
-        resp = await self._execute(req)
-        changes = [
-            c
-            for c in (
-                _google_event_to_change(ev, calendar_id) for ev in resp.get("items", [])
-            )
-            if c is not None
-        ]
-        new_token = resp.get("nextSyncToken", sync_token)
+        changes: list[EventChange] = []
+        new_token = sync_token
+        while req is not None:
+            resp = await self._execute(req)
+            for ev in resp.get("items", []):
+                change = _google_event_to_change(ev, calendar_id)
+                if change is not None:
+                    changes.append(change)
+            if "nextPageToken" in resp:
+                req = service.events().list_next(req, resp)
+            else:
+                new_token = resp.get("nextSyncToken", sync_token)
+                req = None
         return changes, GoogleCursor(sync_token=new_token)
 
     @_classify_errors

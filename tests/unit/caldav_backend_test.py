@@ -6,9 +6,10 @@ import httpx
 import icalendar
 import pytest
 
-from lilical.backends.base import PermanentError
+from lilical.backends.base import CursorExpired, PermanentError
 from lilical.backends.caldav import (
     CalDavBackend,
+    CalDavCursor,
     _discover_caldav_url,
     _parse_vevents,
     _vevent_to_event,
@@ -19,42 +20,68 @@ async def _aresult(value):
     return value
 
 
-# -- list_calendars: URL → str (SQLite can't bind URL objects) ---------------
+# -- list_calendars: PROPFIND-based discovery with inlined color ---------------
 
 
-class _UrlLike:
-    """Stand-in for caldav.lib.url.URL — not a string but stringifiable."""
-
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def __str__(self) -> str:
-        return self._value
+from dataclasses import dataclass, field
 
 
-class _FakeCal:
-    def __init__(self, id_value, url_value, name: str | None = "Cal") -> None:
-        self.id = id_value
-        self.url = url_value
-        self.name = name
+@dataclass
+class _FakePropfindItem:
+    href: str
+    properties: dict = field(default_factory=dict)
+
+
+class _FakePropfindResponse:
+    def __init__(self, results: list) -> None:
+        self.results = results
 
 
 class _FakePrincipal:
-    def __init__(self, calendars: list[_FakeCal]) -> None:
-        self._cals = calendars
+    def __init__(self, url: str = "https://example.com/principals/u/") -> None:
+        self.url = url
 
-    def calendars(self) -> list[_FakeCal]:
-        return self._cals
+
+_CAL_RESOURCE_TYPE = ["{urn:ietf:params:xml:ns:caldav}calendar", "{DAV:}collection"]
 
 
 class _FakeClient:
-    def __init__(self, principal_result) -> None:
+    def __init__(
+        self,
+        principal_result,
+        home_url: str = "https://example.com/calendars/",
+        cal_items: list[_FakePropfindItem] | None = None,
+    ) -> None:
         self._principal_result = principal_result
+        self._home_url = home_url
+        self._cal_items = cal_items or []
+        self.CALENDAR_LIST_PROPS = [
+            "{DAV:}resourcetype",
+            "{DAV:}displayname",
+            "{http://apple.com/ns/ical/}calendar-color",
+        ]
 
     def principal(self):
         if isinstance(self._principal_result, Exception):
             raise self._principal_result
         return self._principal_result
+
+    def propfind(self, url: str, props, depth: int = 0):
+        if depth == 0:
+            # home-set lookup
+            return _FakePropfindResponse([
+                _FakePropfindItem(
+                    href=str(self._principal_result.url) if not isinstance(self._principal_result, Exception) else "",
+                    properties={"{urn:ietf:params:xml:ns:caldav}calendar-home-set": self._home_url},
+                )
+            ])
+        # depth=1: calendar list
+        return _FakePropfindResponse(self._cal_items)
+
+    def _make_absolute_url(self, url: str) -> str:
+        if url and not url.startswith("http"):
+            return "https://example.com" + url
+        return url
 
 
 def _wire_fake_client(backend: CalDavBackend, client: _FakeClient) -> None:
@@ -65,14 +92,19 @@ def _wire_fake_client(backend: CalDavBackend, client: _FakeClient) -> None:
 
 @pytest.mark.asyncio
 async def test_list_calendars_converts_url_objects_to_strings() -> None:
-    """SQLite can't bind caldav URL objects — list_calendars must coerce to str."""
+    """list_calendars must return str values for id/provider_id/display_name."""
     backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
-    cal = _FakeCal(
-        id_value=_UrlLike("https://example.com/cal/work"),
-        url_value=_UrlLike("https://example.com/cal/work/"),
-        name="Work",
+    cal_item = _FakePropfindItem(
+        href="https://example.com/calendars/work/",
+        properties={
+            "{DAV:}resourcetype": _CAL_RESOURCE_TYPE,
+            "{DAV:}displayname": "Work",
+        },
     )
-    _wire_fake_client(backend, _FakeClient(_FakePrincipal([cal])))
+    _wire_fake_client(
+        backend,
+        _FakeClient(_FakePrincipal(), cal_items=[cal_item]),
+    )
 
     result = await backend.list_calendars()
 
@@ -81,21 +113,45 @@ async def test_list_calendars_converts_url_objects_to_strings() -> None:
     assert isinstance(entry["id"], str)
     assert isinstance(entry["provider_id"], str)
     assert isinstance(entry["display_name"], str)
-    assert entry["provider_id"] == "https://example.com/cal/work/"
+    assert entry["provider_id"] == "https://example.com/calendars/work/"
 
 
 @pytest.mark.asyncio
 async def test_list_calendars_falls_back_to_id_when_name_missing() -> None:
+    """When displayname is absent, fall back to the last URL path segment."""
     backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
-    cal = _FakeCal(
-        id_value=_UrlLike("cal-no-name"),
-        url_value=_UrlLike("https://example.com/cal/"),
-        name=None,
+    cal_item = _FakePropfindItem(
+        href="https://example.com/calendars/personal/",
+        properties={"{DAV:}resourcetype": _CAL_RESOURCE_TYPE},
     )
-    _wire_fake_client(backend, _FakeClient(_FakePrincipal([cal])))
+    _wire_fake_client(
+        backend,
+        _FakeClient(_FakePrincipal(), cal_items=[cal_item]),
+    )
 
     result = await backend.list_calendars()
-    assert result[0]["display_name"] == "cal-no-name"
+    assert result[0]["display_name"] == "personal"
+
+
+@pytest.mark.asyncio
+async def test_list_calendars_extracts_color_without_extra_request() -> None:
+    """calendar-color is extracted from the same depth-1 PROPFIND, not a per-cal request."""
+    backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+    cal_item = _FakePropfindItem(
+        href="https://example.com/calendars/work/",
+        properties={
+            "{DAV:}resourcetype": _CAL_RESOURCE_TYPE,
+            "{DAV:}displayname": "Work",
+            "{http://apple.com/ns/ical/}calendar-color": "#4A90D9FF",
+        },
+    )
+    _wire_fake_client(
+        backend,
+        _FakeClient(_FakePrincipal(), cal_items=[cal_item]),
+    )
+
+    result = await backend.list_calendars()
+    assert result[0]["color"] == "#4a90d9"
 
 
 # -- list_calendars: translate AttributeError("...tag") to PermanentError ----
@@ -613,3 +669,238 @@ def test_parsed_non_recurring_event_creates_single_instance(tmp_path) -> None:
     assert instances[0].dtstart_utc == int(
         datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()
     )
+
+
+# -- sync-collection REPORT (RFC 6578) ----------------------------------------
+
+_VEVENT_ICAL = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:test-uid-1@example.com
+SUMMARY:Sync event
+DTSTART:20260514T100000Z
+DTEND:20260514T110000Z
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+class _UrlLike2:
+    def __init__(self, value: str) -> None:
+        self._v = value
+
+    def __str__(self) -> str:
+        return self._v
+
+    def rstrip(self, chars: str) -> str:
+        return self._v.rstrip(chars)
+
+    def rsplit(self, sep: str, maxsplit: int = -1) -> list[str]:
+        return self._v.rsplit(sep, maxsplit)
+
+
+class _FakeSyncObj:
+    def __init__(self, url: str, data: str | None, etag: str = '"e1"') -> None:
+        self.url = _UrlLike2(url)
+        self.data = data
+        self.etag = etag
+
+
+class _FakeSyncResult:
+    def __init__(self, objects: list, sync_token: str) -> None:
+        self.objects = objects
+        self.sync_token = sync_token
+
+    def __iter__(self):
+        return iter(self.objects)
+
+
+def _wire_fake_client2(backend: CalDavBackend, get_objects_by_sync_token_fn, search_fn=None, get_properties_fn=None):
+    """Wire a backend so _get_client returns a fake, and _run dispatches to lambdas."""
+    import caldav as _caldav
+
+    class _FakeCal2:
+        def __init__(self, url):
+            self.url = url
+
+        def get_objects_by_sync_token(self, **kwargs):
+            return get_objects_by_sync_token_fn(**kwargs)
+
+        def search(self, **kwargs):
+            return search_fn(**kwargs) if search_fn else []
+
+        def get_properties(self, props):
+            return get_properties_fn(props) if get_properties_fn else {}
+
+    class _FakeClient2:
+        pass
+
+    fake_client = _FakeClient2()
+    fake_cal = _FakeCal2(url="https://example.com/cal/1/")
+
+    backend._get_client = lambda: _aresult(fake_client)  # type: ignore[method-assign]
+    original_caldav_Calendar = _caldav.Calendar
+
+    def _patched_Calendar(client, url):
+        return fake_cal
+
+    _caldav.Calendar = _patched_Calendar  # type: ignore[attr-defined]
+    backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+    return _caldav, original_caldav_Calendar
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_uses_sync_collection_when_token_available() -> None:
+    """incremental_sync calls get_objects_by_sync_token when cursor has a real token."""
+    import caldav as _caldav
+
+    result = _FakeSyncResult(
+        objects=[_FakeSyncObj("https://cal/1/test-uid-1@example.com.ics", _VEVENT_ICAL)],
+        sync_token="http://example.com/sync/token/v2",
+    )
+    called_with: list[dict] = []
+
+    def get_objects_by_sync_token(**kwargs):
+        called_with.append(kwargs)
+        return result
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_fake_client2(backend, get_objects_by_sync_token)
+
+        cursor = CalDavCursor(sync_token="http://example.com/sync/token/v1")
+        changes, new_cursor = await backend.incremental_sync("https://cal/1/", cursor)
+    finally:
+        _caldav.Calendar = original
+
+    assert len(called_with) == 1
+    assert called_with[0]["sync_token"] == "http://example.com/sync/token/v1"
+    assert called_with[0]["load_objects"] is True
+    assert called_with[0]["disable_fallback"] is True
+    assert len(changes) == 1
+    assert changes[0].uid == "test-uid-1@example.com"
+    assert new_cursor.to_json()["sync_token"] == "http://example.com/sync/token/v2"
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_maps_report_error_to_cursor_expired() -> None:
+    """A ReportError from get_objects_by_sync_token (stale token) → CursorExpired."""
+    import caldav as _caldav
+    from caldav.lib.error import ReportError as _ReportError
+
+    def get_objects_by_sync_token(**kwargs):
+        raise _ReportError("Invalid sync token")
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_fake_client2(backend, get_objects_by_sync_token)
+
+        cursor = CalDavCursor(sync_token="stale-token")
+        with pytest.raises(CursorExpired):
+            await backend.incremental_sync("https://cal/1/", cursor)
+    finally:
+        _caldav.Calendar = original
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_falls_back_without_token() -> None:
+    """With no sync token, incremental_sync falls back to date-windowed REPORT."""
+    import caldav as _caldav
+
+    class _FakeEv:
+        url = _UrlLike2("https://cal/1/test-uid-1@example.com.ics")
+        data = _VEVENT_ICAL
+        etag = '"e1"'
+
+    searched: list = []
+
+    def search(**kwargs):
+        searched.append(kwargs)
+        return [_FakeEv()]
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+        class _FakeCal:
+            url = "https://cal/1/"
+            def get_objects_by_sync_token(self, **kw): raise AssertionError("should not be called")  # noqa: E704
+            def search(self, **kw): return search(**kw)
+            def get_properties(self, p): return {}
+
+        _caldav.Calendar = lambda client, url: _FakeCal()  # type: ignore[attr-defined]
+        backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
+        backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+        cursor = CalDavCursor(sync_token=None)
+        changes, new_cursor = await backend.incremental_sync("https://cal/1/", cursor)
+    finally:
+        _caldav.Calendar = original
+
+    assert len(searched) == 1
+    assert len(changes) == 1
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_sync_result_handles_deletes() -> None:
+    """Deleted objects (data=None) produce EventChange(kind='delete')."""
+    import caldav as _caldav
+
+    result = _FakeSyncResult(
+        objects=[
+            _FakeSyncObj("https://cal/1/gone-uid.ics", data=None),
+        ],
+        sync_token="tok-new",
+    )
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_fake_client2(backend, lambda **kw: result)
+
+        cursor = CalDavCursor(sync_token="tok-old")
+        changes, _ = await backend.incremental_sync("https://cal/1/", cursor)
+    finally:
+        _caldav.Calendar = original
+
+    assert len(changes) == 1
+    assert changes[0].kind == "delete"
+    assert changes[0].uid == "gone-uid"
+
+
+@pytest.mark.asyncio
+async def test_initial_sync_returns_sync_token_in_cursor() -> None:
+    """initial_sync must capture the server's sync-token and store it in the cursor."""
+    import caldav as _caldav
+    from caldav.elements import dav as _dav
+
+    class _FakeEv:
+        url = _UrlLike2("https://cal/1/ev.ics")
+        data = _VEVENT_ICAL
+        etag = '"e1"'
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+        class _FakeCal:
+            url = "https://cal/1/"
+            def search(self, **kw): return [_FakeEv()]
+            def get_properties(self, props):
+                return {_dav.SyncToken.tag: "http://example.com/token/1"}
+
+        _caldav.Calendar = lambda client, url: _FakeCal()  # type: ignore[attr-defined]
+        backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
+        backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+        cursors = []
+        async for _changes, cursor in backend.initial_sync("https://cal/1/"):
+            cursors.append(cursor)
+    finally:
+        _caldav.Calendar = original
+
+    assert len(cursors) == 1
+    assert cursors[0].to_json()["sync_token"] == "http://example.com/token/1"

@@ -74,14 +74,18 @@ _GRAPH_INDEX_TO_RRULE: dict[str, str] = {
 
 
 class GraphCursor(SyncCursor):
+    _TYPE = "graph"
+
     def __init__(self, delta_link: str | None = None) -> None:
         self.delta_link = delta_link
 
     def to_json(self) -> dict:
-        return {"delta_link": self.delta_link}
+        return {"_type": self._TYPE, "delta_link": self.delta_link}
 
     @classmethod
     def from_json(cls, data: dict) -> GraphCursor:
+        if data.get("_type") != cls._TYPE:
+            raise ValueError(f"not a graph cursor: {data!r}")
         return cls(delta_link=data.get("delta_link"))
 
 
@@ -280,7 +284,7 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
     return ";".join(parts)
 
 
-def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
+def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | None:
     # Delta responses mark deletions with an "@removed" key on the otherwise-stub event.
     # We key local rows on Graph's `id`, not `iCalUId` — calendarView/delta
     # pre-expands recurring events, so every occurrence shares an iCalUId but
@@ -290,6 +294,14 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
         return EventChange(kind="delete", uid=uid)
 
     ev_type = str(ev_json.get("type") or "").lower()
+    if ev_type == "seriesmaster":
+        # calendarView/delta returns this master's occurrences as individual
+        # events, each with a unique id. Storing the master row too causes
+        # _rebuild_instances_for to expand its RRULE into N instances on top
+        # of the N per-occurrence instances already produced — duplicating
+        # every recurring event.
+        return None
+
     uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
     body = ev_json.get("body") or {}
     location = ev_json.get("location") or {}
@@ -332,16 +344,6 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
         field="lastModifiedDateTime",
     )
 
-    # seriesMasters don't appear in calendarView/delta (it returns expanded
-    # occurrences instead). Keep the wiring in case we ever fetch a master
-    # directly — but in the normal sync path this stays None.
-    rrule = None
-    if ev_type == "seriesmaster":
-        rrule = _safe(
-            lambda: _graph_recurrence_to_rrule(ev_json.get("recurrence")),
-            field="recurrence",
-        )
-
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
@@ -354,7 +356,7 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange:
         description=body.get("content", "") or "",
         location=location.get("displayName", "") or "",
         url=ev_json.get("webLink"),
-        rrule=rrule,
+        rrule=None,
         attendees=tuple(attendees),
         categories=categories,
         status=status,
@@ -575,9 +577,9 @@ class GraphBackend:
     async def incremental_sync(
         self, calendar_id: str, cursor: SyncCursor
     ) -> tuple[list[EventChange], SyncCursor]:
-        delta_link = getattr(cursor, "delta_link", None)
-        if not delta_link:
+        if not isinstance(cursor, GraphCursor) or not cursor.delta_link:
             raise CursorExpired(calendar_id)
+        delta_link = cursor.delta_link
         changes: list[EventChange] = []
         new_cursor = GraphCursor()
         async for batch, c in self._drain_delta(delta_link, calendar_id):
@@ -589,19 +591,46 @@ class GraphBackend:
         self, url: str, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
         next_url: str | None = url
+        masters_cache: dict[str, dict] = {}  # shared across pages within one sync
         while next_url:
             resp = await self._request("GET", next_url)
             data = resp.json()
             events = data.get("value", [])
-            await self._hydrate_occurrences_from_master(events)
-            batch = [_graph_event_to_change(ev, calendar_id) for ev in events]
+            await self._hydrate_occurrences_from_master(events, masters_cache)
+            batch = [
+                c
+                for c in (_graph_event_to_change(ev, calendar_id) for ev in events)
+                if c is not None
+            ]
             delta = data.get("@odata.deltaLink")
             link = data.get("@odata.nextLink")
             cursor = GraphCursor(delta_link=delta) if delta else GraphCursor()
             yield batch, cursor
             next_url = link
 
-    async def _hydrate_occurrences_from_master(self, events: list[dict]) -> None:
+    async def _graph_batch_get(self, ids: list[str]) -> dict[str, dict]:
+        """Fetch Graph event objects via the $batch endpoint (≤20 per POST)."""
+        result: dict[str, dict] = {}
+        for i in range(0, len(ids), 20):
+            chunk = ids[i : i + 20]
+            body = {
+                "requests": [
+                    {"id": mid, "method": "GET", "url": f"/me/events/{mid}"}
+                    for mid in chunk
+                ]
+            }
+            try:
+                resp = await self._request("POST", "/$batch", json_body=body)
+                for item in resp.json().get("responses", []):
+                    if item.get("status") == 200:
+                        result[item["id"]] = item["body"]
+            except Exception:
+                log.exception("$batch fetch failed for %d masters", len(chunk))
+        return result
+
+    async def _hydrate_occurrences_from_master(
+        self, events: list[dict], masters_cache: dict[str, dict]
+    ) -> None:
         """Fill in subject/body/location on calendarView occurrences that
         share their data with a seriesMaster.
 
@@ -609,9 +638,9 @@ class GraphBackend:
         fields like `subject` on occurrences that have been individually
         edited — for an unmodified weekly meeting Graph returns blank
         subject/body/location and expects the caller to pull them from the
-        master via `seriesMasterId`. We fetch each unique master once per
-        page and merge its fields into the in-place event JSON before the
-        normal parser runs.
+        master via `seriesMasterId`. Masters are fetched in a single $batch
+        call and cached in `masters_cache` across pages so multi-page syncs
+        never re-fetch the same master.
         """
         master_ids: set[str] = set()
         for ev in events:
@@ -619,27 +648,17 @@ class GraphBackend:
                 continue
             if not (ev.get("subject") or "").strip():
                 smi = ev.get("seriesMasterId")
-                if smi:
+                if smi and smi not in masters_cache:
                     master_ids.add(smi)
-        if not master_ids:
-            return
-
-        async def _fetch(mid: str) -> tuple[str, dict | None]:
-            try:
-                resp = await self._request("GET", f"/me/events/{mid}")
-                return mid, resp.json()
-            except Exception:
-                log.exception("failed to fetch seriesMaster %s", mid)
-                return mid, None
-
-        results = await asyncio.gather(*(_fetch(mid) for mid in master_ids))
-        masters: dict[str, dict] = {mid: m for mid, m in results if m is not None}
+        if master_ids:
+            fetched = await self._graph_batch_get(list(master_ids))
+            masters_cache.update(fetched)
 
         for ev in events:
             mid = ev.get("seriesMasterId")
-            if not mid or mid not in masters:
+            if not mid or mid not in masters_cache:
                 continue
-            master = masters[mid]
+            master = masters_cache[mid]
             for field in _MASTER_HYDRATED_FIELDS:
                 cur = ev.get(field)
                 if not cur or (

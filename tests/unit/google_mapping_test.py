@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
-from lilical.backends.google import _google_event_to_change
+import pytest
+
+from lilical.backends.google import GoogleBackend, GoogleCursor, _google_event_to_change
 
 
 def test_timed_event() -> None:
@@ -223,3 +226,69 @@ def test_parsed_google_rrule_event_expands_into_instances(tmp_path) -> None:
     starts_iso = {i.dtstart_local for i in instances}
     assert "2026-05-27T09:00:00+00:00" not in starts_iso
     assert "2026-05-13T09:00:00+00:00" in starts_iso
+
+
+# -- incremental_sync pagination -----------------------------------------------
+
+
+def _ev(uid: str, evt_id: str) -> dict:
+    return {
+        "id": evt_id,
+        "iCalUID": uid,
+        "status": "confirmed",
+        "summary": "Event",
+        "etag": '"etag1"',
+        "start": {"dateTime": "2026-05-14T10:00:00Z"},
+        "end": {"dateTime": "2026-05-14T11:00:00Z"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_reads_all_pages() -> None:
+    """incremental_sync must follow nextPageToken until nextSyncToken appears."""
+    req1, req2 = MagicMock(), MagicMock()
+    page1 = {"items": [_ev("uid-1@g.com", "evt-1")], "nextPageToken": "pt-abc"}
+    page2 = {"items": [_ev("uid-2@g.com", "evt-2")], "nextSyncToken": "new-sync"}
+
+    events_res = MagicMock()
+    events_res.list.return_value = req1
+    events_res.list_next.side_effect = lambda req, resp: (
+        req2 if "nextPageToken" in resp else None
+    )
+
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    execute_map = {req1: page1, req2: page2}
+    backend._execute = AsyncMock(side_effect=lambda req: execute_map[req])
+
+    changes, cursor = await backend.incremental_sync("cal-1", GoogleCursor(sync_token="old"))
+
+    assert len(changes) == 2
+    assert {c.uid for c in changes} == {"uid-1@g.com", "uid-2@g.com"}
+    assert cursor.to_json()["sync_token"] == "new-sync"
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_single_page_advances_token() -> None:
+    """Single-page response still advances the sync token."""
+    req1 = MagicMock()
+    page1 = {"items": [_ev("uid-1@g.com", "evt-1")], "nextSyncToken": "tok-next"}
+
+    events_res = MagicMock()
+    events_res.list.return_value = req1
+    events_res.list_next.return_value = None
+
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(return_value=page1)
+
+    changes, cursor = await backend.incremental_sync("cal-1", GoogleCursor(sync_token="old"))
+
+    assert len(changes) == 1
+    assert cursor.to_json()["sync_token"] == "tok-next"

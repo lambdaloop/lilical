@@ -213,7 +213,7 @@ async def test_404_maps_to_permanent() -> None:
 def test_graph_cursor_roundtrip() -> None:
     c = GraphCursor(delta_link="https://example/delta?token=X")
     j = c.to_json()
-    assert j == {"delta_link": "https://example/delta?token=X"}
+    assert j == {"_type": "graph", "delta_link": "https://example/delta?token=X"}
     c2 = GraphCursor.from_json(json.loads(json.dumps(j)))
     assert c2.delta_link == c.delta_link
 
@@ -362,7 +362,10 @@ def test_event_to_change_recurring_occurrences_have_distinct_uids() -> None:
     assert len(set(uids)) == 3
 
 
-def test_event_to_change_series_master_yields_rrule() -> None:
+def test_event_to_change_series_master_returns_none() -> None:
+    # seriesMaster is dropped: calendarView/delta also returns each occurrence
+    # individually, so accepting the master row would double-count via
+    # _rebuild_instances_for's RRULE expansion.
     data = {
         "id": "AAMk-master",
         "iCalUId": "uid-master@outlook.com",
@@ -382,13 +385,7 @@ def test_event_to_change_series_master_yields_rrule() -> None:
             },
         },
     }
-    change = _graph_event_to_change(data, "cal-1")
-    assert change is not None
-    assert change.kind == "upsert"
-    assert change.event is not None
-    assert change.event.summary == "Weekly standup"
-    assert change.event.rrule == "FREQ=WEEKLY;BYDAY=WE"
-    assert change.event.exdates == ()
+    assert _graph_event_to_change(data, "cal-1") is None
 
 
 def test_event_to_change_single_instance_no_rrule() -> None:
@@ -403,6 +400,48 @@ def test_event_to_change_single_instance_no_rrule() -> None:
     assert change is not None
     assert change.event is not None
     assert change.event.rrule is None
+
+
+def test_series_master_is_filtered_from_mixed_batch() -> None:
+    """A batch containing a seriesMaster alongside its occurrences should
+    produce EventChanges only for the occurrences."""
+    master = {
+        "id": "AAMk-master",
+        "type": "seriesMaster",
+        "subject": "Weekly standup",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"]},
+            "range": {"type": "noEnd", "startDate": "2026-05-13"},
+        },
+    }
+    occurrences = [
+        {
+            "id": f"AAMk-occ-{i}",
+            "iCalUId": "uid-shared@outlook.com",
+            "type": "occurrence",
+            "seriesMasterId": "AAMk-master",
+            "subject": "Weekly standup",
+            "start": {
+                "dateTime": f"2026-05-{13 + 7 * i:02d}T09:00:00.0000000",
+                "timeZone": "UTC",
+            },
+            "end": {
+                "dateTime": f"2026-05-{13 + 7 * i:02d}T09:30:00.0000000",
+                "timeZone": "UTC",
+            },
+        }
+        for i in range(3)
+    ]
+    batch = [
+        c
+        for c in (_graph_event_to_change(ev, "cal-1") for ev in [master, *occurrences])
+        if c is not None
+    ]
+    assert len(batch) == 3
+    uids = [c.uid for c in batch]
+    assert uids == ["AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"]
 
 
 # -- end-to-end: parser → EventStore → event_instances expansion --------------
@@ -469,6 +508,92 @@ def test_parsed_graph_event_creates_instance_row(tmp_path) -> None:
     assert instances[0].dtstart_utc == int(
         datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()
     )
+
+
+def test_series_master_plus_occurrences_no_duplicate_instances(tmp_path) -> None:
+    """Regression: when a delta batch contains a seriesMaster + N occurrences,
+    apply_remote_changes should produce exactly N EventInstanceRows — not 2N."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from lilical.models.account import Account
+    from lilical.models.calendar import Calendar
+    from lilical.models.db import Base
+    from lilical.models.event import EventInstanceRow
+    from lilical.storage.event_store import EventStore
+
+    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session, session.begin():
+        session.add(
+            Account(
+                id="acc-1",
+                kind="graph",
+                display_name="O",
+                identity="u@example.com",
+                secret_ref="acc-1",
+                created_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        session.add(
+            Calendar(
+                id="cal-1",
+                account_id="acc-1",
+                provider_id="graph-cal-id",
+                display_name="Calendar",
+                color="#000000",
+                access_role="owner",
+            )
+        )
+
+    master_json = {
+        "id": "AAMk-master",
+        "type": "seriesMaster",
+        "subject": "Weekly standup",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"]},
+            "range": {"type": "noEnd", "startDate": "2026-05-13"},
+        },
+    }
+    occurrence_jsons = [
+        {
+            "id": f"AAMk-occ-{i}",
+            "iCalUId": "uid-shared@outlook.com",
+            "type": "occurrence",
+            "seriesMasterId": "AAMk-master",
+            "subject": "Weekly standup",
+            "start": {
+                "dateTime": f"2026-05-{13 + 7 * i:02d}T09:00:00.0000000",
+                "timeZone": "UTC",
+            },
+            "end": {
+                "dateTime": f"2026-05-{13 + 7 * i:02d}T09:30:00.0000000",
+                "timeZone": "UTC",
+            },
+        }
+        for i in range(3)
+    ]
+
+    all_json = [master_json, *occurrence_jsons]
+    changes = [
+        c
+        for c in (_graph_event_to_change(ev, "cal-1") for ev in all_json)
+        if c is not None
+    ]
+    assert len(changes) == 3  # master filtered out
+
+    store = EventStore(engine)
+    store.apply_remote_changes("cal-1", changes, '{"_type": "graph", "delta_link": null}')
+
+    with Session(engine) as session:
+        instances = session.query(EventInstanceRow).all()
+    assert len(instances) == 3, (
+        f"Expected 3 instances (one per occurrence), got {len(instances)}"
+    )
+    instance_uids = {inst.uid for inst in instances}
+    assert instance_uids == {"AAMk-occ-0", "AAMk-occ-1", "AAMk-occ-2"}
 
 
 # -- _graph_recurrence_to_rrule: pattern.type axis ---------------------------
@@ -674,13 +799,20 @@ async def test_drain_delta_hydrates_occurrences_from_master() -> None:
         "type": "seriesMaster",
     }
 
-    master_fetches: list[str] = []
+    import json as _json
+
+    batch_calls: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
-        url = str(req.url)
-        if "/me/events/AAMk-master-1" in url:
-            master_fetches.append(url)
-            return httpx.Response(200, json=master_body)
+        if "/$batch" in str(req.url):
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            responses = [
+                {"id": r["id"], "status": 200, "body": master_body}
+                for r in body["requests"]
+                if r["id"] == "AAMk-master-1"
+            ]
+            return httpx.Response(200, json={"responses": responses})
         return httpx.Response(200, json=delta_body)
 
     backend = GraphBackend(account_id="acc-1", token_cache_json=None)
@@ -690,8 +822,9 @@ async def test_drain_delta_hydrates_occurrences_from_master() -> None:
     async for batch, _cursor in backend.initial_sync("cal-1"):
         collected.extend(batch)
 
-    # Master fetched exactly once even though two occurrences referenced it.
-    assert len(master_fetches) == 1
+    # One $batch call with one request — two occurrences but one unique master.
+    assert len(batch_calls) == 1
+    assert len(batch_calls[0]["requests"]) == 1
 
     by_uid = {c.uid: c.event for c in collected}
     # Occurrences inherited subject/body/location from the master.
@@ -727,13 +860,12 @@ async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
         "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
     }
 
-    master_fetches: list[str] = []
+    batch_calls: list = []
 
     def handler(req: httpx.Request) -> httpx.Response:
-        url = str(req.url)
-        if "/me/events/AAMk-master-1" in url:
-            master_fetches.append(url)
-            return httpx.Response(200, json={"id": "AAMk-master-1"})
+        if "/$batch" in str(req.url):
+            batch_calls.append(req)
+            return httpx.Response(200, json={"responses": []})
         return httpx.Response(200, json=delta_body)
 
     backend = GraphBackend(account_id="acc-1", token_cache_json=None)
@@ -742,7 +874,81 @@ async def test_drain_delta_skips_hydration_when_subject_populated() -> None:
     async for _batch, _cursor in backend.initial_sync("cal-1"):
         pass
 
-    assert master_fetches == []
+    assert batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_drain_delta_cross_page_master_cache() -> None:
+    """The same seriesMasterId appearing on two delta pages should trigger
+    exactly one $batch call total, not one per page."""
+    import json as _json
+
+    occ = {
+        "iCalUId": "uid-shared@outlook.com",
+        "subject": "",
+        "type": "occurrence",
+        "seriesMasterId": "AAMk-master-X",
+        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
+    }
+    page1 = {
+        "value": [{**occ, "id": "AAMk-occ-p1"}],
+        "@odata.nextLink": "https://graph.microsoft.com/v1.0/page2",
+    }
+    page2 = {
+        "value": [{**occ, "id": "AAMk-occ-p2"}],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
+    }
+    master = {"id": "AAMk-master-X", "subject": "Weekly", "body": {"contentType": "text", "content": ""}, "location": {"displayName": ""}}
+
+    batch_calls: list[dict] = []
+    urls_seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        urls_seen.append(url)
+        if "/$batch" in url:
+            body = _json.loads(req.content)
+            batch_calls.append(body)
+            return httpx.Response(200, json={"responses": [
+                {"id": r["id"], "status": 200, "body": master}
+                for r in body["requests"]
+            ]})
+        if "page2" in url:
+            return httpx.Response(200, json=page2)
+        return httpx.Response(200, json=page1)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    async for _batch, _cursor in backend.initial_sync("cal-1"):
+        pass
+
+    # $batch called once (page 1), page 2 reuses the cache — no second call.
+    assert len(batch_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_graph_batch_get_chunks_into_groups_of_20() -> None:
+    """25 master IDs → two $batch POSTs (20 + 5)."""
+    import json as _json
+
+    batch_request_sizes: list[int] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "/$batch" in str(req.url):
+            body = _json.loads(req.content)
+            batch_request_sizes.append(len(body["requests"]))
+            return httpx.Response(200, json={"responses": []})
+        return httpx.Response(200, json={"value": [], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl"})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    ids = [f"master-{i}" for i in range(25)]
+    await backend._graph_batch_get(ids)
+
+    assert batch_request_sizes == [20, 5]
 
 
 @pytest.mark.asyncio
@@ -772,83 +978,19 @@ async def test_initial_sync_uses_calendarview_delta_endpoint() -> None:
 
 
 def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
-    """A seriesMaster's RRULE should drive RecurrenceExpander locally,
-    producing one EventInstanceRow per generated occurrence — matching the
-    Google/CalDAV pipeline."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
-    from lilical.models.account import Account
-    from lilical.models.calendar import Calendar
-    from lilical.models.db import Base
-    from lilical.models.event import EventInstanceRow
-    from lilical.storage.event_store import EventStore
-
-    engine = create_engine(f"sqlite:///{tmp_path}/test.db")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session, session.begin():
-        session.add(
-            Account(
-                id="acc-1",
-                kind="graph",
-                display_name="O",
-                identity="u@example.com",
-                secret_ref="acc-1",
-                created_at="2026-05-13T00:00:00+00:00",
-            )
-        )
-        session.add(
-            Calendar(
-                id="cal-1",
-                account_id="acc-1",
-                provider_id="graph-cal-id",
-                display_name="Calendar",
-                color="#000000",
-                access_role="owner",
-            )
-        )
-
+    # Renamed / replaced: the old contract (seriesMaster → RRULE → N instances)
+    # was the cause of duplicate events. seriesMaster is now dropped at the
+    # backend boundary; the per-occurrence rows drive instance creation instead.
+    # Full coverage is in test_series_master_plus_occurrences_no_duplicate_instances.
     data = {
         "id": "AAMk-series",
-        "iCalUId": "uid-series@outlook.com",
-        "subject": "Weekly standup",
         "type": "seriesMaster",
+        "subject": "Weekly standup",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
         "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
         "recurrence": {
-            "pattern": {
-                "type": "weekly",
-                "interval": 1,
-                "daysOfWeek": ["wednesday"],
-            },
-            "range": {
-                "type": "numbered",
-                "startDate": "2026-05-13",
-                "numberOfOccurrences": 4,
-            },
+            "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["wednesday"]},
+            "range": {"type": "numbered", "startDate": "2026-05-13", "numberOfOccurrences": 4},
         },
     }
-    change = _graph_event_to_change(data, "cal-1")
-    assert change is not None
-    assert change.event is not None
-    assert change.event.rrule == "FREQ=WEEKLY;BYDAY=WE;COUNT=4"
-
-    store = EventStore(engine)
-    store.apply_remote_changes("cal-1", [change], '{"delta_link": null}')
-    with Session(engine) as session:
-        instances = (
-            session.query(EventInstanceRow)
-            .filter_by(uid="AAMk-series")
-            .order_by(EventInstanceRow.dtstart_utc)
-            .all()
-        )
-    # COUNT=4 → four instances, every Wednesday starting 2026-05-13.
-    assert len(instances) == 4
-    assert all(inst.uid == "AAMk-series" for inst in instances)
-    expected_starts = [
-        int(datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()),
-        int(datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc).timestamp()),
-        int(datetime(2026, 5, 27, 9, 0, tzinfo=timezone.utc).timestamp()),
-        int(datetime(2026, 6, 3, 9, 0, tzinfo=timezone.utc).timestamp()),
-    ]
-    assert [inst.dtstart_utc for inst in instances] == expected_starts
+    assert _graph_event_to_change(data, "cal-1") is None
