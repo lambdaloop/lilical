@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import dataclasses
 import zoneinfo
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QDate, QDateTime, QTime
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -15,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -90,15 +87,17 @@ class _ColorButton(QToolButton):
         if self._hex:
             border = "2px solid #ffffff" if self._selected else "1px solid #555"
             self.setStyleSheet(
-                f"QToolButton {{ background-color: {self._hex}; border: {border}; border-radius: 4px; }}"
+                f"QToolButton {{ background-color: {self._hex}; "
+                f"border: {border}; border-radius: 4px; }}"
             )
         else:
             border = "2px solid #ffffff" if self._selected else "1px solid #555"
             self.setStyleSheet(
-                f"QToolButton {{ background-color: palette(base); border: {border}; border-radius: 4px; }}"
+                f"QToolButton {{ background-color: palette(base); "
+                f"border: {border}; border-radius: 4px; }}"
             )
 
-    def setSelected(self, v: bool) -> None:
+    def setSelected(self, v: bool) -> None:  # noqa: N802
         self._selected = v
         self.setChecked(v)
         self._update_style()
@@ -254,6 +253,7 @@ class EventDialog(QDialog):
 
         # ── Recurrence ─────────────────────────────────────────────────────────
         from lilical.ui.widgets.recurrence_editor import RecurrenceEditor
+
         self._rrule_editor = RecurrenceEditor()
         if event and event.rrule:
             self._rrule_editor.set_value(event.rrule)
@@ -296,6 +296,7 @@ class EventDialog(QDialog):
         btn_row = QHBoxLayout()
         if self._editing:
             from PySide6.QtWidgets import QPushButton
+
             delete_btn = QPushButton("Delete")
             delete_btn.setObjectName("deleteButton")
             delete_btn.clicked.connect(self._on_delete)
@@ -332,7 +333,7 @@ class EventDialog(QDialog):
 
     def _selected_color(self) -> str:
         for btn in self._color_buttons:
-            if btn._selected:
+            if btn._selected:  # type: ignore[reportPrivateUsage]
                 return btn.color_hex
         return ""
 
@@ -371,7 +372,7 @@ class EventDialog(QDialog):
         start_dt = _qdatetime_to_dt(self._start_edit.dateTime(), tz_name)
         end_dt = _qdatetime_to_dt(self._end_edit.dateTime(), tz_name)
         if all_day:
-            # Dialog shows the inclusive last day; convert to exclusive midnight of next day
+            # Dialog shows inclusive last day; convert to exclusive midnight of next day
             end_dt = datetime(
                 end_dt.year, end_dt.month, end_dt.day, 0, 0, 0, tzinfo=end_dt.tzinfo
             ) + timedelta(days=1)

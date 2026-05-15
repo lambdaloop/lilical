@@ -151,22 +151,21 @@ class Sidebar(QWidget):
     # ── Mini-month navigation ──────────────────────────────────────────────
 
     def _update_mini_label(self) -> None:
-        today = date.today()
-        yr = self._mini_month._year
-        mo = self._mini_month._month
+        yr = self._mini_month.year
+        mo = self._mini_month.month
         self._mini_label.setText(date(yr, mo, 1).strftime("%B %Y"))
 
     def _on_mini_prev(self) -> None:
-        yr = self._mini_month._year
-        mo = self._mini_month._month - 1
+        yr = self._mini_month.year
+        mo = self._mini_month.month - 1
         if mo < 1:
             mo, yr = 12, yr - 1
         self._mini_month.set_month(yr, mo)
         self._update_mini_label()
 
     def _on_mini_next(self) -> None:
-        yr = self._mini_month._year
-        mo = self._mini_month._month + 1
+        yr = self._mini_month.year
+        mo = self._mini_month.month + 1
         if mo > 12:
             mo, yr = 1, yr + 1
         self._mini_month.set_month(yr, mo)

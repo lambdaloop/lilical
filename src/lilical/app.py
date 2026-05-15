@@ -4,7 +4,7 @@ import asyncio
 import signal
 import sys
 
-import qasync
+import qasync  # type: ignore[reportMissingTypeStubs]
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -21,7 +21,7 @@ from lilical.ui.notifications import NotificationScheduler
 
 # Monkey-patch qasync 0.28.0 _SimpleTimer.timerEvent to suppress
 # benign KeyError when a timer fires after its callback was cleaned up.
-_orig_timer_event = qasync._SimpleTimer.timerEvent
+_orig_timer_event = qasync._SimpleTimer.timerEvent  # type: ignore[reportPrivateUsage]
 
 
 def _patched_timer_event(self, event):
@@ -31,7 +31,7 @@ def _patched_timer_event(self, event):
         pass
 
 
-qasync._SimpleTimer.timerEvent = _patched_timer_event
+qasync._SimpleTimer.timerEvent = _patched_timer_event  # type: ignore[reportPrivateUsage]
 
 
 def main() -> int:

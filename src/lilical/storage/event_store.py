@@ -35,7 +35,7 @@ def _json_dumps(obj: Any) -> str | None:
     return json.dumps(obj)
 
 
-def _json_loads_tuple(s: str | None) -> tuple:
+def _json_loads_tuple(s: str | None) -> tuple[Any, ...]:
     if not s:
         return ()
     return tuple(json.loads(s))
@@ -186,12 +186,16 @@ class EventStore(QObject):
         if event.recurrence_id is not None:
             master_row = (
                 session.query(EventRow)
-                .filter_by(uid=event.uid, calendar_id=event.calendar_id, recurrence_id="")
+                .filter_by(
+                    uid=event.uid, calendar_id=event.calendar_id, recurrence_id=""
+                )
                 .first()
             )
             if master_row is not None:
                 master_event = _row_to_event(master_row)
-                self._rebuild_instances_for(session, master_event, window_start, window_end)
+                self._rebuild_instances_for(
+                    session, master_event, window_start, window_end
+                )
             return
 
         session.query(EventInstanceRow).filter(
@@ -215,7 +219,9 @@ class EventStore(QObject):
             )
             override_events = [_row_to_event(r) for r in override_rows]
             expander = RecurrenceExpander(self)
-            for occ in expander.expand_for_storage(event, window_start, window_end, overrides=override_events):
+            for occ in expander.expand_for_storage(
+                event, window_start, window_end, overrides=override_events
+            ):
                 ds = self._ensure_aware_dt(occ["dtstart"])
                 de = self._ensure_aware_dt(occ["dtend"])
                 session.add(
@@ -272,7 +278,11 @@ class EventStore(QObject):
                 .first()
             )
             if row is None:
-                row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).first()
+                row = (
+                    s.query(EventRow)
+                    .filter_by(uid=uid, calendar_id=calendar_id)
+                    .first()
+                )
             if row is None:
                 return None
             return _row_to_event(row)
@@ -298,7 +308,7 @@ class EventStore(QObject):
                     return _row_to_event(row)
         return self.get_event(inst.uid, inst.calendar_id)
 
-    def get_override_events(self, uid: str, calendar_id: str) -> list:
+    def get_override_events(self, uid: str, calendar_id: str) -> list[Event]:
         """Return all non-deleted override EventRows for a recurring series."""
         with Session(self._engine) as s:
             rows = (
@@ -380,7 +390,11 @@ class EventStore(QObject):
     def queue_delete(self, uid: str, calendar_id: str) -> None:
         account_id = self._account_id_for_calendar(calendar_id)
         with Session(self._engine) as s, s.begin():
-            row = s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="").first()
+            row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
             if row is not None:
                 row.deleted_locally = True
                 row.local_dirty = True
@@ -490,7 +504,9 @@ class EventStore(QObject):
         with Session(self._engine) as s, s.begin():
             row = (
                 s.query(EventRow)
-                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str)
+                .filter_by(
+                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
+                )
                 .first()
             )
             override = dataclasses.replace(
@@ -558,7 +574,9 @@ class EventStore(QObject):
             # If there's an override row at this recurrence_id, mark it deleted too.
             override_row = (
                 s.query(EventRow)
-                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str)
+                .filter_by(
+                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
+                )
                 .first()
             )
             if override_row is not None:
@@ -581,7 +599,7 @@ class EventStore(QObject):
     def apply_remote_changes(
         self,
         calendar_id: str,
-        changes: list,
+        changes: list[Any],
         new_cursor_json: str,
     ) -> int:
         count = 0
@@ -678,7 +696,7 @@ class EventStore(QObject):
         with Session(self._engine) as s:
             return s.query(Account).filter(Account.id == account_id).first()
 
-    def list_accounts(self, enabled_only: bool = True) -> list:
+    def list_accounts(self, enabled_only: bool = True) -> list[Any]:
         from lilical.models.account import Account
 
         with Session(self._engine) as s:
@@ -810,7 +828,7 @@ class EventStore(QObject):
                 )
             )
 
-    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+    def list_calendars(self, account_id: str, visible_only: bool = True) -> list[Any]:
         from lilical.models.calendar import Calendar
 
         with Session(self._engine) as s:
@@ -864,7 +882,9 @@ class EventStore(QObject):
         )
         return cls._FALLBACK_PALETTE[idx]
 
-    def upsert_calendars(self, account_id: str, calendars: list[dict]) -> None:
+    def upsert_calendars(
+        self, account_id: str, calendars: list[dict[str, Any]]
+    ) -> None:
         """Reconcile local calendar rows with the backend's calendar list.
 
         Inserts new calendars, updates display_name on existing ones, and removes
@@ -918,7 +938,7 @@ class EventStore(QObject):
                         )
                     )
 
-    def list_pending_ops(self, account_id: str) -> list:
+    def list_pending_ops(self, account_id: str) -> list[Any]:
         from lilical.models.pending_op import PendingOpRow
 
         with Session(self._engine) as s:
@@ -943,9 +963,7 @@ class EventStore(QObject):
 
     def remove_event(self, uid: str, calendar_id: str) -> None:
         with Session(self._engine) as s, s.begin():
-            s.query(EventRow).filter_by(
-                uid=uid, calendar_id=calendar_id
-            ).delete()
+            s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id).delete()
             s.query(EventInstanceRow).filter_by(
                 uid=uid, calendar_id=calendar_id
             ).delete()
@@ -1007,8 +1025,8 @@ class EventStore(QObject):
 
         Returns the new tail event UID.
         """
-        import uuid
         import re as _re
+        import uuid
 
         account_id = self._account_id_for_calendar(calendar_id)
         with Session(self._engine) as s, s.begin():

@@ -42,6 +42,8 @@ class AccountSetupDialog(QDialog):
         self._reauth = existing_account is not None
 
         if self._reauth:
+            if existing_account is None:
+                return
             self.setWindowTitle(f"Re-authenticate — {existing_account.display_name}")
         else:
             self.setWindowTitle("Add an account")
@@ -65,6 +67,8 @@ class AccountSetupDialog(QDialog):
         self._kind_combo = QComboBox()
         self._kind_combo.addItems(["Google Calendar", "Microsoft / Outlook", "CalDAV"])
         if self._reauth:
+            if existing_account is None:
+                return
             label = _KIND_TO_LABEL.get(existing_account.kind)
             if label is not None:
                 self._kind_combo.setCurrentText(label)
@@ -94,6 +98,8 @@ class AccountSetupDialog(QDialog):
         self._password_edit.setVisible(False)
 
         if self._reauth:
+            if existing_account is None:
+                return
             self._name_edit.setText(existing_account.display_name or "")
             self._identity_edit.setText(existing_account.identity or "")
             if existing_account.server_url:
@@ -122,7 +128,9 @@ class AccountSetupDialog(QDialog):
             self._server_edit.clear()
             self._password_edit.clear()
 
-    def _collect_data(self) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
+    def _collect_data(
+        self,
+    ) -> tuple[str | None, str, str, str | None, dict[str, Any]] | None:
         kind_map = {
             "Google Calendar": "google",
             "Microsoft / Outlook": "graph",
@@ -157,7 +165,7 @@ class AccountSetupDialog(QDialog):
             )
             return
 
-        kind, display_name, identity, server_url, secret_data = data
+        kind, _display_name, _identity, _server_url, secret_data = data
 
         if kind == "google":
             token = self._run_oauth_flow("google")
@@ -216,14 +224,14 @@ class AccountSetupDialog(QDialog):
             progress.close()
 
     def _run_graph_device_flow(self) -> str | None:
-        try:
-            import msal  # noqa: F401
-        except ImportError as err:
+        import importlib.util as _util
+
+        if _util.find_spec("msal") is None:
             QMessageBox.critical(
                 self,
                 "Authentication failed",
                 "Microsoft 365 support requires the 'msal' package. "
-                "Install it with: pixi install\n\n" + str(err),
+                "Install it with: pixi install",
             )
             return None
 
@@ -238,12 +246,12 @@ class AccountSetupDialog(QDialog):
             QMessageBox.critical(self, "Authentication failed", str(e))
             return None
 
-        user_code = flow.get("user_code", "")
+        user_code: str = str(flow.get("user_code", ""))
         verification_uri = flow.get(
             "verification_uri", "https://microsoft.com/devicelogin"
         )
         with contextlib.suppress(Exception):
-            webbrowser.open(verification_uri)
+            webbrowser.open(str(verification_uri))  # type: ignore[reportArgumentType]
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Sign in to Microsoft 365")
@@ -312,7 +320,9 @@ class AccountSetupDialog(QDialog):
             return None
         return result["token"]
 
-    def result_data(self) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
+    def result_data(
+        self,
+    ) -> tuple[str | None, str, str, str | None, dict[str, Any]] | None:
         kind_map = {
             "Google Calendar": "google",
             "Microsoft / Outlook": "graph",
@@ -333,7 +343,9 @@ class AccountSetupDialog(QDialog):
 
 def _run_google_oauth_sync() -> str:
     try:
-        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
+            InstalledAppFlow,
+        )
     except ImportError as err:
         raise RuntimeError(
             "Google Calendar support requires 'google-auth-oauthlib'. "
@@ -343,10 +355,10 @@ def _run_google_oauth_sync() -> str:
     from lilical.backends.google import (
         CLIENT_CONFIG,
         SCOPES,
-        _validate_client_config,
+        _validate_client_config,  # type: ignore[reportPrivateUsage]
     )
 
-    _validate_client_config()
+    _validate_client_config()  # type: ignore[reportPrivateUsage]
     flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
     creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
     return creds.to_json()

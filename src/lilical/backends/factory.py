@@ -37,7 +37,7 @@ def build_backend_factory(secrets: SecretsStore):
         if account.kind == "graph":
             from lilical.backends.graph import GraphBackend
 
-            return GraphBackend(
+            return GraphBackend(  # type: ignore[reportReturnType]
                 account_id=account.id,
                 token_cache_json=secret.get("msal_cache"),
                 on_token_refreshed=_save_graph_cache,

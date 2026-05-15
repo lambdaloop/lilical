@@ -6,7 +6,6 @@ from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsScene,
-    QGraphicsSceneMouseEvent,
     QGraphicsView,
     QSizePolicy,
 )
@@ -28,8 +27,8 @@ class MiniMonthGrid(QGraphicsView):
     def __init__(self, year: int | None = None, month: int | None = None) -> None:
         super().__init__()
         today = date.today()
-        self._year = year or today.year
-        self._month = month or today.month
+        self.year = year or today.year
+        self.month = month or today.month
         self._selected = today
         self._active_start: date | None = None
         self._active_end: date | None = None
@@ -42,43 +41,43 @@ class MiniMonthGrid(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._day_rects: dict[date, tuple[float, float, float, float]] = {}
-        self._render()
+        self.render()
 
-    def resizeEvent(self, event) -> None:  # noqa: ANN001
+    def resizeEvent(self, event) -> None:  # noqa: ANN001, N802
         super().resizeEvent(event)
         self._cell_w = max(20, self.width() // 7)
-        self._render()
+        self.render()
 
     def set_month(self, year: int, month: int) -> None:
-        self._year = year
-        self._month = month
-        self._render()
+        self.year = year
+        self.month = month
+        self.render()
 
     def set_selected(self, d: date) -> None:
         self._selected = d
-        self._render()
+        self.render()
 
     def set_active_range(self, start: date, end: date) -> None:
         if end < start:
             start, end = end, start
         self._active_start = start
         self._active_end = end
-        if start.year != self._year or start.month != self._month:
-            self._year = start.year
-            self._month = start.month
-        self._render()
+        if start.year != self.year or start.month != self.month:
+            self.year = start.year
+            self.month = start.month
+        self.render()
 
     def clear_active_range(self) -> None:
         self._active_start = None
         self._active_end = None
-        self._render()
+        self.render()
 
-    def _render(self) -> None:
+    def render(self) -> None:  # type: ignore[reportIncompatibleMethodOverride]
         self._scene.clear()
         self._day_rects = {}
         cw = self._cell_w
         ch = _CELL_H
-        first = date(self._year, self._month, 1)
+        first = date(self.year, self.month, 1)
         start = first - timedelta(days=first.weekday())
         today = date.today()
         a_start = self._active_start
@@ -95,7 +94,7 @@ class MiniMonthGrid(QGraphicsView):
             x = (d % 7) * cw
             y = _HEADER_H + (d // 7) * ch
             cur = start + timedelta(days=d)
-            in_month = cur.month == self._month
+            in_month = cur.month == self.month
             if not in_month:
                 continue
 
@@ -114,7 +113,9 @@ class MiniMonthGrid(QGraphicsView):
             if cur == today:
                 self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT)))
             if cur == self._selected and not in_range:
-                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT_FILL)))
+                self._scene.addRect(
+                    x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT_FILL))
+                )
 
             item = self._scene.addText(str(cur.day), QFont(theme.FONT_FAMILY, 9))
             item.setPos(x + max(3, (cw - 16) // 2), y + 3)
@@ -125,7 +126,7 @@ class MiniMonthGrid(QGraphicsView):
             else:
                 item.setDefaultTextColor(QColor(theme.TEXT_SECONDARY))
 
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
@@ -134,7 +135,7 @@ class MiniMonthGrid(QGraphicsView):
         for d, (x, y, w, h) in self._day_rects.items():
             if x <= sx < x + w and y <= sy < y + h:
                 self._selected = d
-                self._render()
+                self.render()
                 self.selected.emit(d)
                 return
         super().mousePressEvent(event)

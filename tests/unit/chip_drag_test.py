@@ -44,9 +44,8 @@ def _make_chip(event=None, rect=None):
 
 def _press(chip, pos, scene_pos=None):
     """Send a left-button press to chip at local `pos`."""
-    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtCore import QEvent, Qt
     from PySide6.QtWidgets import QGraphicsSceneMouseEvent
-    from PySide6.QtCore import Qt
 
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMousePress)
     ev.setButton(Qt.MouseButton.LeftButton)
@@ -57,9 +56,8 @@ def _press(chip, pos, scene_pos=None):
 
 
 def _move(chip, pos, scene_pos=None):
-    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtCore import QEvent, Qt
     from PySide6.QtWidgets import QGraphicsSceneMouseEvent
-    from PySide6.QtCore import Qt
 
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMouseMove)
     ev.setButton(Qt.MouseButton.LeftButton)
@@ -70,9 +68,8 @@ def _move(chip, pos, scene_pos=None):
 
 
 def _release(chip, pos, scene_pos=None):
-    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtCore import QEvent, Qt
     from PySide6.QtWidgets import QGraphicsSceneMouseEvent
-    from PySide6.QtCore import Qt
 
     ev = QGraphicsSceneMouseEvent(QEvent.Type.GraphicsSceneMouseRelease)
     ev.setButton(Qt.MouseButton.LeftButton)
@@ -123,7 +120,7 @@ def test_body_drag_emits_progress_and_committed(qapp):
 
 
 def test_click_without_drag_emits_edit_requested(qapp):
-    """Press + release without exceeding threshold → edit_requested (no drag signals)."""
+    """Press+release without exceeding threshold → edit_requested (no drag signals)."""
     from PySide6.QtCore import QPointF
 
     chip = _make_chip()

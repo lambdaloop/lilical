@@ -6,16 +6,14 @@ import inspect
 import logging
 import re
 import zoneinfo
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date as _date_cls
 from datetime import datetime, time, timedelta, timezone
-from typing import AsyncIterator
 from urllib.parse import urljoin, urlparse
 
 import caldav
 import icalendar
-
-from lilical.utils.timezone import local_iana_tz
 from caldav.elements import dav as _dav_elements
 from caldav.lib.error import AuthorizationError, DAVError, ReportError
 
@@ -29,6 +27,7 @@ from lilical.backends.base import (
     TransientError,
 )
 from lilical.models.event import Event
+from lilical.utils.timezone import local_iana_tz
 
 log = logging.getLogger(__name__)
 
@@ -40,18 +39,19 @@ class CalDavCursor(SyncCursor):
     sync_token: str | None = None
     ctag: str | None = None
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, object]:
         return {"_type": self._TYPE, "sync_token": self.sync_token, "ctag": self.ctag}
 
     @classmethod
-    def from_json(cls, data: dict) -> CalDavCursor:
+    def from_json(cls, data: dict[str, object]) -> CalDavCursor:
         if data.get("_type") != cls._TYPE:
             raise ValueError(f"not a caldav cursor: {data!r}")
-        return cls(sync_token=data.get("sync_token"), ctag=data.get("ctag"))
+        return cls(sync_token=data.get("sync_token"), ctag=data.get("ctag"))  # type: ignore[reportArgumentType]
 
 
 def _dav_status(e: DAVError) -> int | None:
-    """Parse HTTP status code out of a DAVError's url field (e.g. 'HTTP/1.1 507 ...')."""
+    """Parse HTTP status code out of a DAVError's url
+    field (e.g. 'HTTP/1.1 507 ...')."""
     url = getattr(e, "url", None) or ""
     m = re.search(r"\b([1-5][0-9]{2})\b", url)
     return int(m.group(1)) if m else None
@@ -91,7 +91,7 @@ def _classify_errors(f):
     else:
 
         @functools.wraps(f)
-        async def wrapper(*args, **kwargs):
+        async def wrapper_coro(*args, **kwargs):
             try:
                 return await f(*args, **kwargs)
             except AuthorizationError as e:
@@ -114,7 +114,7 @@ def _classify_errors(f):
                 log.exception("unclassified caldav error in %s", op)
                 raise PermanentError(f"{op}: {e}") from e
 
-        return wrapper
+        return wrapper_coro
 
 
 def _normalise_dt(val, tzid_hint: str | None = None) -> datetime | None:
@@ -376,13 +376,15 @@ def _parse_vevents(raw: str | bytes | None) -> list[icalendar.Event]:
     if not raw:
         return []
     try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         parsed = icalendar.Calendar.from_ical(raw)
     except Exception:
         log.warning("failed to parse caldav event ical", exc_info=True)
         return []
     if not hasattr(parsed, "walk"):
         return []
-    return list(parsed.walk("VEVENT"))
+    return list(parsed.walk("VEVENT"))  # type: ignore[return-type]
 
 
 def _normalise_hex_color(s: str | None) -> str | None:
@@ -405,7 +407,7 @@ def _normalise_hex_color(s: str | None) -> str | None:
     return None
 
 
-def _caldav_calendar_color(cal) -> str | None:
+def _caldav_calendar_color(cal) -> str | None:  # type: ignore[reportUnusedFunction]
     """Best-effort fetch of the Apple iCal `calendar-color` property."""
     try:
         from caldav.elements.ical import CalendarColor
@@ -434,9 +436,9 @@ class CalDavBackend:
         self._server_url = server_url
         self._username = username
         self._password = password
-        self._client: caldav.DAVClient | None = None
+        self._client: caldav.DAVClient | None = None  # type: ignore[reportGeneralTypeIssues]
 
-    async def _get_client(self) -> caldav.DAVClient:
+    async def _get_client(self) -> caldav.DAVClient:  # type: ignore[reportGeneralTypeIssues]
         if self._client is None:
             resolved = await asyncio.to_thread(
                 _discover_caldav_url,
@@ -445,7 +447,7 @@ class CalDavBackend:
                 self._password,
             )
             self._client = await asyncio.to_thread(
-                lambda: caldav.DAVClient(
+                lambda: caldav.DAVClient(  # type: ignore[reportGeneralTypeIssues]
                     url=resolved,
                     username=self._username,
                     password=self._password,
@@ -453,8 +455,8 @@ class CalDavBackend:
             )
         return self._client
 
-    async def _run(self, fn, *args, **kwargs):
-        return await asyncio.to_thread(lambda: fn(*args, **kwargs))
+    async def _run(self, fn, *args, **kwargs):  # type: ignore[reportReturnType]
+        return await asyncio.to_thread(lambda: fn(*args, **kwargs))  # type: ignore[reportReturnType]
 
     def _bad_server_response(self, exc: Exception) -> PermanentError:
         return PermanentError(
@@ -465,7 +467,7 @@ class CalDavBackend:
         )
 
     @_classify_errors
-    async def list_calendars(self) -> list:
+    async def list_calendars(self) -> list[dict[str, object]]:
         client = await self._get_client()
         try:
             principal = await self._run(client.principal)
@@ -480,15 +482,21 @@ class CalDavBackend:
             lambda: self._fetch_calendars_with_colors(client, principal)
         )
 
-    def _fetch_calendars_with_colors(self, client, principal) -> list:
+    def _fetch_calendars_with_colors(
+        self, client, principal
+    ) -> list[dict[str, object]]:
         """Fetch calendar list AND colors in two PROPFINDs instead of N+2.
 
         `client.get_calendars()` already includes `calendar-color` in its
         depth-1 PROPFIND but discards it. We replicate the same two requests
         here and parse color alongside calendar metadata.
         """
-        from caldav.collection import _extract_calendar_home_set_from_results as _home
-        from caldav.collection import _is_calendar_resource
+        from caldav.collection import (
+            _extract_calendar_home_set_from_results as _home,  # type: ignore[reportPrivateUsage]  # noqa: PLC0415
+        )
+        from caldav.collection import (
+            _is_calendar_resource,  # type: ignore[reportPrivateUsage]  # noqa: PLC0415
+        )
 
         # PROPFIND 1 (depth=0): get calendar-home-set URL from the principal.
         resp = client.propfind(
@@ -575,7 +583,7 @@ class CalDavBackend:
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
         client = await self._get_client()
-        cal_obj = caldav.Calendar(client=client, url=calendar_id)
+        cal_obj = caldav.Calendar(client=client, url=calendar_id)  # type: ignore[reportGeneralTypeIssues]
         start, end = self._sync_window()
         events = await self._run(
             lambda: cal_obj.search(start=start, end=end, event=True, expand=False)
@@ -591,7 +599,7 @@ class CalDavBackend:
         sync_token = cursor.sync_token if isinstance(cursor, CalDavCursor) else None
         if sync_token and not sync_token.startswith("fake-"):
             client = await self._get_client()
-            cal_obj = caldav.Calendar(client=client, url=calendar_id)
+            cal_obj = caldav.Calendar(client=client, url=calendar_id)  # type: ignore[reportGeneralTypeIssues]
             try:
                 result = await self._run(
                     lambda: cal_obj.get_objects_by_sync_token(
@@ -607,7 +615,7 @@ class CalDavBackend:
 
         # No real sync token — fall back to full date-windowed query.
         client = await self._get_client()
-        cal_obj = caldav.Calendar(client=client, url=calendar_id)
+        cal_obj = caldav.Calendar(client=client, url=calendar_id)  # type: ignore[reportGeneralTypeIssues]
         start, end = self._sync_window()
         events = await self._run(
             lambda: cal_obj.search(start=start, end=end, event=True, expand=False)
@@ -669,10 +677,11 @@ class CalDavBackend:
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
         import dataclasses as _dc
+
         from lilical.backends._ical_serializer import event_to_vcalendar
 
         client = await self._get_client()
-        cal_obj = caldav.Calendar(client=client, url=calendar_id)
+        cal_obj = caldav.Calendar(client=client, url=calendar_id)  # type: ignore[reportGeneralTypeIssues]
         ical_data = event_to_vcalendar(event).to_ical().decode()
         saved = await self._run(cal_obj.save_event, ical_data)
         href = str(saved.url) if saved and getattr(saved, "url", None) else None
@@ -688,12 +697,13 @@ class CalDavBackend:
         self, calendar_id: str, event: Event, if_match: str | None
     ) -> Event:
         import dataclasses as _dc
+
         from lilical.backends._ical_serializer import event_to_vcalendar
 
         ical_data = event_to_vcalendar(event, sequence_bump=True).to_ical().decode()
         href = event.provider_event_id or f"{calendar_id}/{event.uid}.ics"
         client = await self._get_client()
-        event_obj = caldav.CalendarObjectResource(client=client, url=href)
+        event_obj = caldav.CalendarObjectResource(client=client, url=href)  # type: ignore[reportGeneralTypeIssues]
         event_obj.data = ical_data
         if if_match:
             event_obj.etag = if_match
@@ -706,7 +716,7 @@ class CalDavBackend:
         self, calendar_id: str, provider_event_id: str, if_match: str | None
     ) -> None:
         client = await self._get_client()
-        event_obj = caldav.CalendarObjectResource(client=client, url=provider_event_id)
+        event_obj = caldav.CalendarObjectResource(client=client, url=provider_event_id)  # type: ignore[reportGeneralTypeIssues]
         await self._run(event_obj.delete)
 
     @_classify_errors
@@ -717,25 +727,36 @@ class CalDavBackend:
         recurrence_id_dt: datetime,
         event: Event,
     ) -> None:
-        """Update a single occurrence by appending a VEVENT override to the master VCALENDAR."""
+        """Update one occurrence: append a VEVENT override to the master VCALENDAR."""
         import dataclasses as _dc
-        from lilical.backends._ical_serializer import event_to_vcalendar, _add_dt_with_tzid
+
+        from lilical.backends._ical_serializer import (
+            event_to_vcalendar,
+        )
 
         client = await self._get_client()
-        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)
+        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
         raw = await self._run(event_obj.get_data)
-
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         master_cal = icalendar.Calendar.from_ical(raw)
         # Find and remove any existing override for this recurrence-id
         new_components = []
         for comp in master_cal.subcomponents:
-            if comp.name == "VEVENT":
+            if comp.name == "VEVENT" and comp.get("RECURRENCE-ID") is not None:
                 rid = comp.get("RECURRENCE-ID")
-                if rid is not None:
-                    rid_dt = rid.dt if hasattr(rid, "dt") else rid
-                    if isinstance(rid_dt, datetime):
-                        if abs((rid_dt.replace(tzinfo=None) - recurrence_id_dt.replace(tzinfo=None)).total_seconds()) < 60:
-                            continue  # drop old override
+                rid_dt = rid.dt if hasattr(rid, "dt") else rid
+                if (
+                    isinstance(rid_dt, datetime)
+                    and abs(
+                        (
+                            rid_dt.replace(tzinfo=None)
+                            - recurrence_id_dt.replace(tzinfo=None)
+                        ).total_seconds()
+                    )
+                    < 60
+                ):
+                    continue  # drop old override
             new_components.append(comp)
 
         # Build override VEVENT
@@ -763,9 +784,10 @@ class CalDavBackend:
     ) -> None:
         """Delete a single occurrence by appending an EXDATE to the master VCALENDAR."""
         client = await self._get_client()
-        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)
+        event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
         raw = await self._run(event_obj.get_data)
-
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
         master_cal = icalendar.Calendar.from_ical(raw)
         for comp in master_cal.subcomponents:
             if comp.name == "VEVENT" and not comp.get("RECURRENCE-ID"):

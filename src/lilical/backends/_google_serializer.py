@@ -1,4 +1,5 @@
 """Google Calendar API serialization helpers."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -10,18 +11,18 @@ if TYPE_CHECKING:
 # Google's colorId values don't map cleanly to arbitrary hex.
 # We map our named color hexes to the nearest Google Calendar colorId.
 _HEX_TO_COLOR_ID: dict[str, str] = {
-    "#e05050": "11",   # Tomato
-    "#e07878": "4",    # Flamingo
-    "#e08030": "6",    # Tangerine
-    "#e0c830": "5",    # Banana
-    "#70a870": "2",    # Sage
-    "#3a7a3a": "10",   # Basil
-    "#3a80c8": "7",    # Peacock
-    "#3a50b8": "9",    # Blueberry
-    "#9a78e0": "1",    # Lavender
-    "#7a3aaa": "3",    # Grape
-    "#8a8a8a": "8",    # Graphite
-    "#3ab8c8": "7",    # Cyan → Peacock (closest)
+    "#e05050": "11",  # Tomato
+    "#e07878": "4",  # Flamingo
+    "#e08030": "6",  # Tangerine
+    "#e0c830": "5",  # Banana
+    "#70a870": "2",  # Sage
+    "#3a7a3a": "10",  # Basil
+    "#3a80c8": "7",  # Peacock
+    "#3a50b8": "9",  # Blueberry
+    "#9a78e0": "1",  # Lavender
+    "#7a3aaa": "3",  # Grape
+    "#8a8a8a": "8",  # Graphite
+    "#3ab8c8": "7",  # Cyan → Peacock (closest)
 }
 
 
@@ -74,7 +75,9 @@ def event_to_google_body(event: "Event") -> dict[str, Any]:
     return body
 
 
-def _dt_to_google(dt: datetime | None, tz_name: str | None, all_day: bool) -> dict[str, str]:
+def _dt_to_google(
+    dt: datetime | None, tz_name: str | None, all_day: bool
+) -> dict[str, str]:
     if dt is None:
         return {}
     if all_day:

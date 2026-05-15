@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QLabel,
     QVBoxLayout,
     QWidget,
 )
-
 
 _SNAP_OPTIONS: list[tuple[str, int]] = [
     ("5 min", 5),
@@ -79,7 +76,11 @@ class PreferencesDialog(QDialog):
         for label, _ in _CHIP_MODE_OPTIONS:
             self._chip_mode_combo.addItem(label)
         chip_idx = next(
-            (i for i, (_, v) in enumerate(_CHIP_MODE_OPTIONS) if v == current_chip_mode),
+            (
+                i
+                for i, (_, v) in enumerate(_CHIP_MODE_OPTIONS)
+                if v == current_chip_mode
+            ),
             0,
         )
         self._chip_mode_combo.setCurrentIndex(chip_idx)
@@ -89,7 +90,11 @@ class PreferencesDialog(QDialog):
         for label, _ in _TIME_FORMAT_OPTIONS:
             self._time_format_combo.addItem(label)
         tf_idx = next(
-            (i for i, (_, v) in enumerate(_TIME_FORMAT_OPTIONS) if v == current_time_format),
+            (
+                i
+                for i, (_, v) in enumerate(_TIME_FORMAT_OPTIONS)
+                if v == current_time_format
+            ),
             0,
         )
         self._time_format_combo.setCurrentIndex(tf_idx)

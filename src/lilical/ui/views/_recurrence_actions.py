@@ -3,6 +3,7 @@
 All four views (month, week, day, agenda) use these two functions instead of
 duplicating the RecurrenceActionDialog dispatch logic in each view.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -93,24 +94,32 @@ def _dispatch_edit(
 ) -> None:
     if choice == "occurrence":
         if instance_dtstart is None and event.recurrence_id is None:
-            QMessageBox.warning(parent, "Edit failed", "Could not determine occurrence date.")
+            QMessageBox.warning(
+                parent, "Edit failed", "Could not determine occurrence date."
+            )
             return
-        rid = event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        rid = (
+            event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        )
         store.queue_update_instance(
             uid=event.uid,
             calendar_id=edited.calendar_id,
-            recurrence_id_dt=rid,
+            recurrence_id_dt=rid,  # type: ignore[reportArgumentType]
             edited=edited,
         )
     elif choice == "following":
         if instance_dtstart is None and event.recurrence_id is None:
-            QMessageBox.warning(parent, "Edit failed", "Could not determine split date.")
+            QMessageBox.warning(
+                parent, "Edit failed", "Could not determine split date."
+            )
             return
-        split_at = event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        split_at = (
+            event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        )
         store.queue_split_series(
             uid=event.uid,
             calendar_id=event.calendar_id,
-            split_at_dt=split_at,
+            split_at_dt=split_at,  # type: ignore[reportArgumentType]
             edited_event_for_tail=edited,
         )
     else:
@@ -147,19 +156,27 @@ def _dispatch_delete(
 ) -> None:
     if choice == "occurrence":
         if instance_dtstart is None and event.recurrence_id is None:
-            QMessageBox.warning(parent, "Delete failed", "Could not determine occurrence date.")
+            QMessageBox.warning(
+                parent, "Delete failed", "Could not determine occurrence date."
+            )
             return
-        rid = event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        rid = (
+            event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        )
         store.queue_delete_instance(
             uid=event.uid,
             calendar_id=event.calendar_id,
-            recurrence_id_dt=rid,
+            recurrence_id_dt=rid,  # type: ignore[reportArgumentType]
         )
     elif choice == "following":
         if instance_dtstart is None and event.recurrence_id is None:
-            QMessageBox.warning(parent, "Delete failed", "Could not determine split date.")
+            QMessageBox.warning(
+                parent, "Delete failed", "Could not determine split date."
+            )
             return
-        split_at = event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        split_at = (
+            event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+        )
         master = event
         if event.recurrence_id is not None:
             m = store.get_event(event.uid, event.calendar_id)
@@ -168,7 +185,7 @@ def _dispatch_delete(
         store.queue_truncate_series(
             uid=master.uid,
             calendar_id=master.calendar_id,
-            until_dt=split_at,
+            until_dt=split_at,  # type: ignore[reportArgumentType]
         )
     else:
         master = event

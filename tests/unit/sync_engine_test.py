@@ -652,10 +652,12 @@ class _PendingOpStore:
 
     def get_calendar(self, calendar_id: str):
         from types import SimpleNamespace
+
         return SimpleNamespace(provider_id=calendar_id)
 
     def get_event(self, uid: str, calendar_id: str):
         from types import SimpleNamespace
+
         # Return a minimal row so delete ops (which now require
         # provider_event_id) reach the backend. Tests that need to
         # simulate "never synced" override this per-instance.
@@ -667,11 +669,26 @@ class _PendingOpStore:
     def remove_event(self, uid: str, calendar_id: str) -> None:
         pass
 
-    def mark_synced(self, local_uid: str, calendar_id: str, *, canonical_uid, provider_event_id, etag, sequence) -> None:
-        self.mark_synced_calls.append({"uid": local_uid, "calendar_id": calendar_id,
-                                       "canonical_uid": canonical_uid,
-                                       "provider_event_id": provider_event_id,
-                                       "etag": etag, "sequence": sequence})
+    def mark_synced(
+        self,
+        local_uid: str,
+        calendar_id: str,
+        *,
+        canonical_uid,
+        provider_event_id,
+        etag,
+        sequence,
+    ) -> None:
+        self.mark_synced_calls.append(
+            {
+                "uid": local_uid,
+                "calendar_id": calendar_id,
+                "canonical_uid": canonical_uid,
+                "provider_event_id": provider_event_id,
+                "etag": etag,
+                "sequence": sequence,
+            }
+        )
 
 
 class _WriteBackend:
@@ -778,7 +795,7 @@ async def test_permanent_error_drops_pending_op_and_emits_sync_failed() -> None:
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
     assert 55 in store.deleted_op_ids
-    assert any("acc-1" == acc for acc, _ in failures)
+    assert any(acc == "acc-1" for acc, _ in failures)
 
 
 @pytest.mark.asyncio
@@ -799,8 +816,13 @@ async def test_transient_error_during_drain_propagates() -> None:
 @pytest.mark.asyncio
 async def test_apply_pending_create_marks_synced_with_canonical() -> None:
     """After a successful create, engine calls mark_synced (not queue_update)."""
-    canonical = Event(uid="u-new", calendar_id="cal-1", summary="Canonical",
-                      provider_event_id="server-id-123", etag='"abc"')
+    canonical = Event(
+        uid="u-new",
+        calendar_id="cal-1",
+        summary="Canonical",
+        provider_event_id="server-id-123",
+        etag='"abc"',
+    )
     op = _op("create", uid="u-new")
     op.id = 11
     store = _PendingOpStore([op])
@@ -1024,13 +1046,20 @@ async def test_update_op_refreshes_etag() -> None:
     import json
 
     canonical = Event(
-        uid="u-upd", calendar_id="cal-1", summary="Updated",
-        provider_event_id="pid-u-upd", etag='"new-etag"',
+        uid="u-upd",
+        calendar_id="cal-1",
+        summary="Updated",
+        provider_event_id="pid-u-upd",
+        etag='"new-etag"',
     )
     payload = json.dumps({"uid": "u-upd", "calendar_id": "cal-1", "summary": "Updated"})
     op = SimpleNamespace(
-        id=22, op="update", uid="u-upd", calendar_id="cal-1",
-        payload=payload, if_match='"old-etag"',
+        id=22,
+        op="update",
+        uid="u-upd",
+        calendar_id="cal-1",
+        payload=payload,
+        if_match='"old-etag"',
     )
     store = _PendingOpStore([op])
     backend = _WriteBackend(canonical_event=canonical)

@@ -11,41 +11,41 @@ from __future__ import annotations
 # ── Palettes ─────────────────────────────────────────────────────────────
 
 _DARK: dict[str, str] = {
-    "BG_BASE":        "#0e0e0e",  # window background
-    "BG_SURFACE":     "#1a1a1a",  # toolbars, status, headers
+    "BG_BASE": "#0e0e0e",  # window background
+    "BG_SURFACE": "#1a1a1a",  # toolbars, status, headers
     "BG_SURFACE_ALT": "#262626",  # inputs, hover, today tint base
-    "BG_SURFACE_3":   "#333333",  # selected/focused fill, agenda day header
-    "BG_WEEKEND":     "#141414",  # weekend column tint (very subtle)
-    "BG_TIME_AXIS":   "#161616",  # time-axis column
-    "BORDER":         "#3a3a3a",  # subtle grid lines
-    "BORDER_STRONG":  "#7a7a7a",  # view dividers, header bottom
-    "TEXT_PRIMARY":   "#ffffff",  # event titles, day numbers
+    "BG_SURFACE_3": "#333333",  # selected/focused fill, agenda day header
+    "BG_WEEKEND": "#141414",  # weekend column tint (very subtle)
+    "BG_TIME_AXIS": "#161616",  # time-axis column
+    "BORDER": "#3a3a3a",  # subtle grid lines
+    "BORDER_STRONG": "#7a7a7a",  # view dividers, header bottom
+    "TEXT_PRIMARY": "#ffffff",  # event titles, day numbers
     "TEXT_SECONDARY": "#c8c8c8",  # secondary text, time-axis labels
-    "TEXT_DISABLED":  "#8a8a8a",  # spillover days, placeholders
-    "ACCENT":         "#7eb5ff",  # ring around today, focus
-    "ACCENT_FILL":    "#3b82f6",  # filled-accent surfaces (selected buttons)
-    "DANGER":         "#ff6b6b",  # now-line, errors
-    "SUCCESS":        "#6ee896",  # sync ok
-    "CHIP_FALLBACK":  "#9ec5ff",  # event chip default color
+    "TEXT_DISABLED": "#8a8a8a",  # spillover days, placeholders
+    "ACCENT": "#7eb5ff",  # ring around today, focus
+    "ACCENT_FILL": "#3b82f6",  # filled-accent surfaces (selected buttons)
+    "DANGER": "#ff6b6b",  # now-line, errors
+    "SUCCESS": "#6ee896",  # sync ok
+    "CHIP_FALLBACK": "#9ec5ff",  # event chip default color
 }
 
 _LIGHT: dict[str, str] = {
-    "BG_BASE":        "#ffffff",
-    "BG_SURFACE":     "#f0f0f0",
+    "BG_BASE": "#ffffff",
+    "BG_SURFACE": "#f0f0f0",
     "BG_SURFACE_ALT": "#e4e4e4",
-    "BG_SURFACE_3":   "#d8d8d8",
-    "BG_WEEKEND":     "#f8f8f8",
-    "BG_TIME_AXIS":   "#f0f0f0",
-    "BORDER":         "#d4d4d4",
-    "BORDER_STRONG":  "#a0a0a0",
-    "TEXT_PRIMARY":   "#111111",
+    "BG_SURFACE_3": "#d8d8d8",
+    "BG_WEEKEND": "#f8f8f8",
+    "BG_TIME_AXIS": "#f0f0f0",
+    "BORDER": "#d4d4d4",
+    "BORDER_STRONG": "#a0a0a0",
+    "TEXT_PRIMARY": "#111111",
     "TEXT_SECONDARY": "#555555",
-    "TEXT_DISABLED":  "#a0a0a0",
-    "ACCENT":         "#2563eb",
-    "ACCENT_FILL":    "#2563eb",
-    "DANGER":         "#dc2626",
-    "SUCCESS":        "#16a34a",
-    "CHIP_FALLBACK":  "#3b82f6",
+    "TEXT_DISABLED": "#a0a0a0",
+    "ACCENT": "#2563eb",
+    "ACCENT_FILL": "#2563eb",
+    "DANGER": "#dc2626",
+    "SUCCESS": "#16a34a",
+    "CHIP_FALLBACK": "#3b82f6",
 }
 
 
@@ -58,46 +58,46 @@ def apply(name: str) -> None:
 
 
 # Initialise with dark palette (same values as _DARK above).
-BG_BASE        = _DARK["BG_BASE"]
-BG_SURFACE     = _DARK["BG_SURFACE"]
+BG_BASE = _DARK["BG_BASE"]
+BG_SURFACE = _DARK["BG_SURFACE"]
 BG_SURFACE_ALT = _DARK["BG_SURFACE_ALT"]
-BG_SURFACE_3   = _DARK["BG_SURFACE_3"]
-BG_WEEKEND     = _DARK["BG_WEEKEND"]
-BG_TIME_AXIS   = _DARK["BG_TIME_AXIS"]
+BG_SURFACE_3 = _DARK["BG_SURFACE_3"]
+BG_WEEKEND = _DARK["BG_WEEKEND"]
+BG_TIME_AXIS = _DARK["BG_TIME_AXIS"]
 
-BORDER        = _DARK["BORDER"]
+BORDER = _DARK["BORDER"]
 BORDER_STRONG = _DARK["BORDER_STRONG"]
 
-TEXT_PRIMARY   = _DARK["TEXT_PRIMARY"]
+TEXT_PRIMARY = _DARK["TEXT_PRIMARY"]
 TEXT_SECONDARY = _DARK["TEXT_SECONDARY"]
-TEXT_DISABLED  = _DARK["TEXT_DISABLED"]
+TEXT_DISABLED = _DARK["TEXT_DISABLED"]
 
-ACCENT      = _DARK["ACCENT"]
+ACCENT = _DARK["ACCENT"]
 ACCENT_FILL = _DARK["ACCENT_FILL"]
-DANGER      = _DARK["DANGER"]
-SUCCESS     = _DARK["SUCCESS"]
+DANGER = _DARK["DANGER"]
+SUCCESS = _DARK["SUCCESS"]
 
 CHIP_FALLBACK = _DARK["CHIP_FALLBACK"]
 
 # ── Typography (point sizes) ─────────────────────────────────────────────
-FONT_FAMILY      = "sans-serif"
-FONT_BASE        = 11  # body, default
-FONT_DAY_NUMBER  = 14  # month day numbers, week day headers
-FONT_DAY_HEADER  = 14  # day-view header (long date)
-FONT_TIME_AXIS   = 10  # hour labels
-FONT_CHIP_TITLE    = 9  # event chip title
-FONT_CHIP_PREFIX   = 8  # event chip time prefix
+FONT_FAMILY = "sans-serif"
+FONT_BASE = 11  # body, default
+FONT_DAY_NUMBER = 14  # month day numbers, week day headers
+FONT_DAY_HEADER = 14  # day-view header (long date)
+FONT_TIME_AXIS = 10  # hour labels
+FONT_CHIP_TITLE = 9  # event chip title
+FONT_CHIP_PREFIX = 8  # event chip time prefix
 FONT_CHIP_LOCATION = 8  # event chip location line
-FONT_MONTH_HEADER  = 10  # day-of-week strip above month grid
+FONT_MONTH_HEADER = 10  # day-of-week strip above month grid
 
 # ── Chip layout thresholds (pixels) ──────────────────────────────────────
 # Calibrated for 8 pt prefix (~12 px) + 9 pt title (~14 px), tight inner padding.
-CHIP_MIN_TITLE_H              = 15  # below this, chip is solid color (tooltip only)
-CHIP_MIN_INLINE_TIME_H        = 18  # below this (≥15): title only; at/above: time+title inline
-CHIP_MIN_PREFIX_H             = 26  # at/above: time on its own row above title
-CHIP_MIN_LOCATION_H           = 38  # below this, location is suppressed
+CHIP_MIN_TITLE_H = 15  # below this, chip is solid color (tooltip only)
+CHIP_MIN_INLINE_TIME_H = 18  # below this (≥15): title only; at/above: time+title inline
+CHIP_MIN_PREFIX_H = 26  # at/above: time on its own row above title
+CHIP_MIN_LOCATION_H = 38  # below this, location is suppressed
 CHIP_MIN_LOCATION_MULTILINE_H = 50  # at/above: location wraps to up to 2 lines
 
 # ── Multi-day continuation glyphs ────────────────────────────────────────
 GLYPH_CONTINUES_RIGHT = "→"
-GLYPH_CONTINUES_LEFT  = "←"
+GLYPH_CONTINUES_LEFT = "←"

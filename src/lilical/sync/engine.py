@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import random
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -39,7 +40,7 @@ class SyncEngine(QObject):
         self._store = store
         self._secrets = secrets
         self._factory = factory
-        self._tasks: dict[str, asyncio.Task] = {}
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._wake_events: dict[str, asyncio.Event] = {}
 
     async def start_all(self) -> None:
@@ -140,6 +141,7 @@ class SyncEngine(QObject):
             )
         elif op.op == "update":
             import dataclasses as _dc
+
             event = _event_from_payload(op.payload)
             row = self._store.get_event(op.uid, op.calendar_id)
             if row is None:
@@ -150,7 +152,9 @@ class SyncEngine(QObject):
                 return
             if pid != event.provider_event_id:
                 event = _dc.replace(event, provider_event_id=pid)
-            canonical = await backend.update_event(provider_cal_id, event, if_match=row.etag if row else op.if_match)
+            canonical = await backend.update_event(
+                provider_cal_id, event, if_match=row.etag if row else op.if_match
+            )
             if canonical is not None:
                 self._store.mark_synced(
                     op.uid,
@@ -169,7 +173,9 @@ class SyncEngine(QObject):
             if not pid:
                 self._store.remove_event(op.uid, op.calendar_id)
                 return
-            await backend.delete_event(provider_cal_id, pid, if_match=row.etag if row else op.if_match)
+            await backend.delete_event(
+                provider_cal_id, pid, if_match=row.etag if row else op.if_match
+            )
             self._store.remove_event(op.uid, op.calendar_id)
         elif op.op == "update_instance":
             event = _event_from_payload(op.payload)
@@ -181,22 +187,28 @@ class SyncEngine(QObject):
                         provider_cal_id, master_pid, event.recurrence_id, event
                     )
                 else:
-                    log.warning("update_instance: no provider_event_id for master %s", op.uid)
+                    log.warning(
+                        "update_instance: no provider_event_id for master %s", op.uid
+                    )
             else:
                 log.warning("update_instance op has no recurrence_id for %s", op.uid)
         elif op.op == "delete_instance":
             import json as _json
+
             payload = _json.loads(op.payload or "{}")
             rid_str = payload.get("recurrence_id")
             if rid_str:
                 from datetime import datetime as _dt
+
                 rid = _dt.fromisoformat(rid_str)
                 master = self._store.get_event(op.uid, op.calendar_id)
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
                     await backend.delete_instance(provider_cal_id, master_pid, rid)
                 else:
-                    log.warning("delete_instance: no provider_event_id for master %s", op.uid)
+                    log.warning(
+                        "delete_instance: no provider_event_id for master %s", op.uid
+                    )
             else:
                 log.warning("delete_instance op missing recurrence_id for %s", op.uid)
 
@@ -307,10 +319,8 @@ def _event_from_payload(payload: str | None):
             parsed = []
             for x in raw:
                 if isinstance(x, str):
-                    try:
+                    with contextlib.suppress(ValueError):
                         parsed.append(_dt.fromisoformat(x))
-                    except ValueError:
-                        pass
                 elif isinstance(x, _dt):
                     parsed.append(x)
             data[field] = tuple(parsed)

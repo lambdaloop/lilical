@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from sqlalchemy import inspect
 
 from lilical.storage.db import ensure_schema, open_engine

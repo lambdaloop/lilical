@@ -9,8 +9,9 @@ class SystemTray(QSystemTrayIcon):
         super().__init__(main_window)
         self._main_window = main_window
 
-        # Try themed icon; fall back to a simple text-based placeholder
-        icon = QIcon.fromTheme("x-office-calendar")
+        icon = QIcon.fromTheme("io.github.lilical.Lilical")
+        if icon.isNull():
+            icon = QIcon.fromTheme("x-office-calendar")
         if icon.isNull():
             icon = QIcon.fromTheme("calendar")
         if icon.isNull():

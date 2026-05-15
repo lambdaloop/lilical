@@ -9,7 +9,14 @@ from pathlib import Path
 from typing import override
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import (
+    QAction,
+    QFont,
+    QFontMetrics,
+    QKeySequence,
+    QPainter,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -126,7 +133,8 @@ class _SyncStatusWidget(QWidget):
             self._text.setToolTip(message)
         else:
             self._text.setText(
-                f"🔑 {label}: Authentication failed — right-click account to re-authenticate"
+                f"🔑 {label}: Authentication failed — "
+                f"right-click account to re-authenticate"
             )
             self._text.setToolTip("")
 
@@ -198,7 +206,7 @@ class MainWindow(QMainWindow):
         self._view_stack_layout = QVBoxLayout(self._view_container)
         self._view_stack_layout.setContentsMargins(0, 0, 0, 0)
 
-        saved_dc = int(self._settings.value("week_day_count", 7) or 7)
+        saved_dc = int(self._settings.value("week_day_count", 7) or 7)  # type: ignore[reportArgumentType]
         if saved_dc not in VALID_DAY_COUNTS:
             saved_dc = 7
         saved_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
@@ -212,18 +220,18 @@ class MainWindow(QMainWindow):
         # Apply persisted Bars/Text mode to every view that supports it.
         for v in self._views.values():
             if hasattr(v, "set_chip_mode"):
-                v.set_chip_mode(initial_mode)
+                v.set_chip_mode(initial_mode)  # type: ignore[reportAttributeAccessIssue]
         saved_time_format = str(self._settings.value("time_format", "24h") or "24h")
         for v in self._views.values():
             if hasattr(v, "set_time_format"):
-                v.set_time_format(saved_time_format)
-        saved_snap = int(self._settings.value("snap_minutes", 15) or 15)
+                v.set_time_format(saved_time_format)  # type: ignore[reportAttributeAccessIssue]
+        saved_snap = int(self._settings.value("snap_minutes", 15) or 15)  # type: ignore[reportArgumentType]
         if saved_snap not in (5, 10, 15, 30, 60):
             saved_snap = 15
         self._snap_minutes: int = saved_snap
         for v in self._views.values():
             if hasattr(v, "set_snap_minutes"):
-                v.set_snap_minutes(saved_snap)
+                v.set_snap_minutes(saved_snap)  # type: ignore[reportAttributeAccessIssue]
         month_view = self._views["Month"]
         if isinstance(month_view, MonthView):
             month_view.day_activated.connect(self._on_month_day_activated)
@@ -244,10 +252,8 @@ class MainWindow(QMainWindow):
 
         # ── System tray ────────────────────────────────────────────────────
         self._tray = SystemTray(self)
-        if (
-            QApplication.instance()
-            and QApplication.instance().property("__tray_available") is not False
-        ):
+        _app = QApplication.instance()
+        if _app is not None and _app.property("__tray_available") is not False:
             self._tray.show()
 
         # ── Theme ──────────────────────────────────────────────────────────
@@ -334,7 +340,7 @@ class MainWindow(QMainWindow):
         self._day_count_slider.setTickInterval(1)
         self._day_count_slider.setFixedWidth(110)
         # Restore last-used value, default 7.
-        saved_dc = int(self._settings.value("week_day_count", 7) or 7)
+        saved_dc = int(self._settings.value("week_day_count", 7) or 7)  # type: ignore[reportArgumentType]
         if saved_dc not in VALID_DAY_COUNTS:
             saved_dc = 7
         self._day_count_slider.setValue(VALID_DAY_COUNTS.index(saved_dc))
@@ -414,7 +420,7 @@ class MainWindow(QMainWindow):
     def _update_range_label(self) -> None:
         view = self._views.get(self._current_view_name)
         if view and hasattr(view, "range_label"):
-            self._range_label.setText(view.range_label())
+            self._range_label.setText(view.range_label())  # type: ignore[reportAttributeAccessIssue]
         # Always keep the mini-month in lockstep with whatever the main view
         # is currently showing.
         self._sync_mini_month()
@@ -503,19 +509,19 @@ class MainWindow(QMainWindow):
     def _nav_prev(self) -> None:
         view = self._views.get(self._current_view_name)
         if view and hasattr(view, "navigate"):
-            view.navigate(-1)
+            view.navigate(-1)  # type: ignore[reportAttributeAccessIssue]
             self._update_range_label()
 
     def _nav_next(self) -> None:
         view = self._views.get(self._current_view_name)
         if view and hasattr(view, "navigate"):
-            view.navigate(1)
+            view.navigate(1)  # type: ignore[reportAttributeAccessIssue]
             self._update_range_label()
 
     def _nav_today(self) -> None:
         view = self._views.get(self._current_view_name)
         if view and hasattr(view, "go_today"):
-            view.go_today()
+            view.go_today()  # type: ignore[reportAttributeAccessIssue]
             self._update_range_label()
 
     def _on_sidebar_date_selected(self, d: date) -> None:
@@ -536,8 +542,9 @@ class MainWindow(QMainWindow):
         self._switch_view("Day")
 
     def _on_month_new_event_requested(self, d) -> None:
-        """User double-clicked an empty day cell in Month view: open new-event dialog."""
-        from datetime import datetime, timezone
+        """User double-clicked empty day cell in Month view: open new-event dialog."""
+        from datetime import datetime
+
         dt_start = datetime(d.year, d.month, d.day, 9, 0, 0).astimezone()
         dt_end = datetime(d.year, d.month, d.day, 10, 0, 0).astimezone()
         self._new_event(default_dt=dt_start, default_dtend=dt_end)
@@ -552,7 +559,7 @@ class MainWindow(QMainWindow):
         self._current_view = view
         view.show()
         if hasattr(view, "refresh"):
-            view.refresh()
+            view.refresh()  # type: ignore[reportAttributeAccessIssue]
         # Update toolbar checkmarks
         for n, act in self._view_actions.items():
             act.setChecked(n == name)
@@ -581,8 +588,10 @@ class MainWindow(QMainWindow):
     def _new_event(self, default_dt=None, default_dtend=None) -> None:
         from lilical.ui.widgets.event_dialog import EventDialog
 
-        dlg = EventDialog(self, store=self._store, default_dt=default_dt, default_dtend=default_dtend)
-        if dlg.exec() == QDialog.Accepted:
+        dlg = EventDialog(
+            self, store=self._store, default_dt=default_dt, default_dtend=default_dtend
+        )
+        if dlg.exec() == QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             cal_id = dlg.calendar_id
             if not cal_id:
                 QMessageBox.warning(self, "No calendar", "Please add an account first.")
@@ -622,7 +631,7 @@ class MainWindow(QMainWindow):
             current_chip_mode=current_chip_mode,
             current_time_format=current_time_format,
         )
-        if dlg.exec() == QDialog.Accepted:
+        if dlg.exec() == QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             if dlg.theme != self._theme:
                 self._theme = dlg.theme
                 self._apply_theme(self._theme)
@@ -638,7 +647,7 @@ class MainWindow(QMainWindow):
                 self._settings.setValue("snap_minutes", self._snap_minutes)
                 for v in self._views.values():
                     if hasattr(v, "set_snap_minutes"):
-                        v.set_snap_minutes(self._snap_minutes)
+                        v.set_snap_minutes(self._snap_minutes)  # type: ignore[reportAttributeAccessIssue]
             if dlg.chip_mode != current_chip_mode:
                 self._settings.setValue("chip_mode", dlg.chip_mode)
                 chip_mode_enum = (
@@ -646,12 +655,12 @@ class MainWindow(QMainWindow):
                 )
                 for v in self._views.values():
                     if hasattr(v, "set_chip_mode"):
-                        v.set_chip_mode(chip_mode_enum)
+                        v.set_chip_mode(chip_mode_enum)  # type: ignore[reportAttributeAccessIssue]
             if dlg.time_format != current_time_format:
                 self._settings.setValue("time_format", dlg.time_format)
                 for v in self._views.values():
                     if hasattr(v, "set_time_format"):
-                        v.set_time_format(dlg.time_format)
+                        v.set_time_format(dlg.time_format)  # type: ignore[reportAttributeAccessIssue]
 
     def _apply_theme(self, name: str) -> None:
         _theme_module.apply(name)
@@ -672,10 +681,10 @@ class MainWindow(QMainWindow):
         # Repaint all custom-drawn views with the new palette.
         for v in self._views.values():
             if hasattr(v, "refresh_theme"):
-                v.refresh_theme()
+                v.refresh_theme()  # type: ignore[reportAttributeAccessIssue]
         # Sidebar mini-month uses hardcoded scene text — re-render it.
         if hasattr(self, "_sidebar"):
-            self._sidebar._mini_month._render()
+            self._sidebar._mini_month.render()  # type: ignore[reportPrivateUsage]
 
     # ── Zoom (Week/Day vertical pixel-per-hour) ──────────────────────────
 
@@ -737,14 +746,14 @@ class MainWindow(QMainWindow):
 
     # ── Async helpers ─────────────────────────────────────────────────────
 
-    def _fire_async(self, coro, label: str) -> asyncio.Task:
+    def _fire_async(self, coro, label: str) -> asyncio.Task[None]:
         """Schedule a coroutine and log any exception it raises."""
         task = asyncio.ensure_future(coro)
         task.add_done_callback(lambda t: self._on_task_done(t, label))
         return task
 
     @staticmethod
-    def _on_task_done(task: asyncio.Task, label: str) -> None:
+    def _on_task_done(task: asyncio.Task[None], label: str) -> None:
         if task.cancelled():
             return
         exc = task.exception()
@@ -792,9 +801,9 @@ class MainWindow(QMainWindow):
         self._sync_status.set_auth_expired(label, message)
         log.warning("Auth failed for account %s (%s): %s", account_id, label, message)
 
-    def _on_events_changed(self, calendar_id: str, uids: set) -> None:
+    def _on_events_changed(self, calendar_id: str, uids: set[str]) -> None:
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
-            self._current_view.refresh()
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
         self._update_range_label()
         # Wake the sync engine so pending ops are pushed immediately.
         if uids:
@@ -806,7 +815,7 @@ class MainWindow(QMainWindow):
 
     def _add_account(self) -> None:
         dlg = AccountSetupDialog(self)
-        if dlg.exec() != QDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             return
         data = dlg.result_data()
         if data is None:
@@ -853,7 +862,7 @@ class MainWindow(QMainWindow):
         if acc is None:
             return
         dlg = AccountSetupDialog(self, existing_account=acc)
-        if dlg.exec() != QDialog.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             return
         data = dlg.result_data()
         if data is None:
@@ -909,7 +918,7 @@ class MainWindow(QMainWindow):
         await asyncio.to_thread(self._store.delete_account, account_id)
         self._sidebar.refresh()
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
-            self._current_view.refresh()
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
         self._sync_status.set_ready()
 
     async def _restart_account_sync(self, account_id: str) -> None:
@@ -924,13 +933,13 @@ class MainWindow(QMainWindow):
         except Exception:
             log.exception("Failed to update calendar visibility for %s", calendar_id)
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
-            self._current_view.refresh()
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 
     def _on_calendar_color_changed(self, _calendar_id: str, _new_hex: str) -> None:
         # The swatch already persisted via store.set_calendar_color. Just kick
         # the current view to re-paint its chips with the new fallback color.
         if self._current_view is not None and hasattr(self._current_view, "refresh"):
-            self._current_view.refresh()
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 
     # ── Window lifecycle ──────────────────────────────────────────────────
 

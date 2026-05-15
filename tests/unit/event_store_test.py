@@ -723,7 +723,6 @@ def test_apply_remote_changes_emits_events_changed_signal(engine) -> None:
 
 
 def test_list_instances_returns_events_in_range(engine) -> None:
-    from lilical.models.event import EventInstanceRow
 
     store = EventStore(engine)
     store.queue_create(_event(rrule=None))
@@ -825,7 +824,11 @@ def test_queue_update_instance_upserts_override_row_and_enqueues_op(engine) -> N
     with Session(engine) as s:
         override_row = (
             s.query(EventRow)
-            .filter_by(uid="series-upd", calendar_id="cal-1", recurrence_id=recurrence_id_dt.isoformat())
+            .filter_by(
+                uid="series-upd",
+                calendar_id="cal-1",
+                recurrence_id=recurrence_id_dt.isoformat(),
+            )
             .first()
         )
         assert override_row is not None
@@ -927,8 +930,12 @@ def test_get_event_for_instance_returns_override_when_present(engine) -> None:
             EventInstanceRow(
                 uid="series-gef",
                 calendar_id="cal-1",
-                dtstart_utc=int(datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()),
-                dtend_utc=int(datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc).timestamp()),
+                dtstart_utc=int(
+                    datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()
+                ),
+                dtend_utc=int(
+                    datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc).timestamp()
+                ),
                 dtstart_local="2026-05-13T09:00:00+00:00",
                 dtend_local="2026-05-13T09:30:00+00:00",
                 recurrence_id="",
@@ -938,8 +945,12 @@ def test_get_event_for_instance_returns_override_when_present(engine) -> None:
             EventInstanceRow(
                 uid="series-gef",
                 calendar_id="cal-1",
-                dtstart_utc=int(datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc).timestamp()),
-                dtend_utc=int(datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc).timestamp()),
+                dtstart_utc=int(
+                    datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc).timestamp()
+                ),
+                dtend_utc=int(
+                    datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc).timestamp()
+                ),
                 dtstart_local="2026-05-20T10:00:00+00:00",
                 dtend_local="2026-05-20T10:30:00+00:00",
                 is_override=1,
@@ -950,7 +961,9 @@ def test_get_event_for_instance_returns_override_when_present(engine) -> None:
     store = EventStore(engine)
     with Session(engine) as s:
         normal_inst = s.query(EventInstanceRow).filter_by(recurrence_id="").first()
-        override_inst = s.query(EventInstanceRow).filter_by(recurrence_id=rid_iso).first()
+        override_inst = (
+            s.query(EventInstanceRow).filter_by(recurrence_id=rid_iso).first()
+        )
 
     master_event = store.get_event_for_instance(normal_inst)
     assert master_event is not None
@@ -1104,7 +1117,14 @@ def test_mark_synced_does_not_clobber_dtstart(engine) -> None:
         )
     )
 
-    store.mark_synced("ev-ms2", "cal-1", canonical_uid=None, provider_event_id="pid", etag='"e"', sequence=0)
+    store.mark_synced(
+        "ev-ms2",
+        "cal-1",
+        canonical_uid=None,
+        provider_event_id="pid",
+        etag='"e"',
+        sequence=0,
+    )
 
     with Session(engine) as s:
         row = s.query(EventRow).filter_by(uid="ev-ms2").one()
@@ -1116,7 +1136,12 @@ def test_mark_synced_does_not_clobber_dtstart(engine) -> None:
 def test_mark_synced_no_op_for_missing_event(engine) -> None:
     """mark_synced on a nonexistent uid must not raise."""
     EventStore(engine).mark_synced(
-        "no-such-uid", "cal-1", canonical_uid=None, provider_event_id="pid", etag=None, sequence=0
+        "no-such-uid",
+        "cal-1",
+        canonical_uid=None,
+        provider_event_id="pid",
+        etag=None,
+        sequence=0,
     )
 
 
@@ -1125,10 +1150,12 @@ def test_mark_synced_rewrites_uid_with_cascade(engine) -> None:
     store = EventStore(engine)
     store.queue_create(_event(uid="local-uuid", provider_event_id=None))
     # Create an override row (recurrence_id set)
+
     from lilical.models.event import Event as _Event
-    from datetime import timedelta
+
     override = _Event(
-        uid="local-uuid", calendar_id="cal-1",
+        uid="local-uuid",
+        calendar_id="cal-1",
         recurrence_id=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
         summary="Override",
         dtstart=datetime(2026, 6, 1, 11, 0, tzinfo=timezone.utc),
@@ -1137,23 +1164,35 @@ def test_mark_synced_rewrites_uid_with_cascade(engine) -> None:
     )
     with Session(engine) as s, s.begin():
         from lilical.storage.event_store import _event_to_row
+
         s.add(_event_to_row(override))
-        s.add(PendingOpRow(
-            account_id="acc-1", calendar_id="cal-1", uid="local-uuid",
-            op="update", payload="{}", created_at="2026-06-01T00:00:00",
-        ))
+        s.add(
+            PendingOpRow(
+                account_id="acc-1",
+                calendar_id="cal-1",
+                uid="local-uuid",
+                op="update",
+                payload="{}",
+                created_at="2026-06-01T00:00:00",
+            )
+        )
 
     store.mark_synced(
-        "local-uuid", "cal-1",
+        "local-uuid",
+        "cal-1",
         canonical_uid="canonical-uuid",
-        provider_event_id="AAMk-123", etag='"e1"', sequence=1,
+        provider_event_id="AAMk-123",
+        etag='"e1"',
+        sequence=1,
     )
 
     with Session(engine) as s:
         rows = s.query(EventRow).filter_by(calendar_id="cal-1").all()
         ops = s.query(PendingOpRow).filter_by(calendar_id="cal-1").all()
 
-    assert all(r.uid == "canonical-uuid" for r in rows), f"Expected uid=canonical-uuid, got {[(r.uid, r.recurrence_id) for r in rows]}"
+    assert all(r.uid == "canonical-uuid" for r in rows), (
+        f"Expected uid=canonical-uuid, got {[(r.uid, r.recurrence_id) for r in rows]}"
+    )
     assert all(o.uid == "canonical-uuid" for o in ops)
 
 
@@ -1163,9 +1202,12 @@ def test_mark_synced_no_uid_change_when_canonical_matches(engine) -> None:
     store.queue_create(_event(uid="same-uuid", provider_event_id="pid"))
 
     store.mark_synced(
-        "same-uuid", "cal-1",
+        "same-uuid",
+        "cal-1",
         canonical_uid="same-uuid",
-        provider_event_id="pid", etag='"e2"', sequence=2,
+        provider_event_id="pid",
+        etag='"e2"',
+        sequence=2,
     )
 
     with Session(engine) as s:
@@ -1175,19 +1217,23 @@ def test_mark_synced_no_uid_change_when_canonical_matches(engine) -> None:
 
 
 def test_apply_remote_changes_falls_back_to_provider_event_id(engine) -> None:
-    """apply_remote_changes matches existing rows by provider_event_id when uid differs."""
+    """apply_remote_changes matches by provider_event_id when uid differs."""
     store = EventStore(engine)
     # Insert a row with a local-UUID uid but with provider_event_id set
-    store.queue_create(_event(
-        uid="local-uuid", provider_event_id="AAMk-graph-id",
-    ))
+    store.queue_create(
+        _event(
+            uid="local-uuid",
+            provider_event_id="AAMk-graph-id",
+        )
+    )
     # Clear the pending op so it doesn't interfere
     with Session(engine) as s, s.begin():
         s.query(PendingOpRow).delete()
 
     # Apply a remote upsert with the canonical uid (Graph id)
     remote_event = Event(
-        uid="AAMk-graph-id", calendar_id="cal-1",
+        uid="AAMk-graph-id",
+        calendar_id="cal-1",
         provider_event_id="AAMk-graph-id",
         summary="Synced summary",
         dtstart=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
@@ -1204,7 +1250,9 @@ def test_apply_remote_changes_falls_back_to_provider_event_id(engine) -> None:
         rows = s.query(EventRow).filter_by(calendar_id="cal-1").all()
 
     assert len(rows) == 1
-    assert rows[0].uid == "AAMk-graph-id", f"Expected uid rewrite to AAMk-graph-id, got {rows[0].uid!r}"
+    assert rows[0].uid == "AAMk-graph-id", (
+        f"Expected uid rewrite to AAMk-graph-id, got {rows[0].uid!r}"
+    )
     assert rows[0].summary == "Synced summary"
 
 
@@ -1242,9 +1290,7 @@ def test_queue_split_series_truncates_master_rrule(engine) -> None:
 
     with Session(engine) as s:
         master_row = (
-            s.query(EventRow)
-            .filter_by(uid="series-uid", recurrence_id="")
-            .one()
+            s.query(EventRow).filter_by(uid="series-uid", recurrence_id="").one()
         )
         ops = s.query(PendingOpRow).order_by(PendingOpRow.created_at).all()
 
@@ -1268,11 +1314,7 @@ def test_queue_split_series_creates_tail_event(engine) -> None:
     new_uid = store.queue_split_series("series-uid", "cal-1", split_at, edited)
 
     with Session(engine) as s:
-        tail_row = (
-            s.query(EventRow)
-            .filter_by(uid=new_uid, recurrence_id="")
-            .first()
-        )
+        tail_row = s.query(EventRow).filter_by(uid=new_uid, recurrence_id="").first()
 
     assert tail_row is not None
     assert tail_row.uid != "series-uid"

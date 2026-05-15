@@ -21,7 +21,6 @@ from lilical.ui.widgets.event_chip import (
     _srgb_to_linear,
 )
 
-
 # ── _srgb_to_linear ─────────────────────────────────────────────────────────
 
 

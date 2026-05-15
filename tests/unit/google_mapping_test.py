@@ -5,6 +5,11 @@ import pytest
 
 from lilical.backends.google import GoogleBackend, GoogleCursor, _google_event_to_change
 
+try:
+    from googleapiclient.errors import HttpError  # noqa: F401
+except ImportError:
+    HttpError = Exception  # type: ignore[assignment]
+
 
 def test_timed_event() -> None:
     data = {
@@ -60,7 +65,7 @@ def test_no_icaluid_falls_back_to_id() -> None:
     assert change.uid == "evt789"
 
 
-def test_all_day_event_uses_date_not_dateTime() -> None:
+def test_all_day_event_uses_date_not_datetime() -> None:
     data = {
         "id": "evt-day",
         "iCalUID": "uid-day@google.com",
@@ -315,9 +320,7 @@ async def test_incremental_sync_single_page_advances_token() -> None:
 # ── write path ────────────────────────────────────────────────────────────────
 
 
-def _make_http_error(status: int) -> "HttpError":
-    from googleapiclient.errors import HttpError
-
+def _make_http_error(status: int) -> HttpError:
     resp = MagicMock()
     resp.status = status
     return HttpError(resp=resp, content=b"error")

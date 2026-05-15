@@ -1,4 +1,5 @@
 """Qt widget tests for RecurrenceEditor."""
+
 from __future__ import annotations
 
 import os

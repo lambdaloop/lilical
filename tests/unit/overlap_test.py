@@ -29,7 +29,7 @@ def test_two_overlapping_get_columns_0_and_1() -> None:
     cols_used = {col for col, _, _, _ in result}
     assert cols_used == {0, 1}
     # Each has cluster size = 2
-    for col, cols, xspan, _ in result:
+    for _col, cols, _xspan, _ in result:
         assert cols == 2
 
 
@@ -38,7 +38,7 @@ def test_three_way_overlap_each_gets_third_width() -> None:
     result = pack_overlapping(items)
     cols_used = {col for col, _, _, _ in result}
     assert cols_used == {0, 1, 2}
-    for col, cols, _, _ in result:
+    for _col, cols, _, _ in result:
         assert cols == 3
 
 

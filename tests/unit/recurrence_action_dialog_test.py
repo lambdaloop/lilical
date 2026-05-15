@@ -1,4 +1,5 @@
 """Qt dialog tests for RecurrenceActionDialog."""
+
 from __future__ import annotations
 
 import os

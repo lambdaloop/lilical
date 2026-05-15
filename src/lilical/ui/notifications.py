@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 from lilical.recurrence.expander import RecurrenceExpander
 from lilical.storage.event_store import EventStore
@@ -11,7 +12,7 @@ class NotificationScheduler:
     def __init__(self, store: EventStore, recurrence: RecurrenceExpander) -> None:
         self._store = store
         self._recurrence = recurrence
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())

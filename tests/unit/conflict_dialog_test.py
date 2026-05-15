@@ -10,7 +10,6 @@ import pytest
 
 from lilical.ui.widgets.conflict_dialog import _fmt
 
-
 # ── _fmt (pure, no Qt needed) ─────────────────────────────────────────────────
 
 

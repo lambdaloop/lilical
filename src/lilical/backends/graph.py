@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import logging
 import re
 import zoneinfo
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, cast
 
 from lilical.backends.base import (
     AuthExpired,
@@ -223,14 +224,14 @@ class GraphCursor(SyncCursor):
     def __init__(self, delta_link: str | None = None) -> None:
         self.delta_link = delta_link
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, object]:
         return {"_type": self._TYPE, "delta_link": self.delta_link}
 
     @classmethod
-    def from_json(cls, data: dict) -> GraphCursor:
+    def from_json(cls, data: dict[str, object]) -> GraphCursor:
         if data.get("_type") != cls._TYPE:
             raise ValueError(f"not a graph cursor: {data!r}")
-        return cls(delta_link=data.get("delta_link"))
+        return cls(delta_link=cast("str | None", data.get("delta_link")))
 
 
 def _status_of(exc: Exception) -> int | None:
@@ -277,7 +278,7 @@ def _classify_errors(f):
         return wrapper
 
     @functools.wraps(f)
-    async def wrapper(*args, **kwargs):
+    async def wrapper_coro(*args, **kwargs):
         try:
             return await f(*args, **kwargs)
         except (
@@ -291,7 +292,7 @@ def _classify_errors(f):
         except Exception as exc:
             raise _classify_one(exc) from exc
 
-    return wrapper
+    return wrapper_coro
 
 
 # Graph emits 7-digit fractional seconds (e.g. "...09:00:00.0000000") which
@@ -336,7 +337,7 @@ def _safe(fn, *, field: str, default=None):
         return default
 
 
-def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
+def _graph_recurrence_to_rrule(rec: dict[str, object] | None) -> str | None:
     """Convert a Graph `recurrence` object into an iCal RRULE string.
 
     Returns None if the structure is missing the required `pattern`/`range`
@@ -344,8 +345,8 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
     """
     if not rec:
         return None
-    pattern = rec.get("pattern") or {}
-    rng = rec.get("range") or {}
+    pattern = cast("dict[str, object]", rec.get("pattern") or {})
+    rng = cast("dict[str, object]", rec.get("range") or {})
     if not pattern or not rng:
         return None
 
@@ -355,9 +356,10 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
     if ptype == "daily":
         parts.append("FREQ=DAILY")
     elif ptype == "weekly":
+        days_of_week = cast("list[str]", pattern.get("daysOfWeek") or [])
         days = [
             _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
-            for d in (pattern.get("daysOfWeek") or [])
+            for d in days_of_week
             if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
         ]
         parts.append("FREQ=WEEKLY")
@@ -365,44 +367,46 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
             parts.append("BYDAY=" + ",".join(days))
     elif ptype == "absolutemonthly":
         parts.append("FREQ=MONTHLY")
-        dom = pattern.get("dayOfMonth")
+        dom = cast("int", pattern.get("dayOfMonth"))
         if dom:
-            parts.append(f"BYMONTHDAY={int(dom)}")
+            parts.append(f"BYMONTHDAY={dom}")
     elif ptype == "relativemonthly":
         parts.append("FREQ=MONTHLY")
         index = _GRAPH_INDEX_TO_RRULE.get(str(pattern.get("index") or "").lower())
+        days_of_week = cast("list[str]", pattern.get("daysOfWeek") or [])
         days = [
             _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
-            for d in (pattern.get("daysOfWeek") or [])
+            for d in days_of_week
             if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
         ]
         if index and days:
             parts.append("BYDAY=" + ",".join(f"{index}{d}" for d in days))
     elif ptype == "absoluteyearly":
         parts.append("FREQ=YEARLY")
-        month = pattern.get("month")
-        dom = pattern.get("dayOfMonth")
+        month = cast("int", pattern.get("month"))
+        dom = cast("int", pattern.get("dayOfMonth"))
         if month:
-            parts.append(f"BYMONTH={int(month)}")
+            parts.append(f"BYMONTH={month}")
         if dom:
-            parts.append(f"BYMONTHDAY={int(dom)}")
+            parts.append(f"BYMONTHDAY={dom}")
     elif ptype == "relativeyearly":
         parts.append("FREQ=YEARLY")
-        month = pattern.get("month")
+        month = cast("int", pattern.get("month"))
         index = _GRAPH_INDEX_TO_RRULE.get(str(pattern.get("index") or "").lower())
+        days_of_week = cast("list[str]", pattern.get("daysOfWeek") or [])
         days = [
             _GRAPH_WEEKDAY_TO_RRULE[d.lower()]
-            for d in (pattern.get("daysOfWeek") or [])
+            for d in days_of_week
             if d and d.lower() in _GRAPH_WEEKDAY_TO_RRULE
         ]
         if month:
-            parts.append(f"BYMONTH={int(month)}")
+            parts.append(f"BYMONTH={month}")
         if index and days:
             parts.append("BYDAY=" + ",".join(f"{index}{d}" for d in days))
     else:
         return None
 
-    interval = pattern.get("interval")
+    interval = cast("int | None", pattern.get("interval"))
     try:
         if interval is not None and int(interval) > 1:
             parts.append(f"INTERVAL={int(interval)}")
@@ -411,7 +415,7 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
 
     rtype = str(rng.get("type") or "").lower()
     if rtype == "numbered":
-        n = rng.get("numberOfOccurrences")
+        n = cast("int", rng.get("numberOfOccurrences"))
         if n:
             parts.append(f"COUNT={int(n)}")
     elif rtype == "enddate":
@@ -429,10 +433,12 @@ def _graph_recurrence_to_rrule(rec: dict | None) -> str | None:
     return ";".join(parts)
 
 
-def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | None:
+def _graph_event_to_change(
+    ev_json: dict[str, object], calendar_id: str
+) -> EventChange | None:
     # Delta responses mark deletions with an "@removed" key on the otherwise-stub event.
     if "@removed" in ev_json:
-        uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
+        uid = cast("str", ev_json.get("id") or ev_json.get("iCalUId") or "")
         return EventChange(kind="delete", uid=uid)
 
     ev_type = str(ev_json.get("type") or "").lower()
@@ -442,27 +448,30 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
     if ev_type == "occurrence":
         return None
 
-    uid = ev_json.get("id") or ev_json.get("iCalUId") or ""
-    body = ev_json.get("body") or {}
-    location = ev_json.get("location") or {}
+    uid = cast("str", ev_json.get("id") or ev_json.get("iCalUId") or "")
+    body = cast("dict[str, object]", ev_json.get("body") or {})
+    location = cast("dict[str, object]", ev_json.get("location") or {})
 
-    start_obj = ev_json.get("start") or {}
-    end_obj = ev_json.get("end") or {}
+    start_obj = cast("dict[str, object]", ev_json.get("start") or {})
+    end_obj = cast("dict[str, object]", ev_json.get("end") or {})
     raw_tz = str(start_obj.get("timeZone") or "UTC")
     # When the Prefer header is honoured, Graph returns the user's zone and
     # raw_tz won't be "UTC". If it still is (Prefer ignored or timed event with
     # no tz), use originalStartTimeZone when the server supplies one.
     if raw_tz == "UTC":
-        original = ev_json.get("originalStartTimeZone") or ""
+        original = cast("str", ev_json.get("originalStartTimeZone") or "")
         if original and original != "tzone://Microsoft/Custom":
             raw_tz = _WINDOWS_TZ_TO_IANA.get(original, original)
-    tz = raw_tz
+    tz: str = raw_tz
     dtstart = _safe(
-        lambda: _parse_graph_dt(start_obj.get("dateTime"), tz),
+        lambda: _parse_graph_dt(cast("str | None", start_obj.get("dateTime")), tz),
         field="start.dateTime",
     )
     dtend = _safe(
-        lambda: _parse_graph_dt(end_obj.get("dateTime"), end_obj.get("timeZone") or tz),
+        lambda: _parse_graph_dt(
+            cast("str | None", end_obj.get("dateTime")),
+            cast("str | None", end_obj.get("timeZone")) or tz,
+        ),
         field="end.dateTime",
     )
 
@@ -487,10 +496,10 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
         "TRANSPARENT" if show_as in {"free", "workingelsewhere"} else "OPAQUE"
     )
 
-    categories_raw = ev_json.get("categories") or []
+    categories_raw = cast("list[object]", ev_json.get("categories") or [])
     categories = tuple(str(c) for c in categories_raw if c)
 
-    attendees_raw = ev_json.get("attendees") or []
+    attendees_raw = cast("list[object]", ev_json.get("attendees") or [])
     attendees: list[str] = []
     for a in attendees_raw:
         email = (
@@ -502,13 +511,15 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
             attendees.append(str(email))
 
     # Microsoft Graph exposes the current user's response at the event level.
-    response_obj = ev_json.get("responseStatus") or {}
+    response_obj = cast("dict[str, object]", ev_json.get("responseStatus") or {})
     self_response = _GRAPH_RESPONSE_MAP.get(
         str(response_obj.get("response") or "").lower()
     )
 
     last_modified = _safe(
-        lambda: _parse_graph_dt(ev_json.get("lastModifiedDateTime"), "UTC"),
+        lambda: _parse_graph_dt(
+            cast("str | None", ev_json.get("lastModifiedDateTime")), "UTC"
+        ),
         field="lastModifiedDateTime",
     )
 
@@ -517,32 +528,36 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
     rrule: str | None = None
     recurrence_id: "datetime | None" = None
     if ev_type == "seriesmaster":
-        rrule = _graph_recurrence_to_rrule(ev_json.get("recurrence"))
+        rrule = _graph_recurrence_to_rrule(
+            cast("dict[str, object] | None", ev_json.get("recurrence"))
+        )
     elif ev_type == "exception":
         # Override instance: store under the master's uid so the expander can
         # find it as a sibling when rebuilding master instances.
-        master_id = ev_json.get("seriesMasterId") or ""
+        master_id = cast("str", ev_json.get("seriesMasterId") or "")
         if master_id:
             uid = master_id
-        orig_start_obj = ev_json.get("originalStart") or {}
+        orig_start_obj = cast("dict[str, object]", ev_json.get("originalStart") or {})
         orig_tz = str(orig_start_obj.get("timeZone") or "UTC")
         recurrence_id = _safe(
-            lambda: _parse_graph_dt(orig_start_obj.get("dateTime"), orig_tz),
+            lambda: _parse_graph_dt(
+                cast("str | None", orig_start_obj.get("dateTime")), orig_tz
+            ),
             field="originalStart",
         )
 
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
-        provider_event_id=ev_json.get("id"),
+        provider_event_id=cast("str | None", ev_json.get("id")),
         dtstart=dtstart,
         dtend=dtend,
         tz=tz,
         all_day=all_day,
-        summary=ev_json.get("subject", "") or "",
-        description=body.get("content", "") or "",
-        location=location.get("displayName", "") or "",
-        url=ev_json.get("webLink"),
+        summary=cast("str", ev_json.get("subject", "") or ""),
+        description=cast("str", body.get("content", "") or ""),
+        location=cast("str", location.get("displayName", "") or ""),
+        url=cast("str | None", ev_json.get("webLink")),
         rrule=rrule,
         recurrence_id=recurrence_id,
         attendees=tuple(attendees),
@@ -551,7 +566,7 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
         self_response=self_response,
         transparency=transparency,
         last_modified=last_modified,
-        etag=ev_json.get("@odata.etag"),
+        etag=cast("str | None", ev_json.get("@odata.etag")),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
 
@@ -563,7 +578,7 @@ def _rrule_to_graph_recurrence(
     rrule: str,
     dtstart: "datetime | None",
     dtend: "datetime | None",
-) -> dict | None:
+) -> dict[str, object] | None:
     """Convert an iCal RRULE string back to a Graph recurrence object."""
     if not rrule:
         return None
@@ -577,16 +592,20 @@ def _rrule_to_graph_recurrence(
     freq = props.get("FREQ", "").upper()
     interval = int(props.get("INTERVAL", "1"))
 
-    pattern: dict = {"interval": interval}
-    _RRULE_TO_GRAPH_WEEKDAY = {v: k for k, v in _GRAPH_WEEKDAY_TO_RRULE.items()}
-    _RRULE_TO_GRAPH_INDEX = {v: k for k, v in _GRAPH_INDEX_TO_RRULE.items()}
+    pattern: dict[str, object] = {"interval": interval}
+    _rrule_to_graph_weekday = {v: k for k, v in _GRAPH_WEEKDAY_TO_RRULE.items()}
+    _rrule_to_graph_index = {v: k for k, v in _GRAPH_INDEX_TO_RRULE.items()}
 
     if freq == "DAILY":
         pattern["type"] = "daily"
     elif freq == "WEEKLY":
         pattern["type"] = "weekly"
         byday = props.get("BYDAY", "")
-        days = [_RRULE_TO_GRAPH_WEEKDAY.get(d.strip(), d.strip()) for d in byday.split(",") if d.strip()]
+        days = [
+            _rrule_to_graph_weekday.get(d.strip(), d.strip())
+            for d in byday.split(",")
+            if d.strip()
+        ]
         if not days and dtstart:
             day_name = dtstart.strftime("%A").lower()
             days = [day_name]
@@ -600,8 +619,8 @@ def _rrule_to_graph_recurrence(
             # e.g. "2MO" → index="second", daysOfWeek=["monday"]
             ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
             day_code = byday.lstrip("-0123456789")
-            pattern["index"] = _RRULE_TO_GRAPH_INDEX.get(ordinal, "first")
-            pattern["daysOfWeek"] = [_RRULE_TO_GRAPH_WEEKDAY.get(day_code, day_code)]
+            pattern["index"] = _rrule_to_graph_index.get(ordinal, "first")
+            pattern["daysOfWeek"] = [_rrule_to_graph_weekday.get(day_code, day_code)]
         else:
             pattern["type"] = "absoluteMonthly"
             dom = props.get("BYMONTHDAY")
@@ -615,8 +634,8 @@ def _rrule_to_graph_recurrence(
             pattern["type"] = "relativeYearly"
             ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
             day_code = byday.lstrip("-0123456789")
-            pattern["index"] = _RRULE_TO_GRAPH_INDEX.get(ordinal, "first")
-            pattern["daysOfWeek"] = [_RRULE_TO_GRAPH_WEEKDAY.get(day_code, day_code)]
+            pattern["index"] = _rrule_to_graph_index.get(ordinal, "first")
+            pattern["daysOfWeek"] = [_rrule_to_graph_weekday.get(day_code, day_code)]
         else:
             pattern["type"] = "absoluteYearly"
         month = props.get("BYMONTH")
@@ -632,7 +651,7 @@ def _rrule_to_graph_recurrence(
     else:
         return None
 
-    rng: dict = {}
+    rng: dict[str, object] = {}
     if "COUNT" in props:
         rng["type"] = "numbered"
         rng["numberOfOccurrences"] = int(props["COUNT"])
@@ -641,6 +660,7 @@ def _rrule_to_graph_recurrence(
         until_raw = props["UNTIL"]
         try:
             from datetime import datetime as _dt
+
             if "T" in until_raw:
                 until_dt = _dt.strptime(until_raw[:15], "%Y%m%dT%H%M%S")
             else:
@@ -686,7 +706,9 @@ def _event_to_graph_json(event: Event) -> dict[str, Any]:
             if isinstance(att, dict):
                 email = att.get("email", "")
                 name = att.get("name", "")
-                attendees_list.append({"emailAddress": {"address": email, "name": name}})
+                attendees_list.append(
+                    {"emailAddress": {"address": email, "name": name}}
+                )
         if attendees_list:
             body["attendees"] = attendees_list
     return body
@@ -723,7 +745,7 @@ _MASTER_HYDRATED_FIELDS: tuple[str, ...] = (
 
 
 def _new_msal_app(cache_json: str | None):
-    import msal
+    import msal  # type: ignore[reportMissingTypeStubs]
 
     cache = msal.SerializableTokenCache()
     if cache_json:
@@ -736,7 +758,8 @@ def _new_msal_app(cache_json: str | None):
     return app, cache
 
 
-def initiate_graph_device_flow() -> tuple[Any, Any, dict]:
+def initiate_graph_device_flow() -> tuple[Any, Any, dict[str, object]]:
+    # type: ignore[reportMissingTypeArgument]
     """Start a device-code flow. Returns (msal_app, cache, flow_dict).
 
     The flow_dict has 'user_code', 'verification_uri', 'message', 'expires_in'.
@@ -750,7 +773,7 @@ def initiate_graph_device_flow() -> tuple[Any, Any, dict]:
     return app, cache, flow
 
 
-def complete_graph_device_flow(app: Any, cache: Any, flow: dict) -> str:
+def complete_graph_device_flow(app: Any, cache: Any, flow: dict[str, object]) -> str:
     """Block until the user signs in via the device code; return serialized cache."""
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
@@ -786,7 +809,7 @@ class GraphBackend:
                     self._on_token_refreshed(self._cache_json)
                 except Exception:
                     log.exception("on_token_refreshed callback raised")
-        return result["access_token"]
+        return str(result["access_token"])
 
     def _get_http(self):
         if self._http is None:
@@ -800,7 +823,7 @@ class GraphBackend:
         method: str,
         url: str,
         *,
-        json_body: dict | None = None,
+        json_body: dict[str, object] | None = None,
         headers: dict[str, str] | None = None,
     ):
         import httpx
@@ -822,10 +845,8 @@ class GraphBackend:
             # series can't be deleted directly"). httpx.raise_for_status drops it,
             # so attach it ourselves before re-raising.
             body_snippet = ""
-            try:
+            with contextlib.suppress(Exception):
                 body_snippet = resp.text[:500]
-            except Exception:
-                pass
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -852,7 +873,7 @@ class GraphBackend:
     }
 
     @_classify_errors
-    async def list_calendars(self) -> list:
+    async def list_calendars(self) -> list[dict[str, object]]:
         resp = await self._request(
             "GET", "/me/calendars?$select=id,name,color,hexColor"
         )
@@ -905,7 +926,9 @@ class GraphBackend:
         self, url: str, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
         next_url: str | None = url
-        masters_cache: dict[str, dict] = {}  # shared across pages within one sync
+        masters_cache: dict[
+            str, dict[str, object]
+        ] = {}  # shared across pages within one sync
         while next_url:
             resp = await self._request("GET", next_url)
             data = resp.json()
@@ -922,9 +945,9 @@ class GraphBackend:
             yield batch, cursor
             next_url = link
 
-    async def _graph_batch_get(self, ids: list[str]) -> dict[str, dict]:
+    async def _graph_batch_get(self, ids: list[str]) -> dict[str, dict[str, object]]:
         """Fetch Graph event objects via the $batch endpoint (≤20 per POST)."""
-        result: dict[str, dict] = {}
+        result: dict[str, dict[str, object]] = {}
         for i in range(0, len(ids), 20):
             chunk = ids[i : i + 20]
             body = {
@@ -934,7 +957,9 @@ class GraphBackend:
                 ]
             }
             try:
-                resp = await self._request("POST", "/$batch", json_body=body)
+                resp = await self._request(
+                    "POST", "/$batch", json_body=cast("dict[str, object]", body)
+                )
                 for item in resp.json().get("responses", []):
                     if item.get("status") == 200:
                         result[item["id"]] = item["body"]
@@ -943,7 +968,9 @@ class GraphBackend:
         return result
 
     async def _hydrate_occurrences_from_master(
-        self, events: list[dict], masters_cache: dict[str, dict]
+        self,
+        events: list[dict[str, object]],
+        masters_cache: dict[str, dict[str, object]],
     ) -> None:
         """Fill in subject/body/location on calendarView occurrences that
         share their data with a seriesMaster.
@@ -964,8 +991,8 @@ class GraphBackend:
             # no need to pay a $batch round-trip just to fill in fields we discard.
             if str(ev.get("type") or "").lower() == "occurrence":
                 continue
-            if not (ev.get("subject") or "").strip():
-                smi = ev.get("seriesMasterId")
+            if not cast("str", ev.get("subject") or "").strip():
+                smi = cast("str", ev.get("seriesMasterId") or "")
                 if smi and smi not in masters_cache:
                     master_ids.add(smi)
         if master_ids:
@@ -973,22 +1000,22 @@ class GraphBackend:
             masters_cache.update(fetched)
 
         for ev in events:
-            mid = ev.get("seriesMasterId")
+            mid = cast("str", ev.get("seriesMasterId") or "")
             if not mid or mid not in masters_cache:
                 continue
             master = masters_cache[mid]
             for field in _MASTER_HYDRATED_FIELDS:
                 cur = ev.get(field)
-                if (
-                    not cur
-                    or (
-                        isinstance(cur, dict)
-                        and not (cur.get("displayName") or cur.get("content"))
-                    )
-                    or (isinstance(cur, list) and not cur)
-                ):
-                    if master.get(field) is not None:
-                        ev[field] = master[field]
+                hydrate = False
+                if not cur:
+                    hydrate = True
+                elif isinstance(cur, dict):
+                    if not (cur.get("displayName") or cur.get("content")):
+                        hydrate = True
+                elif isinstance(cur, list) and not cur:
+                    hydrate = True
+                if hydrate and master.get(field) is not None:
+                    ev[field] = master[field]
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
@@ -1088,11 +1115,14 @@ class GraphBackend:
             item_tz_name = start_part.get("timeZone") or "UTC"
             try:
                 import zoneinfo as _zi
+
                 item_tz = _zi.ZoneInfo(item_tz_name)
                 item_dt = datetime.fromisoformat(start_raw).replace(tzinfo=item_tz)
             except Exception:
                 try:
-                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(tzinfo=timezone.utc)
+                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(
+                        tzinfo=timezone.utc
+                    )
                 except ValueError:
                     continue
             if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
@@ -1139,11 +1169,14 @@ class GraphBackend:
             item_tz_name = start_part.get("timeZone") or "UTC"
             try:
                 import zoneinfo as _zi
+
                 item_tz = _zi.ZoneInfo(item_tz_name)
                 item_dt = datetime.fromisoformat(start_raw).replace(tzinfo=item_tz)
             except Exception:
                 try:
-                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(tzinfo=timezone.utc)
+                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(
+                        tzinfo=timezone.utc
+                    )
                 except ValueError:
                     continue
             if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:

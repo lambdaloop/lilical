@@ -1,4 +1,5 @@
 """Qt tests for EventDialog."""
+
 from __future__ import annotations
 
 import os

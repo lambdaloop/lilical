@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
-from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ class DayGrid(QGraphicsItem):
         painter.setPen(QPen(QColor(theme.BORDER), 1))
         for hour in range(HOURS + 1):
             y = body_top + hour * self._px_per_hour
-            painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
+            painter.drawLine(int(TIME_AXIS_WIDTH), int(y), int(self._width), int(y))
         # Half-hour dotted lines.
         if self._px_per_hour >= 40:
             painter.setPen(
@@ -140,9 +140,14 @@ class DayGrid(QGraphicsItem):
             )
             for hour in range(HOURS):
                 y = body_top + hour * self._px_per_hour + self._px_per_hour / 2
-                painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
+                painter.drawLine(int(TIME_AXIS_WIDTH), int(y), int(self._width), int(y))
         painter.setPen(QPen(QColor(theme.BORDER), 1))
-        painter.drawLine(TIME_AXIS_WIDTH, body_top, TIME_AXIS_WIDTH, self.grid_height())
+        painter.drawLine(
+            int(TIME_AXIS_WIDTH),
+            int(body_top),
+            int(TIME_AXIS_WIDTH),
+            int(self.grid_height()),
+        )
 
         # Hour labels.
         painter.setPen(QColor(theme.TEXT_SECONDARY))
@@ -161,7 +166,7 @@ class DayGrid(QGraphicsItem):
             minutes = now.hour * 60 + now.minute
             ny = body_top + minutes * self._px_per_hour / 60
             painter.setPen(QPen(QColor(theme.DANGER), 2))
-            painter.drawLine(TIME_AXIS_WIDTH, ny, self._width, ny)
+            painter.drawLine(int(TIME_AXIS_WIDTH), int(ny), int(self._width), int(ny))
             painter.setBrush(QColor(theme.DANGER))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QRectF(TIME_AXIS_WIDTH - 4, ny - 4, 8, 8))
@@ -227,12 +232,12 @@ class _DayStickyHeader(QGraphicsItem):
 
         # Vertical divider for the time-axis column within the header.
         painter.setPen(QPen(QColor(theme.BORDER), 1))
-        painter.drawLine(TIME_AXIS_WIDTH, 0, TIME_AXIS_WIDTH, body_top)
+        painter.drawLine(int(TIME_AXIS_WIDTH), 0, int(TIME_AXIS_WIDTH), int(body_top))
 
         # Strong borders.
         painter.setPen(QPen(QColor(theme.BORDER_STRONG), 1))
-        painter.drawLine(0, DAY_HEADER_H, self._width, DAY_HEADER_H)
-        painter.drawLine(0, body_top, self._width, body_top)
+        painter.drawLine(0, int(DAY_HEADER_H), int(self._width), int(DAY_HEADER_H))
+        painter.drawLine(0, int(body_top), int(self._width), int(body_top))
 
         # Header text.
         painter.setPen(QColor(theme.TEXT_PRIMARY))
@@ -264,7 +269,7 @@ class _DayCanvas(QGraphicsView):
         self._drag_current_min: int | None = None
         self._drag_chip_event = None
         self._drag_chip_mode: str | None = None
-        self._drag_chip_origin: tuple | None = None
+        self._drag_chip_origin: tuple[int, int, int] | None = None
         self._drag_preview: DragPreview | None = None
         self._press_scene_pos: QPointF | None = None
         self._scene = QGraphicsScene(self)
@@ -404,8 +409,8 @@ class _DayCanvas(QGraphicsView):
         # us from doubling chips when the view first lays out.
         for chip in self._chips:
             parent = chip.parentItem()
-            if parent is not None:
-                chip.setParentItem(None)
+            if parent is not None:  # type: ignore[reportUnnecessaryComparison]
+                chip.setParentItem(None)  # type: ignore[reportArgumentType]
             if chip.scene() is self._scene:
                 self._scene.removeItem(chip)
         self._chips.clear()
@@ -441,7 +446,7 @@ class _DayCanvas(QGraphicsView):
         body_top = self._grid.hour_top()
         cal_color: dict[str, str | None] = {}
         all_day_idx = 0
-        timed_bucket: list[tuple[float, float, dict]] = []
+        timed_bucket: list[tuple[float, float, dict[str, object]]] = []
 
         for inst in instances:
             event = self._store.get_event_for_instance(inst)
@@ -529,11 +534,13 @@ class _DayCanvas(QGraphicsView):
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
-        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)
+
+        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_delete_dialog
-        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)
+
+        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
 
     # ── Snap / public setter ──────────────────────────────────────────────
 
@@ -634,8 +641,8 @@ class _DayCanvas(QGraphicsView):
         if self._drag_kind == "create_body":
             current_min = self._snap_minutes_to(self._scene_y_to_minutes(scene_pos.y()))
             self._drag_current_min = current_min
-            start_min = min(self._drag_start_min, current_min)
-            end_min = max(self._drag_start_min, current_min)
+            start_min = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            end_min = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
             if end_min <= start_min:
                 end_min = start_min + self._snap_minutes
             rect = self._compute_timed_chip_rect(start_min, end_min)
@@ -672,8 +679,8 @@ class _DayCanvas(QGraphicsView):
 
         if self._drag_kind == "create_body":
             current_min = self._snap_minutes_to(self._scene_y_to_minutes(scene_pos.y()))
-            start_min = min(self._drag_start_min, current_min)
-            end_min = max(self._drag_start_min, current_min)
+            start_min = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            end_min = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
             if end_min - start_min < self._snap_minutes:
                 end_min = start_min + 60
             tz = local_zoneinfo()
@@ -715,7 +722,7 @@ class _DayCanvas(QGraphicsView):
                 return
             if self._drag_chip_event is not None:
                 for chip in self._chips:
-                    if chip._event is self._drag_chip_event:
+                    if chip._event is self._drag_chip_event:  # type: ignore[reportPrivateUsage]
                         chip.cancel_drag()
                         break
                 else:
@@ -737,9 +744,9 @@ class _DayCanvas(QGraphicsView):
             self._drag_chip_event = event
             self._drag_chip_mode = mode
             for chip in self._chips:
-                if chip._event is event:
+                if chip._event is event:  # type: ignore[reportPrivateUsage]
                     r = chip.sceneBoundingRect()
-                    self._press_scene_pos = chip._press_scene_pos
+                    self._press_scene_pos = chip._press_scene_pos  # type: ignore[reportPrivateUsage]
                     origin_start = int((r.top() - body_top) * 60 / pph)
                     origin_end = int((r.bottom() - body_top) * 60 / pph)
                     self._drag_chip_origin = (0, origin_start, origin_end)
@@ -747,8 +754,9 @@ class _DayCanvas(QGraphicsView):
             else:
                 return
 
+        if self._drag_chip_origin is None:
+            return
         _origin_day, origin_start, origin_end = self._drag_chip_origin
-        press = self._press_scene_pos
         duration = origin_end - origin_start
 
         if mode == "move":
@@ -802,9 +810,7 @@ class _DayCanvas(QGraphicsView):
             self._press_scene_pos = None
             return
 
-        pph = self._px_per_hour
         _origin_day, origin_start, origin_end = self._drag_chip_origin
-        press = self._press_scene_pos
         duration = origin_end - origin_start
 
         if mode == "move":
@@ -866,10 +872,11 @@ class _DayCanvas(QGraphicsView):
         self, start_dt: datetime, end_dt: datetime, *, all_day: bool = False
     ) -> None:
         import uuid
+
         from lilical.ui.widgets.event_dialog import EventDialog
 
         dlg = EventDialog(
-            self.parent(),
+            self.parent(),  # type: ignore[reportArgumentType]
             store=self._store,
             default_dt=start_dt,
             default_dtend=end_dt,
@@ -925,7 +932,7 @@ class DayView(QWidget):
         layout.addWidget(self._mini_list)
 
         # First-paint auto-scroll: wait for the viewport to have a real size.
-        QTimer.singleShot(0, self._canvas._scroll_to_first_event)
+        QTimer.singleShot(0, self._canvas._scroll_to_first_event)  # type: ignore[reportPrivateUsage]
         self._refresh_mini_agenda()
 
     # ── Public surface used by main_window / sidebar ─────────────────────
@@ -1011,14 +1018,14 @@ class DayView(QWidget):
         upcoming.sort(key=lambda x: x[0])
 
         for t, inst in upcoming[: self.MINI_AGENDA_COUNT]:
-            event = self._store.get_event(inst.uid, inst.calendar_id)
+            event = self._store.get_event(inst.uid, inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
             if event is None:
                 continue
             if t.date() == now.date():
                 when = t.strftime("Today %H:%M")
             else:
                 when = t.strftime("%a %H:%M")
-            if inst.all_day:
+            if inst.all_day:  # type: ignore[reportAttributeAccessIssue]
                 when = t.strftime("%a") if t.date() != now.date() else "Today"
                 when = f"{when}  (all day)"
             label = f"{when}    {event.summary or '(no title)'}"
@@ -1027,7 +1034,7 @@ class DayView(QWidget):
             item = QListWidgetItem(label)
             color_hint = event.color
             if not color_hint:
-                cal = self._store.get_calendar(inst.calendar_id)
+                cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
                 color_hint = cal.color if cal else None
             if color_hint:
                 c = QColor(color_hint)

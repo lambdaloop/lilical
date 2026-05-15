@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -20,7 +21,7 @@ from lilical.utils.timezone import local_iana_tz
 log = logging.getLogger(__name__)
 
 
-def _parse_natural(text: str) -> dict | None:
+def _parse_natural(text: str) -> dict[str, Any] | None:
     """Parse a natural-language event string via dateparser.
     Returns dict with keys: title, dtstart, dtend, location or None on failure.
     """
@@ -54,7 +55,7 @@ class QuickAddDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._store = store
-        self._parsed: dict | None = None
+        self._parsed: dict[str, Any] | None = None
 
         self.setWindowTitle("Quick add")
         self.setMinimumWidth(420)
@@ -108,7 +109,8 @@ class QuickAddDialog(QDialog):
             local_end = end.astimezone()
             title = result.get("title", text)
             self._preview.setText(
-                f"{local_start.strftime('%a %b %-d, %H:%M')} – {local_end.strftime('%H:%M')}  ·  {title}"
+                f"{local_start.strftime('%a %b %-d, %H:%M')} – "
+                f"{local_end.strftime('%H:%M')}  ·  {title}"
             )
         else:
             self._preview.setText(
@@ -117,8 +119,10 @@ class QuickAddDialog(QDialog):
 
     def _on_save(self) -> None:
         import uuid
-        from lilical.models.event import Event
+
         from PySide6.QtWidgets import QMessageBox
+
+        from lilical.models.event import Event
 
         text = self._input.text().strip()
         if not text:

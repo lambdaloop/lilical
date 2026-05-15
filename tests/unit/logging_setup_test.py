@@ -66,7 +66,7 @@ def test_non_debug_does_not_raise_library_loggers(
 
 
 def test_journald_handler_added_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    """If systemd.journal is importable, a JournalHandler should be passed to basicConfig."""
+    """If systemd.journal importable, a JournalHandler is passed to basicConfig."""
     import types
 
     class _FakeJournalHandler(logging.Handler):

@@ -307,7 +307,9 @@ class MonthView(QGraphicsView):
         # Build per-day buckets, distinguishing multi-day from single-day.
         # An instance is "multi-day" when its end-date (exclusive at midnight)
         # is on a strictly later local date than its start.
-        single_by_day: dict[date, list] = {}
+        from typing import Any
+
+        single_by_day: dict[date, list[tuple[datetime, Any]]] = {}
         multi_spans: list[
             tuple[date, date, object]
         ] = []  # (start, end_inclusive, inst)
@@ -337,7 +339,7 @@ class MonthView(QGraphicsView):
         row_slots_used: dict[int, list[list[tuple[int, int]]]] = {}
         # row_slots_used[row_idx][track] = list of (start_col, end_col) spans
 
-        def row_for_date(d: date) -> int | None:
+        def _row_for_date(d: date) -> int | None:  # noqa: ARG001  # type: ignore[reportUnusedFunction]
             offset = (d - grid_start).days
             if offset < 0 or offset >= 42:
                 return None
@@ -362,16 +364,16 @@ class MonthView(QGraphicsView):
         multi_spans.sort(key=lambda x: ((x[1] - x[0]).days, x[0]), reverse=True)
 
         for s_day, e_day, inst in multi_spans:
-            event = self._store.get_event_for_instance(inst)
+            event = self._store.get_event_for_instance(inst)  # type: ignore[reportArgumentType]
             if event is None:
                 continue
             try:
-                inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+                inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
             except (ValueError, TypeError):
                 inst_t = None
-            if inst.calendar_id not in cal_color:
-                cal = self._store.get_calendar(inst.calendar_id)
-                cal_color[inst.calendar_id] = cal.color if cal else None
+            if inst.calendar_id not in cal_color:  # type: ignore[reportAttributeAccessIssue]
+                cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
+                cal_color[inst.calendar_id] = cal.color if cal else None  # type: ignore[reportAttributeAccessIssue]
 
             # Clip span to visible grid.
             visible_start = max(s_day, grid_start)
@@ -390,7 +392,11 @@ class MonthView(QGraphicsView):
                 # End of this week-row segment.
                 row_end_day = grid_start + timedelta(days=row * 7 + 6)
                 seg_end = min(visible_end, row_end_day)
-                seg_end_col = cell_row_col(seg_end)[1]
+                _seg_rc = cell_row_col(seg_end)
+                if _seg_rc is None:
+                    d = seg_end + timedelta(days=1)
+                    continue
+                seg_end_col = _seg_rc[1]
 
                 # Find a free track.
                 tracks = row_slots_used.setdefault(row, [])
@@ -427,7 +433,7 @@ class MonthView(QGraphicsView):
                     chip = EventChip(
                         event,
                         QRectF(x, y, w, CHIP_H),
-                        calendar_color=cal_color[inst.calendar_id],
+                        calendar_color=cal_color[inst.calendar_id],  # type: ignore[reportAttributeAccessIssue]
                         mode=self._chip_mode,
                         show_time_prefix=False,
                         continues_left=(s_day < grid_start + timedelta(days=row * 7)),
@@ -435,10 +441,14 @@ class MonthView(QGraphicsView):
                         instance_dtstart=inst_t,
                     )
                     chip.edit_requested.connect(
-                        lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+                        lambda ev, c=chip: self._on_edit_requested(
+                            ev, c.instance_dtstart
+                        )
                     )
                     chip.delete_requested.connect(
-                        lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+                        lambda ev, c=chip: self._on_delete_requested(
+                            ev, c.instance_dtstart
+                        )
                     )
                     self._scene.addItem(chip)
                     self._chips.append(chip)
@@ -520,10 +530,9 @@ class MonthView(QGraphicsView):
         # Also create +N markers for cells that have only multi-day overflow.
         for (row, col), n in hidden_per_cell.items():
             if any(
-                isinstance(it, _OverflowChip)
+                self._cell_of(it._rect) == (row, col)  # type: ignore[reportPrivateUsage]
                 for it in self._chips
                 if isinstance(it, _OverflowChip)
-                and self._cell_of(it._rect) == (row, col)
             ):
                 continue
             d = grid_start + timedelta(days=row * 7 + col)
@@ -548,8 +557,10 @@ class MonthView(QGraphicsView):
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
-        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)
+
+        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_delete_dialog
-        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)
+
+        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]

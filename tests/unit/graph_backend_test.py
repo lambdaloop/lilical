@@ -531,7 +531,6 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
     """With the new approach, only the seriesMaster produces an EventChange.
     apply_remote_changes stores the master with its rrule and the expander
     generates EventInstanceRows. Occurrences from the API are dropped."""
-    from datetime import timedelta, timezone
 
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
@@ -575,7 +574,11 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
         "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
         "recurrence": {
             "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"]},
-            "range": {"type": "numbered", "startDate": "2026-05-13", "numberOfOccurrences": 3},
+            "range": {
+                "type": "numbered",
+                "startDate": "2026-05-13",
+                "numberOfOccurrences": 3,
+            },
         },
     }
     occurrence_jsons = [
@@ -935,7 +938,16 @@ async def test_drain_delta_cross_page_master_cache() -> None:
         "@odata.nextLink": "https://graph.microsoft.com/v1.0/page2",
     }
     page2 = {
-        "value": [{**exc, "id": "AAMk-exc-p2", "originalStart": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"}}],
+        "value": [
+            {
+                **exc,
+                "id": "AAMk-exc-p2",
+                "originalStart": {
+                    "dateTime": "2026-05-20T09:00:00.0000000",
+                    "timeZone": "UTC",
+                },
+            }
+        ],
         "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
     }
     master = {
@@ -1326,13 +1338,16 @@ async def test_update_instance_matches_occurrence_in_non_utc_timezone() -> None:
     # Must not raise PermanentError — the timezone mismatch was the bug being fixed.
     await backend.update_instance("cal-1", "AAMk-master", recurrence_id_dt, event)
 
-    assert len(patch_requests) == 1, "Expected one PATCH request for the matched occurrence"
+    assert len(patch_requests) == 1, (
+        "Expected one PATCH request for the matched occurrence"
+    )
     assert "AAMk-occ-ny" in patch_requests[0]
 
 
 @pytest.mark.asyncio
 async def test_create_event_returns_uid_matching_delta() -> None:
-    """create_event returns uid=data['id'] (not iCalUId) so it matches _graph_event_to_change."""
+    """create_event returns uid=data['id'] so it matches _graph_event_to_change."""
+
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             201,
@@ -1347,14 +1362,19 @@ async def test_create_event_returns_uid_matching_delta() -> None:
     _attach_mock(backend, _handler)
 
     from lilical.models.event import Event
+
     event = Event(
-        uid="local-uuid", calendar_id="cal-A",
-        summary="Test", dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
+        uid="local-uuid",
+        calendar_id="cal-A",
+        summary="Test",
+        dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
         dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
     )
     result = await backend.create_event("cal-A", event)
 
     # Must use id, not iCalUId — otherwise mark_synced writes the wrong uid
     # and the next delta can't find the row by (uid, calendar_id).
-    assert result.uid == "AAMk-new", f"Expected uid=AAMk-new (the Graph id), got {result.uid!r}"
+    assert result.uid == "AAMk-new", (
+        f"Expected uid=AAMk-new (the Graph id), got {result.uid!r}"
+    )
     assert result.provider_event_id == "AAMk-new"

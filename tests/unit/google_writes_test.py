@@ -1,14 +1,12 @@
-"""Tests for Google Calendar write operations: serializer and GoogleBackend write methods."""
+"""Tests for Google Calendar: serializer and GoogleBackend write methods."""
+
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
 
-import pytest
-
 from lilical.backends._google_serializer import event_to_google_body
 from lilical.models.event import Event
-
 
 # ── Serializer pure-function tests ────────────────────────────────────────────
 
@@ -127,16 +125,19 @@ class _FakeService:
 
 def _make_backend():
     from lilical.backends.google import GoogleBackend
+
     return GoogleBackend(account_id="test-account")
 
 
 def test_create_event_sends_full_body():
-    fake = _FakeService(resp={
-        "iCalUID": "uid-x",
-        "id": "server-id",
-        "etag": '"etag"',
-        "sequence": 0,
-    })
+    fake = _FakeService(
+        resp={
+            "iCalUID": "uid-x",
+            "id": "server-id",
+            "etag": '"etag"',
+            "sequence": 0,
+        }
+    )
 
     backend = _make_backend()
 
@@ -170,12 +171,14 @@ def test_create_event_sends_full_body():
 
 
 def test_update_event_uses_provider_event_id():
-    fake = _FakeService(resp={
-        "iCalUID": "uid-y",
-        "id": "pid-123",
-        "etag": '"etag2"',
-        "sequence": 1,
-    })
+    fake = _FakeService(
+        resp={
+            "iCalUID": "uid-y",
+            "id": "pid-123",
+            "etag": '"etag2"',
+            "sequence": 1,
+        }
+    )
 
     backend = _make_backend()
 

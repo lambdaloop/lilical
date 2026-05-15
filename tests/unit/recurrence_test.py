@@ -283,13 +283,15 @@ def test_expander_suppresses_overridden_occurrence(
     window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
     window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
 
-    results = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+    results = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[override]
+    )
 
     # COUNT=4 → 4 total: 3 rrule occurrences + 1 override (week 2 replaced).
     assert len(results) == 4
     dtstart_values = [r["dtstart"] for r in results]
     assert week2_original not in dtstart_values  # original time suppressed
-    assert week2_moved in dtstart_values          # override's modified time present
+    assert week2_moved in dtstart_values  # override's modified time present
     override_rows = [r for r in results if r.get("is_override")]
     assert len(override_rows) == 1
     assert override_rows[0]["dtstart"] == week2_moved
@@ -319,7 +321,9 @@ def test_expander_excludes_overrides_outside_window(
     window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
     window_end = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
-    results = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+    results = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[override]
+    )
 
     # Week 2 original time is suppressed; July dtstart is outside the window.
     # Only week 1 (May 13) remains.
@@ -342,7 +346,9 @@ def test_expander_cache_invalidates_on_override_change(
     window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
     window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
 
-    no_overrides = expander.expand_for_storage(master, window_start, window_end, overrides=[])
+    no_overrides = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[]
+    )
 
     override = Event(
         uid="override-cache",
@@ -351,7 +357,9 @@ def test_expander_cache_invalidates_on_override_change(
         dtstart=datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc),
         dtend=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
     )
-    with_override = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+    with_override = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[override]
+    )
 
     # Results must not be the same cached list object.
     assert no_overrides is not with_override

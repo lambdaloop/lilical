@@ -130,23 +130,23 @@ class AgendaView(QWidget):
             day_item.setBackground(2, QColor(theme.BG_SURFACE_3))
             day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
-            for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):
-                event = self._store.get_event_for_instance(inst)
+            for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):  # type: ignore[reportAttributeAccessIssue]
+                event = self._store.get_event_for_instance(inst)  # type: ignore[reportArgumentType]
                 if event is None:
                     continue
                 row = QTreeWidgetItem(day_item)
-                if inst.all_day:
+                if inst.all_day:  # type: ignore[reportAttributeAccessIssue]
                     row.setText(0, "All day")
                 else:
                     row.setText(0, t.strftime("%H:%M"))
                 row.setText(1, event.summary or "(no title)")
 
                 # Show calendar name if available
-                cal_label = inst.calendar_id
+                cal_label = inst.calendar_id  # type: ignore[reportAttributeAccessIssue]
                 accs = self._store.list_accounts()
                 for acc in accs:
                     for cal in self._store.list_calendars(acc.id, visible_only=False):
-                        if cal.id == inst.calendar_id:
+                        if cal.id == inst.calendar_id:  # type: ignore[reportAttributeAccessIssue]
                             cal_label = cal.display_name
                             break
                 row.setText(2, cal_label)
@@ -154,7 +154,7 @@ class AgendaView(QWidget):
                 # Color swatch icon to the left of the event title.
                 color_hint = event.color
                 if not color_hint:
-                    cal = self._store.get_calendar(inst.calendar_id)
+                    cal = self._store.get_calendar(inst.calendar_id)  # type: ignore[reportAttributeAccessIssue]
                     color_hint = cal.color if cal else None
                 row.setIcon(1, _color_swatch_icon(color_hint))
 
@@ -171,10 +171,12 @@ class AgendaView(QWidget):
         if event is None:
             return
         from lilical.ui.views._recurrence_actions import open_edit_dialog
+
         open_edit_dialog(self, self._store, event, instance_dtstart)
 
     def _on_context_menu(self, pos) -> None:
         from PySide6.QtWidgets import QMenu
+
         item = self._tree.itemAt(pos)
         if item is None:
             return
@@ -191,7 +193,9 @@ class AgendaView(QWidget):
         action = menu.exec(self._tree.viewport().mapToGlobal(pos))
         if action == edit_action:
             from lilical.ui.views._recurrence_actions import open_edit_dialog
+
             open_edit_dialog(self, self._store, event, instance_dtstart)
         elif action == delete_action:
             from lilical.ui.views._recurrence_actions import open_delete_dialog
+
             open_delete_dialog(self, self._store, event, instance_dtstart)

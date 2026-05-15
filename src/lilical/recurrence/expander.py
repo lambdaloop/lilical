@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import icalendar
-import recurring_ical_events
+import recurring_ical_events  # type: ignore[reportMissingTypeStubs]
 
 from lilical.models.event import Event
 from lilical.storage.event_store import EventStore
@@ -19,7 +19,7 @@ def _dt_to_utc(dt: datetime) -> datetime:
 class RecurrenceExpander:
     def __init__(self, store: EventStore) -> None:
         self._store = store
-        self._cache: dict[tuple, list[dict[str, Any]]] = {}
+        self._cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 
     def expand_for_storage(
         self,
@@ -105,21 +105,24 @@ class RecurrenceExpander:
                 continue
             ov_start = ov.dtstart
             ov_end = ov.dtend or ov.dtstart
-            if isinstance(ov_start, datetime):
-                ov_start_utc = _dt_to_utc(ov_start)
-                ov_end_utc = _dt_to_utc(ov_end) if isinstance(ov_end, datetime) else ov_start_utc
-                if ov_start_utc < _dt_to_utc(window_end) and ov_end_utc > _dt_to_utc(window_start):
-                    results.append(
-                        {
-                            "uid": event.uid,
-                            "calendar_id": event.calendar_id,
-                            "dtstart": ov_start,
-                            "dtend": ov_end,
-                            "all_day": ov.all_day,
-                            "is_override": True,
-                            "recurrence_id": ov.recurrence_id.isoformat(),
-                        }
-                    )
+            ov_start_utc = _dt_to_utc(ov_start)  # type: ignore[reportUnnecessaryIsInstance]
+            ov_end_utc = (
+                _dt_to_utc(ov_end) if isinstance(ov_end, datetime) else ov_start_utc  # type: ignore[reportUnnecessaryIsInstance]
+            )
+            if ov_start_utc < _dt_to_utc(window_end) and ov_end_utc > _dt_to_utc(
+                window_start
+            ):
+                results.append(
+                    {
+                        "uid": event.uid,
+                        "calendar_id": event.calendar_id,
+                        "dtstart": ov_start,
+                        "dtend": ov_end,
+                        "all_day": ov.all_day,
+                        "is_override": True,
+                        "recurrence_id": ov.recurrence_id.isoformat(),
+                    }
+                )
 
         self._cache[cache_key] = results
         return results

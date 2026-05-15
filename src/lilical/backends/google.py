@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import json
 import logging
 import os
 import zoneinfo
+from collections.abc import AsyncIterator
 from datetime import date as _date_cls
 from datetime import datetime, time, timezone
-from typing import Any, AsyncIterator
+from typing import Any, cast
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from googleapiclient.discovery import build  # type: ignore[reportMissingTypeStubs]
+from googleapiclient.errors import HttpError  # type: ignore[reportMissingTypeStubs]
 
-from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 from lilical.backends.base import (
     AuthExpired,
     ConflictError,
@@ -27,6 +28,7 @@ from lilical.backends.base import (
     TransientError,
 )
 from lilical.models.event import Event
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +38,7 @@ SCOPES = [
 ]
 
 
-def _load_client_config() -> dict:
+def _load_client_config() -> dict[str, object]:
     client_id = os.environ.get("LILICAL_GOOGLE_CLIENT_ID") or "lilical-oauth"
     client_secret = os.environ.get("LILICAL_GOOGLE_CLIENT_SECRET") or ""
     return {
@@ -74,14 +76,14 @@ class GoogleCursor(SyncCursor):
     def __init__(self, sync_token: str | None = None) -> None:
         self.sync_token = sync_token
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, object]:
         return {"_type": self._TYPE, "sync_token": self.sync_token}
 
     @classmethod
-    def from_json(cls, data: dict) -> GoogleCursor:
+    def from_json(cls, data: dict[str, object]) -> GoogleCursor:
         if data.get("_type") != cls._TYPE:
             raise ValueError(f"not a google cursor: {data!r}")
-        return cls(sync_token=data.get("sync_token"))
+        return cls(sync_token=data.get("sync_token"))  # type: ignore[reportArgumentType]
 
 
 def _classify_errors(f):
@@ -112,7 +114,7 @@ def _classify_errors(f):
     else:
 
         @functools.wraps(f)
-        async def wrapper(*args, **kwargs):
+        async def wrapper_coro(*args, **kwargs):
             try:
                 return await f(*args, **kwargs)
             except HttpError as e:
@@ -131,10 +133,12 @@ def _classify_errors(f):
                 log.exception("unclassified error in %s", f.__name__)
                 raise PermanentError(str(e)) from e
 
-        return wrapper
+        return wrapper_coro
 
 
-def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
+def _parse_google_dt(
+    part: dict[str, object] | None,
+) -> tuple[datetime | None, str, bool]:
     """Resolve a Google start/end object to (datetime, tz, all_day).
 
     Google's start/end is either:
@@ -147,7 +151,7 @@ def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
         return None, "UTC", False
     if "date" in part:
         try:
-            d = _date_cls.fromisoformat(part["date"])
+            d = _date_cls.fromisoformat(str(part["date"]))
             local = local_zoneinfo()
             return datetime.combine(d, time.min, tzinfo=local), local_iana_tz(), True
         except ValueError:
@@ -157,7 +161,7 @@ def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
     if not raw:
         return None, tz, False
     try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None, tz, False
     if dt.tzinfo is not None:
@@ -170,7 +174,9 @@ def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
     return dt.replace(tzinfo=timezone.utc), tz, False
 
 
-def _parse_recurrence_lines(lines: list[str]) -> tuple[str | None, tuple, tuple]:
+def _parse_recurrence_lines(
+    lines: list[str],
+) -> tuple[str | None, tuple[datetime, ...], tuple[datetime, ...]]:
     """Split Google's `recurrence` array into (rrule, exdates, rdates).
 
     Google formats recurrence as iCal property strings:
@@ -186,8 +192,6 @@ def _parse_recurrence_lines(lines: list[str]) -> tuple[str | None, tuple, tuple]
     exdates: list[datetime] = []
     rdates: list[datetime] = []
     for raw in lines or []:
-        if not isinstance(raw, str):
-            continue
         try:
             tag, rest = raw.split(":", 1) if ":" in raw else (raw, "")
         except Exception:
@@ -225,21 +229,29 @@ def _parse_recurrence_lines(lines: list[str]) -> tuple[str | None, tuple, tuple]
     return rrule_val, tuple(exdates), tuple(rdates)
 
 
-def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | None:
-    status = ev_json.get("status", "")
+def _google_event_to_change(
+    ev_json: dict[str, object], calendar_id: str
+) -> EventChange | None:
+    status = str(ev_json.get("status", ""))
     if status == "cancelled":
         return EventChange(
             kind="delete",
-            uid=ev_json.get("iCalUID", ev_json.get("id", "")),
+            uid=str(ev_json.get("iCalUID") or ev_json.get("id") or ""),
         )
 
     # Override (modified instance): store under the master's iCalUID so the
     # expander can find it as a sibling when rebuilding master instances.
     if ev_json.get("recurringEventId"):
-        uid = ev_json.get("iCalUID", ev_json.get("id", ""))
-        dtstart, tz_start, all_day = _parse_google_dt(ev_json.get("start"))
-        dtend, _, _ = _parse_google_dt(ev_json.get("end"))
-        original_start_dt, _, _ = _parse_google_dt(ev_json.get("originalStartTime"))
+        uid = str(ev_json.get("iCalUID") or ev_json.get("id") or "")
+        dtstart, tz_start, all_day = _parse_google_dt(
+            cast(dict[str, object] | None, ev_json.get("start"))
+        )
+        dtend, _, _ = _parse_google_dt(
+            cast(dict[str, object] | None, ev_json.get("end"))
+        )
+        original_start_dt, _, _ = _parse_google_dt(
+            cast(dict[str, object] | None, ev_json.get("originalStartTime"))
+        )
         g_status = (
             "CONFIRMED"
             if status == "confirmed"
@@ -248,42 +260,48 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
         transparency = (
             "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
         )
-        last_modified: datetime | None = None
+        last_modified = None
         updated_raw = ev_json.get("updated")
         if isinstance(updated_raw, str):
-            try:
-                last_modified = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
-            except ValueError:
-                pass
+            with contextlib.suppress(ValueError):
+                last_modified = datetime.fromisoformat(
+                    updated_raw.replace("Z", "+00:00")
+                )
         override_event = Event(
             uid=uid,
             calendar_id=calendar_id,
             recurrence_id=original_start_dt,
-            provider_event_id=ev_json.get("id"),
+            provider_event_id=cast(str | None, ev_json.get("id")),
             dtstart=dtstart,
             dtend=dtend,
             tz=tz_start,
             all_day=all_day,
-            summary=ev_json.get("summary", ""),
-            description=ev_json.get("description", ""),
-            location=ev_json.get("location", ""),
-            url=ev_json.get("htmlLink"),
+            summary=str(ev_json.get("summary", "")),
+            description=str(ev_json.get("description", "")),
+            location=str(ev_json.get("location", "")),
+            url=cast(str | None, ev_json.get("htmlLink")),
             rrule=None,
             status=g_status,
             transparency=transparency,
             last_modified=last_modified,
-            etag=ev_json.get("etag"),
-            sequence=ev_json.get("sequence", 0),
+            etag=cast(str | None, ev_json.get("etag")),
+            sequence=cast(int, ev_json.get("sequence", 0)),
         )
         return EventChange(kind="upsert", event=override_event, uid=uid)
 
-    uid = ev_json.get("iCalUID", ev_json.get("id", ""))
+    uid = str(ev_json.get("iCalUID") or ev_json.get("id") or "")
 
-    dtstart, tz_start, all_day_start = _parse_google_dt(ev_json.get("start"))
-    dtend, _tz_end, _all_day_end = _parse_google_dt(ev_json.get("end"))
+    dtstart, tz_start, all_day_start = _parse_google_dt(
+        cast(dict[str, object] | None, ev_json.get("start"))
+    )
+    dtend, _tz_end, _all_day_end = _parse_google_dt(
+        cast(dict[str, object] | None, ev_json.get("end"))
+    )
     all_day = all_day_start
 
-    rrule, exdates, rdates = _parse_recurrence_lines(ev_json.get("recurrence") or [])
+    rrule, exdates, rdates = _parse_recurrence_lines(
+        cast(list[str], ev_json.get("recurrence") or [])
+    )
 
     g_status = (
         "CONFIRMED"
@@ -294,7 +312,7 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
         "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
     )
 
-    attendees_raw = ev_json.get("attendees") or []
+    attendees_raw = cast(list[object], ev_json.get("attendees") or [])
     attendees: list[str] = []
     self_response: str | None = None
     for a in attendees_raw:
@@ -310,23 +328,21 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
     last_modified: datetime | None = None
     updated_raw = ev_json.get("updated")
     if isinstance(updated_raw, str):
-        try:
+        with contextlib.suppress(ValueError):
             last_modified = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
-        except ValueError:
-            pass
 
     event = Event(
         uid=uid,
         calendar_id=calendar_id,
-        provider_event_id=ev_json.get("id"),
+        provider_event_id=cast(str | None, ev_json.get("id")),
         dtstart=dtstart,
         dtend=dtend,
         tz=tz_start,
         all_day=all_day,
-        summary=ev_json.get("summary", ""),
-        description=ev_json.get("description", ""),
-        location=ev_json.get("location", ""),
-        url=ev_json.get("htmlLink"),
+        summary=str(ev_json.get("summary", "")),
+        description=str(ev_json.get("description", "")),
+        location=str(ev_json.get("location", "")),
+        url=cast(str | None, ev_json.get("htmlLink")),
         rrule=rrule,
         exdates=exdates,
         rdates=rdates,
@@ -335,14 +351,16 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
         self_response=self_response,
         transparency=transparency,
         last_modified=last_modified,
-        etag=ev_json.get("etag"),
-        sequence=ev_json.get("sequence", 0),
+        etag=cast(str | None, ev_json.get("etag")),
+        sequence=cast(int, ev_json.get("sequence", 0)),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
 
 
 async def run_google_oauth_flow() -> str:
-    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
+        InstalledAppFlow,
+    )
 
     _validate_client_config()
     flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
@@ -353,7 +371,8 @@ async def run_google_oauth_flow() -> str:
 
 
 def _validate_client_config() -> None:
-    cid = CLIENT_CONFIG.get("installed", {}).get("client_id", "")
+    installed = cast(dict[str, object], CLIENT_CONFIG.get("installed", {}))
+    cid = str(installed.get("client_id", ""))
     if not cid or cid == "lilical-oauth":
         raise RuntimeError(
             "Google OAuth is not configured.\n\n"
@@ -381,7 +400,7 @@ class GoogleBackend:
         self._creds: Credentials | None = None
         self._service: Any = None
 
-    def _get_credentials(self) -> Credentials:
+    def _get_credentials(self) -> Credentials | None:
         if self._creds is not None:
             return self._creds
         if self._token_json:
@@ -418,7 +437,7 @@ class GoogleBackend:
         return self._token_json
 
     @_classify_errors
-    async def list_calendars(self) -> list:
+    async def list_calendars(self) -> list[dict[str, object]]:
         service = await self._ensure_service()
         resp = await self._execute(service.calendarList().list())
         out = []
@@ -495,6 +514,7 @@ class GoogleBackend:
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:
         import dataclasses as _dc
+
         from lilical.backends._google_serializer import event_to_google_body
 
         service = await self._ensure_service()
@@ -517,6 +537,7 @@ class GoogleBackend:
         self, calendar_id: str, event: Event, if_match: str | None
     ) -> Event:
         import dataclasses as _dc
+
         from lilical.backends._google_serializer import event_to_google_body
 
         service = await self._ensure_service()
@@ -560,6 +581,7 @@ class GoogleBackend:
         event: Event,
     ) -> None:
         from datetime import timedelta
+
         from lilical.backends._google_serializer import event_to_google_body
 
         service = await self._ensure_service()

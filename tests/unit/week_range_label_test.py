@@ -7,7 +7,7 @@ test it via the unbound method on a simple namespace without a full WeekView.
 from __future__ import annotations
 
 import os
-from datetime import date, timedelta
+from datetime import date
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -43,7 +43,7 @@ def test_cross_year() -> None:
 
 def test_five_day_work_week_same_month() -> None:
     label = _label(date(2026, 6, 1), 5)
-    assert "June 1–5, 2026" == label
+    assert label == "June 1–5, 2026"
 
 
 def test_cross_month_boundary_short_span() -> None:

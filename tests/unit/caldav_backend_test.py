@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 import httpx
@@ -21,9 +22,6 @@ async def _aresult(value):
 
 
 # -- list_calendars: PROPFIND-based discovery with inlined color ---------------
-
-
-from dataclasses import dataclass, field
 
 
 @dataclass
@@ -76,7 +74,9 @@ class _FakeClient:
                         if not isinstance(self._principal_result, Exception)
                         else "",
                         properties={
-                            "{urn:ietf:params:xml:ns:caldav}calendar-home-set": self._home_url
+                            "{urn:ietf:params:xml:ns:caldav}calendar-home-set": (
+                                self._home_url
+                            )
                         },
                     )
                 ]
@@ -141,7 +141,7 @@ async def test_list_calendars_falls_back_to_id_when_name_missing() -> None:
 
 @pytest.mark.asyncio
 async def test_list_calendars_extracts_color_without_extra_request() -> None:
-    """calendar-color is extracted from the same depth-1 PROPFIND, not a per-cal request."""
+    """calendar-color extracted from same depth-1 PROPFIND, not a per-cal request."""
     backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
     cal_item = _FakePropfindItem(
         href="https://example.com/calendars/work/",
@@ -766,14 +766,14 @@ def _wire_fake_client2(
     fake_cal = _FakeCal2(url="https://example.com/cal/1/")
 
     backend._get_client = lambda: _aresult(fake_client)  # type: ignore[method-assign]
-    original_caldav_Calendar = _caldav.Calendar
+    original_caldav_calendar = _caldav.Calendar
 
-    def _patched_Calendar(client, url):
+    def _patched_calendar(client, url):
         return fake_cal
 
-    _caldav.Calendar = _patched_Calendar  # type: ignore[attr-defined]
+    _caldav.Calendar = _patched_calendar  # type: ignore[attr-defined]
     backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
-    return _caldav, original_caldav_Calendar
+    return _caldav, original_caldav_calendar
 
 
 @pytest.mark.asyncio
@@ -948,7 +948,7 @@ async def test_initial_sync_returns_sync_token_in_cursor() -> None:
 
 @pytest.mark.asyncio
 async def test_create_event_builds_vevent_and_calls_save_event() -> None:
-    """create_event must call cal_obj.save_event with VEVENT data and return the event."""
+    """create_event calls cal_obj.save_event with VEVENT data, returns the event."""
     import caldav as _caldav
 
     from lilical.models.event import Event
@@ -1191,8 +1191,12 @@ def test_event_to_vcalendar_sequence_bump() -> None:
     ical_no_bump = event_to_vcalendar(event, sequence_bump=False).to_ical().decode()
     ical_bumped = event_to_vcalendar(event, sequence_bump=True).to_ical().decode()
 
-    seq_line_no = next(l for l in ical_no_bump.splitlines() if l.startswith("SEQUENCE"))
-    seq_line_bump = next(l for l in ical_bumped.splitlines() if l.startswith("SEQUENCE"))
+    seq_line_no = next(
+        line for line in ical_no_bump.splitlines() if line.startswith("SEQUENCE")
+    )
+    seq_line_bump = next(
+        line for line in ical_bumped.splitlines() if line.startswith("SEQUENCE")
+    )
     assert seq_line_no.split(":")[-1].strip() == "3"
     assert seq_line_bump.split(":")[-1].strip() == "4"
 
@@ -1236,6 +1240,7 @@ async def test_delete_event_uses_provider_event_id_as_url() -> None:
 async def test_update_event_saves_and_returns_etag() -> None:
     """update_event must call save() (not just set_data) and return the new etag."""
     import caldav as _caldav
+
     from lilical.models.event import Event
 
     fake_etag = '"new-etag-value"'
@@ -1270,4 +1275,3 @@ async def test_update_event_saves_and_returns_etag() -> None:
     assert result.etag == fake_etag
     # The uid, calendar_id, etc. are preserved from the input event
     assert result.uid == "test-upd"
-

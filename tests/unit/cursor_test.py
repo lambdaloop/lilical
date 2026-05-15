@@ -7,7 +7,6 @@ from lilical.backends.google import GoogleCursor
 from lilical.backends.graph import GraphCursor
 from lilical.sync.cursor import cursor_from_json, cursor_to_json
 
-
 # -- round-trips ---------------------------------------------------------------
 
 

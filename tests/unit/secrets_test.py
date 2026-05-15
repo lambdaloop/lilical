@@ -5,7 +5,6 @@ from unittest.mock import patch
 from lilical.config import Config
 from lilical.storage.secrets import SecretsStore
 
-
 # All tests patch keyring.* — otherwise the in-memory tests below would clobber
 # the developer's real system keyring (and have, historically: a stale `_index`
 # pointing at test fixtures orphaned real account secrets and caused a forced

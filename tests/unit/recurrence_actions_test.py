@@ -1,4 +1,5 @@
 """Tests for _recurrence_actions.py dispatch logic."""
+
 from __future__ import annotations
 
 import os
@@ -34,7 +35,9 @@ class _FakeStore:
         self.update_instance_calls.append((uid, calendar_id, recurrence_id_dt, edited))
 
     def queue_split_series(self, uid, calendar_id, split_at_dt, edited_event_for_tail):
-        self.split_series_calls.append((uid, calendar_id, split_at_dt, edited_event_for_tail))
+        self.split_series_calls.append(
+            (uid, calendar_id, split_at_dt, edited_event_for_tail)
+        )
         return "new-uid"
 
     def queue_truncate_series(self, uid, calendar_id, until_dt):
@@ -64,8 +67,9 @@ def _make_event(**kwargs):
 
 
 def test_dispatch_edit_occurrence(qapp):
-    from lilical.ui.views._recurrence_actions import _dispatch_edit
     from PySide6.QtWidgets import QWidget
+
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     store = _FakeStore()
     parent = QWidget()
@@ -84,8 +88,9 @@ def test_dispatch_edit_occurrence(qapp):
 
 
 def test_dispatch_edit_following_calls_split_series(qapp):
-    from lilical.ui.views._recurrence_actions import _dispatch_edit
     from PySide6.QtWidgets import QWidget
+
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     store = _FakeStore()
     parent = QWidget()
@@ -104,8 +109,9 @@ def test_dispatch_edit_following_calls_split_series(qapp):
 
 
 def test_dispatch_edit_series_calls_queue_update(qapp):
-    from lilical.ui.views._recurrence_actions import _dispatch_edit
     from PySide6.QtWidgets import QWidget
+
+    from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     store = _FakeStore()
     parent = QWidget()
@@ -120,8 +126,9 @@ def test_dispatch_edit_series_calls_queue_update(qapp):
 
 
 def test_dispatch_delete_occurrence_calls_delete_instance(qapp):
-    from lilical.ui.views._recurrence_actions import _dispatch_delete
     from PySide6.QtWidgets import QWidget
+
+    from lilical.ui.views._recurrence_actions import _dispatch_delete
 
     store = _FakeStore()
     parent = QWidget()
@@ -139,8 +146,9 @@ def test_dispatch_delete_occurrence_calls_delete_instance(qapp):
 
 
 def test_dispatch_delete_following_calls_truncate(qapp):
-    from lilical.ui.views._recurrence_actions import _dispatch_delete
     from PySide6.QtWidgets import QWidget
+
+    from lilical.ui.views._recurrence_actions import _dispatch_delete
 
     store = _FakeStore()
     parent = QWidget()

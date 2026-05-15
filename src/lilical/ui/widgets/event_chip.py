@@ -5,7 +5,15 @@ from enum import Enum
 from typing import TYPE_CHECKING, override
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QTextLayout, QTextOption
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QPainter,
+    QPen,
+    QTextLayout,
+    QTextOption,
+)
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsSceneContextMenuEvent, QMenu
 
 from lilical.ui import theme
@@ -156,8 +164,8 @@ class EventChip(QGraphicsObject):
     # Drag signals: see docstring for the chip-drag state machine.
     # Payload: (event, mode, scene_pos). mode ∈ {"move", "resize_top",
     # "resize_bottom"}.
-    drag_progress = Signal(object, str, "QPointF")
-    drag_committed = Signal(object, str, "QPointF")
+    drag_progress = Signal(object, str, "QPointF")  # type: ignore[reportArgumentType]
+    drag_committed = Signal(object, str, "QPointF")  # type: ignore[reportArgumentType]
     drag_cancelled = Signal(object)
 
     # Drag zone constants (pixels in local/scene coords — chips have an
@@ -364,7 +372,9 @@ class EventChip(QGraphicsObject):
                     loc_reserved = needed_loc
 
             title_rect = QRectF(
-                text_x, cursor_y, text_w,
+                text_x,
+                cursor_y,
+                text_w,
                 max(title_fm.height(), available - loc_reserved),
             )
             painter.setFont(title_font)
@@ -381,8 +391,11 @@ class EventChip(QGraphicsObject):
                 if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
                     painter.drawText(
                         QRectF(text_x, loc_y, text_w, loc_reserved),
-                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-                            | Qt.TextFlag.TextWordWrap),
+                        int(
+                            Qt.AlignmentFlag.AlignLeft
+                            | Qt.AlignmentFlag.AlignTop
+                            | Qt.TextFlag.TextWordWrap
+                        ),
                         location,
                     )
                 else:
@@ -431,8 +444,12 @@ class EventChip(QGraphicsObject):
             cursor_y = self._rect.y() + max(1.0, (h - title_fm.height()) / 2)
             painter.setFont(title_font)
             painter.drawText(
-                QRectF(text_x, cursor_y, text_w,
-                       max(title_fm.height(), self._rect.bottom() - cursor_y - 1)),
+                QRectF(
+                    text_x,
+                    cursor_y,
+                    text_w,
+                    max(title_fm.height(), self._rect.bottom() - cursor_y - 1),
+                ),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 _ellipsize(painter, title, text_w),
             )
@@ -444,14 +461,14 @@ class EventChip(QGraphicsObject):
 
     # ── Text mode ─────────────────────────────────────────────────────────
     def _paint_text_mode(self, painter: QPainter, base: QColor) -> None:
-        _BAR_W = 3
+        _bar_w = 3
         body = self._rect.adjusted(0, 0, -1, -1)
         painter.setBrush(QColor(theme.BG_SURFACE_ALT))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(body, 2, 2)
 
         bar_rect = QRectF(
-            self._rect.x() + 1, self._rect.y() + 1, _BAR_W, self._rect.height() - 3
+            self._rect.x() + 1, self._rect.y() + 1, _bar_w, self._rect.height() - 3
         )
         painter.setBrush(base)
         painter.drawRect(bar_rect)
@@ -465,7 +482,7 @@ class EventChip(QGraphicsObject):
         title_pt = theme.FONT_CHIP_TITLE
         prefix_pt = theme.FONT_CHIP_PREFIX
 
-        pad_l = _BAR_W + 5  # bar + 2 px gap + 3 px body pad
+        pad_l = _bar_w + 5  # bar + 2 px gap + 3 px body pad
         pad_r = 3
         text_x = self._rect.x() + pad_l
         text_w = max(8.0, self._rect.width() - pad_l - pad_r)
@@ -524,7 +541,9 @@ class EventChip(QGraphicsObject):
                     loc_reserved = needed_loc
 
             title_rect = QRectF(
-                text_x, cursor_y, text_w,
+                text_x,
+                cursor_y,
+                text_w,
                 max(title_fm.height(), available - loc_reserved),
             )
             painter.setFont(title_font)
@@ -542,8 +561,11 @@ class EventChip(QGraphicsObject):
                 if h >= theme.CHIP_MIN_LOCATION_MULTILINE_H:
                     painter.drawText(
                         QRectF(text_x, loc_y, text_w, loc_reserved),
-                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-                            | Qt.TextFlag.TextWordWrap),
+                        int(
+                            Qt.AlignmentFlag.AlignLeft
+                            | Qt.AlignmentFlag.AlignTop
+                            | Qt.TextFlag.TextWordWrap
+                        ),
                         location,
                     )
                 else:
@@ -593,8 +615,12 @@ class EventChip(QGraphicsObject):
             painter.setFont(title_font)
             painter.setPen(text_color)
             painter.drawText(
-                QRectF(text_x, cursor_y, text_w,
-                       max(title_fm.height(), self._rect.bottom() - cursor_y - 1)),
+                QRectF(
+                    text_x,
+                    cursor_y,
+                    text_w,
+                    max(title_fm.height(), self._rect.bottom() - cursor_y - 1),
+                ),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                 _ellipsize(painter, title, text_w),
             )
@@ -694,18 +720,18 @@ class EventChip(QGraphicsObject):
         )
 
     # ── Interactivity ────────────────────────────────────────────────────
-    def hoverEnterEvent(self, event) -> None:  # noqa: ANN001
+    def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hovered = True
         self.update()
         super().hoverEnterEvent(event)
 
-    def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001
+    def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hovered = False
         self.unsetCursor()
         self.update()
         super().hoverLeaveEvent(event)
 
-    def hoverMoveEvent(self, event) -> None:  # noqa: ANN001
+    def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
         # Show a vertical resize cursor near the top/bottom edge so users
         # discover the resize affordance. All-day chips and tiny timed chips
         # get the default cursor (body-drag-only).
@@ -733,7 +759,7 @@ class EventChip(QGraphicsObject):
             return False
         return self._rect.height() >= self.MIN_HEIGHT_FOR_EDGE_RESIZE
 
-    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
@@ -753,7 +779,7 @@ class EventChip(QGraphicsObject):
         self._press_scene_pos = QPointF(event.scenePos())
         event.accept()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
         if self._drag_mode is None or self._press_scene_pos is None:
             super().mouseMoveEvent(event)
             return
@@ -771,7 +797,7 @@ class EventChip(QGraphicsObject):
         self.drag_progress.emit(self._event, self._drag_mode, scene_pos)
         event.accept()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001
+    def mouseReleaseEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() != Qt.MouseButton.LeftButton or self._drag_mode is None:
             super().mouseReleaseEvent(event)
             return
@@ -795,7 +821,7 @@ class EventChip(QGraphicsObject):
         self._press_scene_pos = None
         self.drag_cancelled.emit(self._event)
 
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001, N802
         # Treat a double-click as another single-click — the dialog is modal,
         # so a second emit during the open dialog is harmless. This keeps the
         # behaviour predictable for users who still double-click out of habit.

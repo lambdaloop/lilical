@@ -1,10 +1,9 @@
 """Inline RRULE editor widget for EventDialog."""
+
 from __future__ import annotations
 
-import re
 from datetime import date
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,9 +16,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-
 _FREQ_LABELS = ["None", "Daily", "Weekly", "Monthly", "Yearly"]
-_FREQ_RRULE = {"Daily": "DAILY", "Weekly": "WEEKLY", "Monthly": "MONTHLY", "Yearly": "YEARLY"}
+_FREQ_RRULE = {
+    "Daily": "DAILY",
+    "Weekly": "WEEKLY",
+    "Monthly": "MONTHLY",
+    "Yearly": "YEARLY",
+}
 _RRULE_FREQ = {v: k for k, v in _FREQ_RRULE.items()}
 
 _BYDAY_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
@@ -83,10 +86,11 @@ class RecurrenceEditor(QWidget):
         self._until_edit = QDateEdit()
         self._until_edit.setDisplayFormat("yyyy-MM-dd")
         self._until_edit.setCalendarPopup(True)
-        from datetime import datetime, timezone
         one_year = date.today().replace(year=date.today().year + 1)
         self._until_edit.setDate(
-            self._until_edit.minimumDate().__class__(one_year.year, one_year.month, one_year.day)
+            self._until_edit.minimumDate().__class__(
+                one_year.year, one_year.month, one_year.day
+            )
         )
         self._until_edit.setEnabled(False)
 
@@ -118,7 +122,12 @@ class RecurrenceEditor(QWidget):
         self._interval_spin.setVisible(has_freq)
         self._interval_unit_label.setVisible(has_freq)
         self._byday_row.setVisible(has_freq and text == "Weekly")
-        unit_map = {"Daily": "day(s)", "Weekly": "week(s)", "Monthly": "month(s)", "Yearly": "year(s)"}
+        unit_map = {
+            "Daily": "day(s)",
+            "Weekly": "week(s)",
+            "Monthly": "month(s)",
+            "Yearly": "year(s)",
+        }
         self._interval_unit_label.setText(unit_map.get(text, ""))
 
     def _on_end_toggled(self, _: bool) -> None:
@@ -135,7 +144,11 @@ class RecurrenceEditor(QWidget):
         if interval > 1:
             parts.append(f"INTERVAL={interval}")
         if freq == "WEEKLY":
-            selected = [_BYDAY_CODES[i] for i, cb in enumerate(self._byday_checks) if cb.isChecked()]
+            selected = [
+                _BYDAY_CODES[i]
+                for i, cb in enumerate(self._byday_checks)
+                if cb.isChecked()
+            ]
             if selected:
                 parts.append(f"BYDAY={','.join(selected)}")
         if self._rb_until.isChecked():
@@ -167,6 +180,7 @@ class RecurrenceEditor(QWidget):
                     f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) == 8 else raw[:10]
                 )
                 from PySide6.QtCore import QDate
+
                 self._until_edit.setDate(QDate(d.year, d.month, d.day))
             except Exception:
                 pass

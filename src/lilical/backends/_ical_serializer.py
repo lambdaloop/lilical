@@ -1,7 +1,8 @@
 """iCalendar serialization helpers for the CalDAV backend."""
+
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import icalendar
@@ -10,7 +11,9 @@ if TYPE_CHECKING:
     from lilical.models.event import Event
 
 
-def event_to_vcalendar(event: "Event", *, sequence_bump: bool = False) -> icalendar.Calendar:
+def event_to_vcalendar(
+    event: "Event", *, sequence_bump: bool = False
+) -> icalendar.Calendar:
     """Serialize an Event to a VCALENDAR with a single VEVENT component."""
     cal = icalendar.Calendar()
     cal.add("prodid", "-//lilical//lilical//EN")

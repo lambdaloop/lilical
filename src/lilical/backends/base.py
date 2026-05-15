@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import AsyncIterator, Literal, Protocol
+from typing import Literal, Protocol
 
 from lilical.models.event import Event
 
 
 class SyncCursor(Protocol):
-    def to_json(self) -> dict: ...
+    def to_json(self) -> dict[str, object]: ...
     @classmethod
-    def from_json(cls, data: dict) -> SyncCursor: ...
+    def from_json(cls, data: dict[str, object]) -> SyncCursor: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ class PermanentError(Exception):
 class Backend(Protocol):
     account_id: str
 
-    async def list_calendars(self) -> list: ...
+    async def list_calendars(self) -> list[dict[str, object]]: ...
 
     def initial_sync(
         self, calendar_id: str

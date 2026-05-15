@@ -20,7 +20,7 @@ def open_engine(db_path: str) -> Engine:
     )
 
     @event.listens_for(engine, "connect")
-    def _pragmas(conn, _) -> None:
+    def _pragmas(conn, _) -> None:  # type: ignore[reportUnusedFunction]
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON")

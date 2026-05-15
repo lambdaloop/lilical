@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
 
 
 class RecurrenceActionDialog(QDialog):
-    """Ask whether an edit/delete should apply to one occurrence, following, or the whole series."""
+    """Ask whether an edit/delete should apply to one occurrence,
+    following, or the whole series."""
 
     def __init__(
         self,
