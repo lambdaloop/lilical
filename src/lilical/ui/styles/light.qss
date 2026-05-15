@@ -112,6 +112,18 @@ QCheckBox::indicator { border-radius: 2px; }
 QRadioButton::indicator { border-radius: 7px; }
 QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #000000; }
 QCheckBox::indicator:checked { background-color: #1d4ed8; border-color: #1e3a8a; }
+QCheckBox#cal-cb::indicator {
+    width: 12px; height: 12px;
+    border: 1px solid #808080;
+    background-color: transparent;
+    border-radius: 2px;
+}
+QCheckBox#cal-cb::indicator:hover { border-color: #303030; }
+QCheckBox#cal-cb::indicator:checked {
+    image: url(./check-light.svg);
+    background-color: transparent;
+    border-color: #404040;
+}
 QRadioButton::indicator:checked { background-color: #1d4ed8; border: 4px solid #1d4ed8; }
 
 QGroupBox {

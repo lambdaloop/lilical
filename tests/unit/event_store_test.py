@@ -1064,3 +1064,168 @@ def test_rebuild_instances_for_override_delegates_to_master(engine) -> None:
     assert len(override_insts) == 1
     modified_ts = int(datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc).timestamp())
     assert override_insts[0].dtstart_utc == modified_ts
+
+
+# ── mark_synced ───────────────────────────────────────────────────────────────
+
+
+def test_mark_synced_stores_provider_id_and_clears_dirty(engine) -> None:
+    """After mark_synced, provider_event_id and etag are updated; local_dirty=0."""
+    store = EventStore(engine)
+    store.queue_create(_event(uid="ev-ms", provider_event_id=None, etag=None))
+
+    store.mark_synced(
+        "ev-ms",
+        "cal-1",
+        provider_event_id="server-pid",
+        etag='"new-etag"',
+        sequence=1,
+    )
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="ev-ms").one()
+
+    assert row.provider_event_id == "server-pid"
+    assert row.etag == '"new-etag"'
+    assert row.sequence == 1
+    assert row.local_dirty == 0
+
+
+def test_mark_synced_does_not_clobber_dtstart(engine) -> None:
+    """mark_synced must not overwrite dtstart/dtend with nulls."""
+    store = EventStore(engine)
+    store.queue_create(
+        _event(
+            uid="ev-ms2",
+            provider_event_id=None,
+            dtstart=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 6, 1, 11, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    store.mark_synced("ev-ms2", "cal-1", provider_event_id="pid", etag='"e"', sequence=0)
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="ev-ms2").one()
+
+    assert "2026-06-01" in row.dtstart
+    assert "2026-06-01" in row.dtend
+
+
+def test_mark_synced_no_op_for_missing_event(engine) -> None:
+    """mark_synced on a nonexistent uid must not raise."""
+    EventStore(engine).mark_synced(
+        "no-such-uid", "cal-1", provider_event_id="pid", etag=None, sequence=0
+    )
+
+
+# ── queue_split_series ────────────────────────────────────────────────────────
+
+
+def _recurring_event(**overrides) -> Event:
+    base = {
+        "uid": "series-uid",
+        "calendar_id": "cal-1",
+        "provider_event_id": "pid-master",
+        "etag": '"master-etag"',
+        "sequence": 2,
+        "dtstart": datetime(2026, 6, 2, 9, 0, tzinfo=timezone.utc),
+        "dtend": datetime(2026, 6, 2, 10, 0, tzinfo=timezone.utc),
+        "tz": "UTC",
+        "summary": "Original title",
+        "rrule": "FREQ=WEEKLY;COUNT=8",
+    }
+    base.update(overrides)
+    return Event(**base)
+
+
+def test_queue_split_series_truncates_master_rrule(engine) -> None:
+    """Master RRULE gets UNTIL set; COUNT is stripped."""
+    store = EventStore(engine)
+    store.queue_create(_recurring_event())
+    # Clear create op so we can count cleanly
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    split_at = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
+    edited = _recurring_event(summary="New from here", rrule="FREQ=WEEKLY")
+    store.queue_split_series("series-uid", "cal-1", split_at, edited)
+
+    with Session(engine) as s:
+        master_row = (
+            s.query(EventRow)
+            .filter_by(uid="series-uid", recurrence_id="")
+            .one()
+        )
+        ops = s.query(PendingOpRow).order_by(PendingOpRow.created_at).all()
+
+    assert "UNTIL=" in master_row.rrule
+    assert "COUNT=" not in master_row.rrule
+    # Two pending ops: update for master, create for tail
+    op_types = {op.op for op in ops}
+    assert "update" in op_types
+    assert "create" in op_types
+
+
+def test_queue_split_series_creates_tail_event(engine) -> None:
+    """The new tail series has a fresh uid and starts at split_at."""
+    store = EventStore(engine)
+    store.queue_create(_recurring_event())
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    split_at = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
+    edited = _recurring_event(summary="Tail title", rrule="FREQ=WEEKLY")
+    new_uid = store.queue_split_series("series-uid", "cal-1", split_at, edited)
+
+    with Session(engine) as s:
+        tail_row = (
+            s.query(EventRow)
+            .filter_by(uid=new_uid, recurrence_id="")
+            .first()
+        )
+
+    assert tail_row is not None
+    assert tail_row.uid != "series-uid"
+    assert "2026-06-16" in tail_row.dtstart
+
+
+def test_queue_split_series_converts_count_to_until(engine) -> None:
+    """COUNT-based RRULE is converted to UNTIL on split."""
+    store = EventStore(engine)
+    store.queue_create(_recurring_event(rrule="FREQ=DAILY;COUNT=20"))
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    split_at = datetime(2026, 6, 10, 9, 0, tzinfo=timezone.utc)
+    store.queue_split_series("series-uid", "cal-1", split_at, _recurring_event())
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="series-uid", recurrence_id="").one()
+
+    assert "COUNT=" not in row.rrule
+    assert "UNTIL=" in row.rrule
+
+
+# ── queue_truncate_series ─────────────────────────────────────────────────────
+
+
+def test_queue_truncate_series_sets_until(engine) -> None:
+    """Truncation appends UNTIL; COUNT is stripped; no tail series is created."""
+    store = EventStore(engine)
+    store.queue_create(_recurring_event(rrule="FREQ=WEEKLY;COUNT=10"))
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    until_dt = datetime(2026, 6, 9, 9, 0, tzinfo=timezone.utc)
+    store.queue_truncate_series("series-uid", "cal-1", until_dt)
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="series-uid", recurrence_id="").one()
+        ops = s.query(PendingOpRow).all()
+
+    assert "UNTIL=" in row.rrule
+    assert "COUNT=" not in row.rrule
+    # Only one op (update master), no create for tail
+    assert len(ops) == 1
+    assert ops[0].op == "update"

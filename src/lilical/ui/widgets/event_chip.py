@@ -5,7 +5,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, override
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QTextLayout, QTextOption
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsSceneContextMenuEvent, QMenu
 
 from lilical.ui import theme
@@ -69,6 +69,46 @@ def _ellipsize(painter: QPainter, text: str, max_w: float) -> str:
     """Single-line ellipsize using the painter's current font."""
     fm = QFontMetricsF(painter.font())
     return fm.elidedText(text, Qt.TextElideMode.ElideRight, max_w)
+
+
+def _draw_tight_wrapped(
+    painter: QPainter, text: str, font: QFont, rect: QRectF
+) -> None:
+    """Word-wrap `text` into `rect` with no font leading between lines.
+
+    Uses ascent+descent as the line step instead of height() (which adds
+    leading, typically 1-2 px at 9 pt). Caller must set a clip rect; lines
+    that extend past rect.height() are silently discarded.
+    """
+    fm = QFontMetricsF(font)
+    line_step = fm.ascent() + fm.descent()
+    max_h = rect.height()
+
+    layout = QTextLayout(text, font)
+    opt = QTextOption()
+    opt.setWrapMode(QTextOption.WrapMode.WordWrap)
+    layout.setTextOption(opt)
+
+    layout.beginLayout()
+    y = 0.0
+    while True:
+        line = layout.createLine()
+        if not line.isValid():
+            break
+        line.setLineWidth(rect.width())
+        line.setPosition(QPointF(0, y))
+        y += line_step
+        if y >= max_h:
+            # Drain remaining text off-screen so endLayout() closes cleanly.
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(rect.width())
+                line.setPosition(QPointF(0, max_h + line_step))
+            break
+    layout.endLayout()
+    layout.draw(painter, rect.topLeft())
 
 
 def _coerce_dt(value: object) -> datetime | None:
@@ -278,7 +318,7 @@ class EventChip(QGraphicsObject):
 
         if h >= theme.CHIP_MIN_PREFIX_H:
             # ── Tier 2/3: time on its own row, then title ──────────────────
-            cursor_y = self._rect.y() + 2
+            cursor_y = self._rect.y() + 1
 
             prefix = self._prefix_text()
             if prefix:
@@ -293,7 +333,7 @@ class EventChip(QGraphicsObject):
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                     _ellipsize(painter, prefix, text_w),
                 )
-                cursor_y += pfm.height()
+                cursor_y += pfm.height() - 1
                 painter.setPen(text_color)
 
             # Location is only shown if the title fits completely alongside it.
@@ -311,9 +351,9 @@ class EventChip(QGraphicsObject):
                         int(Qt.TextFlag.TextWordWrap),
                         location,
                     )
-                    needed_loc = min(bound.height(), max_loc_h) + 1
+                    needed_loc = min(bound.height(), max_loc_h)
                 else:
-                    needed_loc = loc_fm.height() + 1
+                    needed_loc = loc_fm.height()
                 title_bound = title_fm.boundingRect(
                     QRectF(0, 0, text_w, available),
                     int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
@@ -328,12 +368,7 @@ class EventChip(QGraphicsObject):
                 max(title_fm.height(), available - loc_reserved),
             )
             painter.setFont(title_font)
-            painter.drawText(
-                title_rect,
-                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-                    | Qt.TextFlag.TextWordWrap),
-                title,
-            )
+            _draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
                 loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
@@ -443,7 +478,7 @@ class EventChip(QGraphicsObject):
 
         if h >= theme.CHIP_MIN_PREFIX_H:
             # ── Tier 2/3: time on its own row, then title ──────────────────
-            cursor_y = self._rect.y() + 2
+            cursor_y = self._rect.y() + 1
 
             prefix = self._prefix_text()
             if prefix:
@@ -458,7 +493,7 @@ class EventChip(QGraphicsObject):
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                     _ellipsize(painter, prefix, text_w),
                 )
-                cursor_y += pfm.height()
+                cursor_y += pfm.height() - 1
                 painter.setPen(text_color)
 
             # Location is only shown if the title fits completely alongside it.
@@ -476,9 +511,9 @@ class EventChip(QGraphicsObject):
                         int(Qt.TextFlag.TextWordWrap),
                         location,
                     )
-                    needed_loc = min(bound.height(), max_loc_h) + 1
+                    needed_loc = min(bound.height(), max_loc_h)
                 else:
-                    needed_loc = loc_fm.height() + 1
+                    needed_loc = loc_fm.height()
                 title_bound = title_fm.boundingRect(
                     QRectF(0, 0, text_w, available),
                     int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
@@ -494,12 +529,7 @@ class EventChip(QGraphicsObject):
             )
             painter.setFont(title_font)
             painter.setPen(text_color)
-            painter.drawText(
-                title_rect,
-                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-                    | Qt.TextFlag.TextWordWrap),
-                title,
-            )
+            _draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
                 loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)

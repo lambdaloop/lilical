@@ -91,12 +91,12 @@ FONT_CHIP_LOCATION = 8  # event chip location line
 FONT_MONTH_HEADER  = 10  # day-of-week strip above month grid
 
 # ── Chip layout thresholds (pixels) ──────────────────────────────────────
-# Calibrated for 8 pt prefix (~11 px) + 9 pt title (~13 px).
+# Calibrated for 8 pt prefix (~12 px) + 9 pt title (~14 px), tight inner padding.
 CHIP_MIN_TITLE_H              = 15  # below this, chip is solid color (tooltip only)
-CHIP_MIN_INLINE_TIME_H        = 20  # below this (≥15): title only; at/above: time+title inline
-CHIP_MIN_PREFIX_H             = 28  # at/above: time on its own row above title
-CHIP_MIN_LOCATION_H           = 44  # below this, location is suppressed
-CHIP_MIN_LOCATION_MULTILINE_H = 58  # at/above: location wraps to up to 2 lines
+CHIP_MIN_INLINE_TIME_H        = 18  # below this (≥15): title only; at/above: time+title inline
+CHIP_MIN_PREFIX_H             = 26  # at/above: time on its own row above title
+CHIP_MIN_LOCATION_H           = 38  # below this, location is suppressed
+CHIP_MIN_LOCATION_MULTILINE_H = 50  # at/above: location wraps to up to 2 lines
 
 # ── Multi-day continuation glyphs ────────────────────────────────────────
 GLYPH_CONTINUES_RIGHT = "→"

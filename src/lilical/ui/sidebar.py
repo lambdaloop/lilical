@@ -261,6 +261,7 @@ class Sidebar(QWidget):
             row_h.addWidget(swatch)
 
             cb = QCheckBox(cal.display_name)
+            cb.setObjectName("cal-cb")
             cb.setChecked(bool(cal.is_visible))
             cb.toggled.connect(
                 partial(
