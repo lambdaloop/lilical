@@ -91,6 +91,7 @@ class EventDetailsDialog(QDialog):
         fg_pal.setColor(QPalette.ColorRole.WindowText, fg)
         title_label.setPalette(fg_pal)
         title_label.setForegroundRole(QPalette.ColorRole.WindowText)
+        title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         header_layout.addWidget(title_label)
         outer.addWidget(header)
 
