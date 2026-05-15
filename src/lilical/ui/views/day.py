@@ -320,12 +320,12 @@ def _compute_day_placements(
     # Count band occupants: true all-day events and multi-day timed events covering this day.  # noqa: E501
     all_day_count = 0
     for inst in instances:
-        if inst.all_day and _is_on(inst, day):
-            all_day_count += 1
-        elif not inst.all_day:
-            span = multi_day_span(inst)
-            if span and span[0] <= day <= span[1]:
+        span = multi_day_span(inst)
+        if span is not None:
+            if span[0] <= day <= span[1]:
                 all_day_count += 1
+        elif inst.all_day and _is_on(inst, day):
+            all_day_count += 1
     rows_shown = min(all_day_count, ALL_DAY_MAX_ROWS)
     band_h = float(
         ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H)
@@ -346,7 +346,8 @@ def _compute_day_placements(
         except (ValueError, TypeError):
             continue
 
-        if inst.all_day:
+        span = multi_day_span(inst)
+        if span is None and inst.all_day:
             if t.date() != day:
                 continue
             key = (inst.calendar_id, inst.uid, inst.dtstart_local)
@@ -369,8 +370,6 @@ def _compute_day_placements(
                 "event": event,
             }
             continue
-
-        span = multi_day_span(inst)
         if span:
             start_day, end_day = span
             if not (start_day <= day <= end_day):

@@ -396,28 +396,27 @@ def _compute_week_placements(
             t = datetime.fromisoformat(inst.dtstart_local).astimezone()
         except (ValueError, TypeError):
             continue
-        if inst.all_day:
+        span = multi_day_span(inst)
+        if span is not None:
+            s_day, e_day = span
+            vis_start = max(s_day, start)
+            vis_end = min(e_day, week_end)
+            if vis_end < vis_start:
+                continue
+            start_col = (vis_start - start).days
+            end_col = (vis_end - start).days
+            band_items.append((start_col, end_col, inst, t, span))
+        elif inst.all_day:
             day_offset = (t.date() - start).days
             if 0 <= day_offset < day_count:
                 band_items.append((day_offset, day_offset, inst, t, None))
         else:
-            span = multi_day_span(inst)
-            if span:
-                s_day, e_day = span
-                vis_start = max(s_day, start)
-                vis_end = min(e_day, week_end)
-                if vis_end < vis_start:
-                    continue
-                start_col = (vis_start - start).days
-                end_col = (vis_end - start).days
-                band_items.append((start_col, end_col, inst, t, span))
-            else:
-                day_offset = (t.date() - start).days
-                if 0 <= day_offset < day_count:
-                    m = t.hour * 60 + t.minute
-                    if first_event_minutes is None or m < first_event_minutes:
-                        first_event_minutes = m
-                    timed_instances.append((inst, t))
+            day_offset = (t.date() - start).days
+            if 0 <= day_offset < day_count:
+                m = t.hour * 60 + t.minute
+                if first_event_minutes is None or m < first_event_minutes:
+                    first_event_minutes = m
+                timed_instances.append((inst, t))
 
     # Greedy track assignment — longer spans get lower tracks so they don't overlap.
     order = sorted(
