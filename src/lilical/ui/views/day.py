@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
@@ -277,7 +278,15 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
     cal_color = data["cal_color"]
     day = data["day"]
 
-    all_day_count = sum(1 for inst in instances if inst.all_day and _is_on(inst, day))
+    # Count band occupants: true all-day events and multi-day timed events covering this day.
+    all_day_count = 0
+    for inst in instances:
+        if inst.all_day and _is_on(inst, day):
+            all_day_count += 1
+        elif not inst.all_day:
+            span = multi_day_span(inst)
+            if span and span[0] <= day <= span[1]:
+                all_day_count += 1
     rows_shown = min(all_day_count, ALL_DAY_MAX_ROWS)
     band_h = float(ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H))
     body_top = DAY_HEADER_H + band_h
@@ -295,12 +304,11 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
             t = datetime.fromisoformat(inst.dtstart_local).astimezone()
         except (ValueError, TypeError):
             continue
-        if t.date() != day:
-            continue
-
-        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
 
         if inst.all_day:
+            if t.date() != day:
+                continue
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local)
             if all_day_idx >= ALL_DAY_MAX_ROWS:
                 all_day_idx += 1
                 continue
@@ -321,6 +329,34 @@ def _compute_day_placements(data: dict, col_w: float, px_per_hour: int, time_for
             }
             continue
 
+        span = multi_day_span(inst)
+        if span:
+            start_day, end_day = span
+            if not (start_day <= day <= end_day):
+                continue
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local, "band", day.isoformat())
+            if all_day_idx < ALL_DAY_MAX_ROWS:
+                y = DAY_HEADER_H + 2 + all_day_idx * ALL_DAY_ROW_H
+                h = ALL_DAY_ROW_H - 2
+                new_placements[key] = {
+                    "rect": QRectF(TIME_AXIS_WIDTH + 1, y, col_w - 2, h),
+                    "calendar_color": cal_color.get(inst.calendar_id),
+                    "show_time_prefix": False,
+                    "time_prefix": None,
+                    "continues_left": day > start_day,
+                    "continues_right": day < end_day,
+                    "overlap_cols": 1,
+                    "instance_dtstart": t,
+                    "is_sticky": True,
+                    "event": event,
+                }
+            all_day_idx += 1
+            continue
+
+        # Single-day timed event.
+        if t.date() != day:
+            continue
+        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
         try:
             end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
         except (ValueError, TypeError):

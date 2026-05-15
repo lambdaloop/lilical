@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSiz
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
@@ -340,27 +341,66 @@ def _compute_week_placements(
     start = data["start"]
     day_count = data["day_count"]
 
-    all_day_rows_per_col = [0] * day_count
+    week_end = start + timedelta(days=day_count - 1)
     first_event_minutes: int | None = None
+
+    # Collect band items (all-day + multi-day timed) and single-day timed instances.
+    # band_items: (start_col, end_col, inst, inst_t, span_or_None)
+    #   span_or_None is the (s_day, e_day) from multi_day_span for multi-day items, None for all-day.
+    band_items: list[tuple[int, int, object, datetime, tuple | None]] = []
+    timed_instances: list[tuple[object, datetime]] = []
+
     for inst in instances:
-        if not inst.all_day:
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+        try:
+            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
+        except (ValueError, TypeError):
+            continue
+        if inst.all_day:
+            day_offset = (t.date() - start).days
+            if 0 <= day_offset < day_count:
+                band_items.append((day_offset, day_offset, inst, t, None))
+        else:
+            span = multi_day_span(inst)
+            if span:
+                s_day, e_day = span
+                vis_start = max(s_day, start)
+                vis_end = min(e_day, week_end)
+                if vis_end < vis_start:
+                    continue
+                start_col = (vis_start - start).days
+                end_col = (vis_end - start).days
+                band_items.append((start_col, end_col, inst, t, span))
+            else:
                 day_offset = (t.date() - start).days
                 if 0 <= day_offset < day_count:
                     m = t.hour * 60 + t.minute
                     if first_event_minutes is None or m < first_event_minutes:
                         first_event_minutes = m
-            except (ValueError, TypeError):
-                pass
-            continue
-        try:
-            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        except (ValueError, TypeError):
-            continue
-        day_offset = (t.date() - start).days
-        if 0 <= day_offset < day_count:
-            all_day_rows_per_col[day_offset] += 1
+                    timed_instances.append((inst, t))
+
+    # Greedy track assignment — longer spans get lower tracks so they don't overlap.
+    order = sorted(range(len(band_items)), key=lambda i: -(band_items[i][1] - band_items[i][0]))
+    item_track = [0] * len(band_items)
+    track_spans: list[list[tuple[int, int]]] = []
+    for i in order:
+        sc, ec = band_items[i][0], band_items[i][1]
+        placed: int | None = None
+        for t_idx, spans in enumerate(track_spans):
+            if all(e < sc or s > ec for s, e in spans):
+                placed = t_idx
+                break
+        if placed is None:
+            placed = len(track_spans)
+            track_spans.append([])
+        track_spans[placed].append((sc, ec))
+        item_track[i] = placed
+
+    # Compute per-column row counts from track assignment.
+    all_day_rows_per_col = [0] * day_count
+    for i, (sc, ec, _inst, _t, _span) in enumerate(band_items):
+        track_idx = item_track[i]
+        for col in range(sc, ec + 1):
+            all_day_rows_per_col[col] = max(all_day_rows_per_col[col], track_idx + 1)
 
     max_rows = max(all_day_rows_per_col, default=0)
     if max_rows == 0:
@@ -370,43 +410,48 @@ def _compute_week_placements(
         band_h = 4 + rows_shown * ALL_DAY_ROW_H
     body_top = DAY_HEADER_H + band_h
 
-    per_col_all_day_idx = [0] * day_count
-    timed_by_day: list[list[tuple]] = [[] for _ in range(day_count)]
     new_placements: dict[tuple, dict] = {}
 
-    for inst in instances:
+    # Render band items.
+    for i, (start_col, end_col, inst, inst_t, span) in enumerate(band_items):
+        track_idx = item_track[i]
+        if track_idx >= ALL_DAY_MAX_ROWS:
+            continue
         event = events.get(id(inst))
         if event is None:
             continue
-        try:
-            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        except (ValueError, TypeError):
+        if span:
+            s_day, e_day = span
+            continues_left = s_day < start
+            continues_right = e_day > week_end
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local, "band", start.isoformat())
+        else:
+            continues_left = continues_right = False
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local)
+        x = TIME_AXIS_WIDTH + start_col * col_w
+        y = DAY_HEADER_H + 2 + track_idx * ALL_DAY_ROW_H
+        w = (end_col - start_col + 1) * col_w - 2
+        h = ALL_DAY_ROW_H - 2
+        new_placements[key] = {
+            "rect": QRectF(x + 1, y, w, h),
+            "calendar_color": cal_color.get(inst.calendar_id),
+            "show_time_prefix": False,
+            "time_prefix": None,
+            "continues_left": continues_left,
+            "continues_right": continues_right,
+            "overlap_cols": 1,
+            "instance_dtstart": inst_t,
+            "is_sticky": True,
+            "event": event,
+        }
+
+    # Render single-day timed events.
+    timed_by_day: list[list[tuple]] = [[] for _ in range(day_count)]
+    for inst, t in timed_instances:
+        event = events.get(id(inst))
+        if event is None:
             continue
         day_offset = (t.date() - start).days
-        if day_offset < 0 or day_offset >= day_count:
-            continue
-        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
-        if inst.all_day:
-            row = per_col_all_day_idx[day_offset]
-            per_col_all_day_idx[day_offset] += 1
-            if row >= ALL_DAY_MAX_ROWS:
-                continue
-            x = TIME_AXIS_WIDTH + day_offset * col_w
-            y = DAY_HEADER_H + 2 + row * ALL_DAY_ROW_H
-            h = ALL_DAY_ROW_H - 2
-            new_placements[key] = {
-                "rect": QRectF(x + 1, y, col_w - 2, h),
-                "calendar_color": cal_color.get(inst.calendar_id),
-                "show_time_prefix": False,
-                "time_prefix": None,
-                "continues_left": False,
-                "continues_right": False,
-                "overlap_cols": 1,
-                "instance_dtstart": t,
-                "is_sticky": True,
-                "event": event,
-            }
-            continue
         try:
             end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
         except (ValueError, TypeError):
@@ -415,6 +460,7 @@ def _compute_week_placements(
         end_min = end_t.hour * 60 + end_t.minute
         if end_min <= start_min:
             end_min = start_min + 15
+        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
         timed_by_day[day_offset].append((
             float(start_min), float(end_min),
             {"event": event, "start_dt": t, "cal_color": cal_color.get(inst.calendar_id),
