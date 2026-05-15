@@ -109,7 +109,7 @@ class Sidebar(QWidget):
         layout.addLayout(mini_header)
 
         self._mini_month = MiniMonthGrid()
-        layout.addWidget(self._mini_month, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self._mini_month)
         self._update_mini_label()
 
         self._mini_prev.clicked.connect(self._on_mini_prev)

@@ -19,6 +19,7 @@ from lilical.backends.base import (
     TransientError,
 )
 from lilical.models.event import Event
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
 
@@ -452,7 +453,15 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
 
     start_obj = ev_json.get("start") or {}
     end_obj = ev_json.get("end") or {}
-    tz = str(start_obj.get("timeZone") or "UTC")
+    raw_tz = str(start_obj.get("timeZone") or "UTC")
+    # When the Prefer header is honoured, Graph returns the user's zone and
+    # raw_tz won't be "UTC". If it still is (Prefer ignored or timed event with
+    # no tz), use originalStartTimeZone when the server supplies one.
+    if raw_tz == "UTC":
+        original = ev_json.get("originalStartTimeZone") or ""
+        if original and original != "tzone://Microsoft/Custom":
+            raw_tz = _WINDOWS_TZ_TO_IANA.get(original, original)
+    tz = raw_tz
     dtstart = _safe(
         lambda: _parse_graph_dt(start_obj.get("dateTime"), tz),
         field="start.dateTime",
@@ -463,9 +472,25 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
     )
 
     all_day = bool(ev_json.get("isAllDay"))
+    # Graph ignores Prefer: outlook.timezone for all-day events and always
+    # returns midnight UTC. Strip the tz and re-anchor in the local zone so
+    # that .date() in display code returns the right calendar day for users
+    # west of UTC.
+    if all_day and dtstart is not None:
+        local_zone = local_zoneinfo()
+        naive_start = (
+            dtstart if dtstart.tzinfo is None else dtstart.replace(tzinfo=None)
+        )
+        dtstart = naive_start.replace(tzinfo=local_zone)
+        if dtend is not None:
+            naive_end = dtend if dtend.tzinfo is None else dtend.replace(tzinfo=None)
+            dtend = naive_end.replace(tzinfo=local_zone)
+        tz = local_iana_tz()
     status = "CANCELLED" if ev_json.get("isCancelled") else "CONFIRMED"
     show_as = str(ev_json.get("showAs") or "").lower()
-    transparency = "TRANSPARENT" if show_as in {"free", "workingelsewhere"} else "OPAQUE"
+    transparency = (
+        "TRANSPARENT" if show_as in {"free", "workingelsewhere"} else "OPAQUE"
+    )
 
     categories_raw = ev_json.get("categories") or []
     categories = tuple(str(c) for c in categories_raw if c)
@@ -473,7 +498,11 @@ def _graph_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | Non
     attendees_raw = ev_json.get("attendees") or []
     attendees: list[str] = []
     for a in attendees_raw:
-        email = (a.get("emailAddress") or {}).get("address") if isinstance(a, dict) else None
+        email = (
+            (a.get("emailAddress") or {}).get("address")
+            if isinstance(a, dict)
+            else None
+        )
         if email:
             attendees.append(str(email))
 
@@ -643,6 +672,8 @@ class GraphBackend:
 
         token = await asyncio.to_thread(self._acquire_token)
         hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        if method.upper() == "GET":
+            hdrs["Prefer"] = f'outlook.timezone="{local_iana_tz()}"'
         if headers:
             hdrs.update(headers)
         full = url if url.startswith("http") else f"{GRAPH_BASE}{url}"
@@ -664,7 +695,9 @@ class GraphBackend:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 if body_snippet:
-                    exc.args = (f"{exc.args[0] if exc.args else ''} body={body_snippet}",)
+                    exc.args = (
+                        f"{exc.args[0] if exc.args else ''} body={body_snippet}",
+                    )
                 raise
         return resp
 
@@ -697,12 +730,14 @@ class GraphBackend:
             )
             if colour and not colour.startswith("#"):
                 colour = "#" + colour
-            out.append({
-                "id": cal.get("id", ""),
-                "display_name": cal.get("name") or cal.get("id") or "",
-                "provider_id": cal.get("id", ""),
-                "color": (colour or "").lower() or None,
-            })
+            out.append(
+                {
+                    "id": cal.get("id", ""),
+                    "display_name": cal.get("name") or cal.get("id") or "",
+                    "provider_id": cal.get("id", ""),
+                    "color": (colour or "").lower() or None,
+                }
+            )
         return out
 
     @_classify_errors
@@ -805,10 +840,14 @@ class GraphBackend:
             master = masters_cache[mid]
             for field in _MASTER_HYDRATED_FIELDS:
                 cur = ev.get(field)
-                if not cur or (
-                    isinstance(cur, dict)
-                    and not (cur.get("displayName") or cur.get("content"))
-                ) or (isinstance(cur, list) and not cur):
+                if (
+                    not cur
+                    or (
+                        isinstance(cur, dict)
+                        and not (cur.get("displayName") or cur.get("content"))
+                    )
+                    or (isinstance(cur, list) and not cur)
+                ):
                     if master.get(field) is not None:
                         ev[field] = master[field]
 

@@ -1,4 +1,5 @@
 """Tests for the pure _parse_natural NL-parsing function in QuickAddDialog."""
+
 from __future__ import annotations
 
 from datetime import timedelta

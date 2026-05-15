@@ -1,4 +1,5 @@
 """Tests for backends.factory.build_backend_factory kind dispatch."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

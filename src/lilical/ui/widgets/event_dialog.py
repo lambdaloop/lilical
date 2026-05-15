@@ -75,7 +75,9 @@ def _qdatetime_to_dt(qdt: QDateTime, tz_name: str) -> datetime:
 
 
 class _ColorButton(QToolButton):
-    def __init__(self, name: str, hex_color: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, name: str, hex_color: str, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._hex = hex_color
         self._selected = False
@@ -174,21 +176,28 @@ class EventDialog(QDialog):
             # show the inclusive last day to the user
             ed_local = end_default.astimezone() if end_default.tzinfo else end_default
             if ed_local.hour == 0 and ed_local.minute == 0:
-                self._end_edit.setDateTime(_dt_to_qdatetime(end_default - timedelta(days=1)))
+                self._end_edit.setDateTime(
+                    _dt_to_qdatetime(end_default - timedelta(days=1))
+                )
 
         self._all_day_cb.toggled.connect(self._on_all_day_toggled)
 
         # ── Timezone ───────────────────────────────────────────────────────────
         self._tz_combo = QComboBox()
         self._tz_combo.addItems(_IANA_ZONES)
-        local_tz = datetime.now().astimezone().tzinfo
-        local_iana = getattr(local_tz, "key", None) or "UTC"
+        from lilical.utils.timezone import local_iana_tz
+
+        local_iana = local_iana_tz()
         default_tz = (event.tz if event and event.tz else None) or local_iana
         if default_tz in _IANA_ZONES:
             self._tz_combo.setCurrentText(default_tz)
         else:
-            self._tz_combo.setCurrentText(local_iana if local_iana in _IANA_ZONES else "UTC")
-        self._tz_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._tz_combo.setCurrentText(
+                local_iana if local_iana in _IANA_ZONES else "UTC"
+            )
+        self._tz_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         form.addRow("Time zone:", self._tz_combo)
 
         # ── Calendar ───────────────────────────────────────────────────────────
@@ -198,7 +207,9 @@ class EventDialog(QDialog):
         for acc in accs:
             cals = store.list_calendars(acc.id, visible_only=False)
             for cal in cals:
-                self._cal_combo.addItem(f"{acc.display_name} / {cal.display_name}", cal.id)
+                self._cal_combo.addItem(
+                    f"{acc.display_name} / {cal.display_name}", cal.id
+                )
                 self._cal_ids.append(cal.id)
         if event:
             for i in range(self._cal_combo.count()):
@@ -213,7 +224,9 @@ class EventDialog(QDialog):
         current_color = (event.color if event else None) or ""
         for name, hex_val in _EVENT_COLORS:
             btn = _ColorButton(name, hex_val)
-            btn.setSelected(hex_val == current_color or (not hex_val and not current_color))
+            btn.setSelected(
+                hex_val == current_color or (not hex_val and not current_color)
+            )
             btn.clicked.connect(lambda _checked=False, b=btn: self._select_color(b))
             color_row.addWidget(btn)
             self._color_buttons.append(btn)
@@ -242,7 +255,11 @@ class EventDialog(QDialog):
         status_box = QGroupBox()
         status_layout = QHBoxLayout(status_box)
         self._status_group = QButtonGroup(self)
-        for label, val in [("Confirmed", "CONFIRMED"), ("Tentative", "TENTATIVE"), ("Cancelled", "CANCELLED")]:
+        for label, val in [
+            ("Confirmed", "CONFIRMED"),
+            ("Tentative", "TENTATIVE"),
+            ("Cancelled", "CANCELLED"),
+        ]:
             rb = QRadioButton(label)
             self._status_group.addButton(rb)
             rb.setProperty("status_val", val)
@@ -269,7 +286,8 @@ class EventDialog(QDialog):
 
         # ── Buttons ────────────────────────────────────────────────────────────
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Save
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
@@ -307,14 +325,18 @@ class EventDialog(QDialog):
 
     def _on_save(self) -> None:
         if not self._title_edit.text().strip():
-            QMessageBox.warning(self, "Missing title", "Please enter a title for the event.")
+            QMessageBox.warning(
+                self, "Missing title", "Please enter a title for the event."
+            )
             self._title_edit.setFocus()
             return
         tz_name = self._tz_combo.currentText()
         start_dt = _qdatetime_to_dt(self._start_edit.dateTime(), tz_name)
         end_dt = _qdatetime_to_dt(self._end_edit.dateTime(), tz_name)
         if end_dt < start_dt:
-            QMessageBox.warning(self, "Invalid time range", "End time must be on or after start time.")
+            QMessageBox.warning(
+                self, "Invalid time range", "End time must be on or after start time."
+            )
             self._end_edit.setFocus()
             return
         self.accept()
@@ -329,8 +351,9 @@ class EventDialog(QDialog):
         end_dt = _qdatetime_to_dt(self._end_edit.dateTime(), tz_name)
         if all_day:
             # Dialog shows the inclusive last day; convert to exclusive midnight of next day
-            end_dt = datetime(end_dt.year, end_dt.month, end_dt.day, 0, 0, 0,
-                              tzinfo=end_dt.tzinfo) + timedelta(days=1)
+            end_dt = datetime(
+                end_dt.year, end_dt.month, end_dt.day, 0, 0, 0, tzinfo=end_dt.tzinfo
+            ) + timedelta(days=1)
         cal_id = self.calendar_id or ""
         color = self._selected_color() or None
         url = self._url_edit.text().strip() or None

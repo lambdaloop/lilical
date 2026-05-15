@@ -579,7 +579,9 @@ def test_upsert_calendars_falls_back_to_palette_when_no_server_color(engine) -> 
     assert cal.color == EventStore._fallback_color("no-color-cal")
 
 
-def test_upsert_calendars_replaces_legacy_default_color_with_server_color(engine) -> None:
+def test_upsert_calendars_replaces_legacy_default_color_with_server_color(
+    engine,
+) -> None:
     """The legacy `#5e9fff` sentinel is treated as 'unset' — a server-provided
     colour replaces it on first sync."""
     store = EventStore(engine)

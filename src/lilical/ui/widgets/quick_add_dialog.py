@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.storage.event_store import EventStore
+from lilical.utils.timezone import local_iana_tz
 
 log = logging.getLogger(__name__)
 
@@ -77,11 +78,14 @@ class QuickAddDialog(QDialog):
         for acc in accs:
             cals = store.list_calendars(acc.id, visible_only=False)
             for cal in cals:
-                self._cal_combo.addItem(f"{acc.display_name} / {cal.display_name}", cal.id)
+                self._cal_combo.addItem(
+                    f"{acc.display_name} / {cal.display_name}", cal.id
+                )
         layout.addWidget(self._cal_combo)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Save
         )
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
@@ -107,7 +111,9 @@ class QuickAddDialog(QDialog):
                 f"{local_start.strftime('%a %b %-d, %H:%M')} – {local_end.strftime('%H:%M')}  ·  {title}"
             )
         else:
-            self._preview.setText("Could not parse a date/time — will save with current time.")
+            self._preview.setText(
+                "Could not parse a date/time — will save with current time."
+            )
 
     def _on_save(self) -> None:
         import uuid
@@ -134,7 +140,7 @@ class QuickAddDialog(QDialog):
             calendar_id=cal_id,
             dtstart=dtstart,
             dtend=dtend,
-            tz=str(datetime.now().astimezone().tzinfo or "UTC"),
+            tz=local_iana_tz(),
             summary=summary,
             local_dirty=True,
         )

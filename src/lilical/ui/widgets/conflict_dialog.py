@@ -48,7 +48,11 @@ class ConflictDialog(QDialog):
         self.setMinimumWidth(560)
 
         # Resolve display name from whichever side has data.
-        name = (local.summary if local else None) or (remote.summary if remote else None) or "(unnamed)"
+        name = (
+            (local.summary if local else None)
+            or (remote.summary if remote else None)
+            or "(unnamed)"
+        )
 
         layout = QVBoxLayout(self)
         layout.addWidget(
@@ -78,7 +82,9 @@ class ConflictDialog(QDialog):
             differs = lv != rv
 
             field_label = QLabel(f"{label}:")
-            field_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            field_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
             lv_label = QLabel(lv)
             rv_label = QLabel(rv)
             if differs:

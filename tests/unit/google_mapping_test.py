@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,8 +14,14 @@ def test_timed_event() -> None:
         "status": "confirmed",
         "etag": '"abc123"',
         "sequence": 1,
-        "start": {"dateTime": "2026-05-13T12:00:00-04:00", "timeZone": "America/New_York"},
-        "end": {"dateTime": "2026-05-13T13:00:00-04:00", "timeZone": "America/New_York"},
+        "start": {
+            "dateTime": "2026-05-13T12:00:00-04:00",
+            "timeZone": "America/New_York",
+        },
+        "end": {
+            "dateTime": "2026-05-13T13:00:00-04:00",
+            "timeZone": "America/New_York",
+        },
     }
     change = _google_event_to_change(data, "cal-1")
     assert change is not None
@@ -68,9 +74,13 @@ def test_all_day_event_uses_date_not_dateTime() -> None:
     e = change.event
     assert e is not None
     assert e.all_day is True
-    # naive datetime at midnight — _ensure_aware_dt treats as UTC midnight.
-    assert e.dtstart == datetime(2026, 7, 4, 0, 0)
-    assert e.dtend == datetime(2026, 7, 5, 0, 0)
+    # All-day events are stored as midnight in the local zone so .date() returns
+    # the right calendar day regardless of the runner's UTC offset.
+    assert e.dtstart is not None
+    assert e.dtstart.tzinfo is not None
+    assert e.dtstart.date() == date(2026, 7, 4)
+    assert e.dtend is not None
+    assert e.dtend.date() == date(2026, 7, 5)
 
 
 def test_recurring_master_extracts_rrule() -> None:
@@ -264,7 +274,9 @@ async def test_incremental_sync_reads_all_pages() -> None:
     execute_map = {req1: page1, req2: page2}
     backend._execute = AsyncMock(side_effect=lambda req: execute_map[req])
 
-    changes, cursor = await backend.incremental_sync("cal-1", GoogleCursor(sync_token="old"))
+    changes, cursor = await backend.incremental_sync(
+        "cal-1", GoogleCursor(sync_token="old")
+    )
 
     assert len(changes) == 2
     assert {c.uid for c in changes} == {"uid-1@g.com", "uid-2@g.com"}
@@ -288,7 +300,9 @@ async def test_incremental_sync_single_page_advances_token() -> None:
     backend._ensure_service = AsyncMock(return_value=service)
     backend._execute = AsyncMock(return_value=page1)
 
-    changes, cursor = await backend.incremental_sync("cal-1", GoogleCursor(sync_token="old"))
+    changes, cursor = await backend.incremental_sync(
+        "cal-1", GoogleCursor(sync_token="old")
+    )
 
     assert len(changes) == 1
     assert cursor.to_json()["sync_token"] == "tok-next"

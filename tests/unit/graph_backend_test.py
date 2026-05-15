@@ -248,8 +248,14 @@ def test_event_to_change_extracts_timed_event() -> None:
         "id": "AAMk-timed",
         "iCalUId": "uid-timed@outlook.com",
         "subject": "Review",
-        "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "America/New_York"},
-        "end": {"dateTime": "2026-05-13T10:00:00.0000000", "timeZone": "America/New_York"},
+        "start": {
+            "dateTime": "2026-05-13T09:00:00.0000000",
+            "timeZone": "America/New_York",
+        },
+        "end": {
+            "dateTime": "2026-05-13T10:00:00.0000000",
+            "timeZone": "America/New_York",
+        },
         "isAllDay": False,
         "showAs": "busy",
         "isCancelled": False,
@@ -290,8 +296,15 @@ def test_event_to_change_handles_all_day_event() -> None:
     e = change.event
     assert e is not None
     assert e.all_day is True
-    assert e.dtstart == datetime(2026, 7, 4, tzinfo=timezone.utc)
-    assert e.dtend == datetime(2026, 7, 5, tzinfo=timezone.utc)
+    # All-day events are re-anchored to local zone midnight so .date() returns
+    # the right calendar day for users west of UTC.
+    from datetime import date
+
+    assert e.dtstart is not None
+    assert e.dtstart.tzinfo is not None
+    assert e.dtstart.date() == date(2026, 7, 4)
+    assert e.dtend is not None
+    assert e.dtend.date() == date(2026, 7, 5)
 
 
 def test_event_to_change_marks_cancelled() -> None:
@@ -585,7 +598,9 @@ def test_series_master_plus_occurrences_no_duplicate_instances(tmp_path) -> None
     assert len(changes) == 3  # master filtered out
 
     store = EventStore(engine)
-    store.apply_remote_changes("cal-1", changes, '{"_type": "graph", "delta_link": null}')
+    store.apply_remote_changes(
+        "cal-1", changes, '{"_type": "graph", "delta_link": null}'
+    )
 
     with Session(engine) as session:
         instances = session.query(EventInstanceRow).all()
@@ -685,9 +700,7 @@ def test_recurrence_to_rrule_relative_yearly() -> None:
         },
         "range": {"type": "noEnd", "startDate": "2026-11-26"},
     }
-    assert (
-        _graph_recurrence_to_rrule(rec) == "FREQ=YEARLY;BYMONTH=11;BYDAY=4TH"
-    )
+    assert _graph_recurrence_to_rrule(rec) == "FREQ=YEARLY;BYMONTH=11;BYDAY=4TH"
 
 
 # -- _graph_recurrence_to_rrule: range.type axis -----------------------------
@@ -899,7 +912,12 @@ async def test_drain_delta_cross_page_master_cache() -> None:
         "value": [{**occ, "id": "AAMk-occ-p2"}],
         "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=END",
     }
-    master = {"id": "AAMk-master-X", "subject": "Weekly", "body": {"contentType": "text", "content": ""}, "location": {"displayName": ""}}
+    master = {
+        "id": "AAMk-master-X",
+        "subject": "Weekly",
+        "body": {"contentType": "text", "content": ""},
+        "location": {"displayName": ""},
+    }
 
     batch_calls: list[dict] = []
     urls_seen: list[str] = []
@@ -910,10 +928,15 @@ async def test_drain_delta_cross_page_master_cache() -> None:
         if "/$batch" in url:
             body = _json.loads(req.content)
             batch_calls.append(body)
-            return httpx.Response(200, json={"responses": [
-                {"id": r["id"], "status": 200, "body": master}
-                for r in body["requests"]
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "responses": [
+                        {"id": r["id"], "status": 200, "body": master}
+                        for r in body["requests"]
+                    ]
+                },
+            )
         if "page2" in url:
             return httpx.Response(200, json=page2)
         return httpx.Response(200, json=page1)
@@ -940,7 +963,13 @@ async def test_graph_batch_get_chunks_into_groups_of_20() -> None:
             body = _json.loads(req.content)
             batch_request_sizes.append(len(body["requests"]))
             return httpx.Response(200, json={"responses": []})
-        return httpx.Response(200, json={"value": [], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl"})
+        return httpx.Response(
+            200,
+            json={
+                "value": [],
+                "@odata.deltaLink": "https://graph.microsoft.com/v1.0/dl",
+            },
+        )
 
     backend = GraphBackend(account_id="acc-1", token_cache_json=None)
     _attach_mock(backend, handler)
@@ -990,7 +1019,11 @@ def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
         "end": {"dateTime": "2026-05-13T09:30:00.0000000", "timeZone": "UTC"},
         "recurrence": {
             "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["wednesday"]},
-            "range": {"type": "numbered", "startDate": "2026-05-13", "numberOfOccurrences": 4},
+            "range": {
+                "type": "numbered",
+                "startDate": "2026-05-13",
+                "numberOfOccurrences": 4,
+            },
         },
     }
     assert _graph_event_to_change(data, "cal-1") is None

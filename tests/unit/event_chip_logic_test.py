@@ -2,6 +2,7 @@
 
 Functions under test require PySide6.QColor but NOT a QApplication instance.
 """
+
 from __future__ import annotations
 
 import os

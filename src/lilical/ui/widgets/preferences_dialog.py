@@ -20,6 +20,11 @@ _SNAP_OPTIONS: list[tuple[str, int]] = [
     ("60 min", 60),
 ]
 
+_CHIP_MODE_OPTIONS: list[tuple[str, str]] = [
+    ("Bars", "bars"),
+    ("Text", "text"),
+]
+
 
 class PreferencesDialog(QDialog):
     def __init__(
@@ -30,6 +35,7 @@ class PreferencesDialog(QDialog):
         current_week_start: str = "monday",
         current_default_view: str = "Month",
         current_snap_minutes: int = 15,
+        current_chip_mode: str = "bars",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -57,10 +63,25 @@ class PreferencesDialog(QDialog):
         for label, _ in _SNAP_OPTIONS:
             self._snap_combo.addItem(label)
         snap_idx = next(
-            (i for i, (_, v) in enumerate(_SNAP_OPTIONS) if v == current_snap_minutes), 2
+            (i for i, (_, v) in enumerate(_SNAP_OPTIONS) if v == current_snap_minutes),
+            2,
         )
         self._snap_combo.setCurrentIndex(snap_idx)
         form.addRow("Drag snap interval:", self._snap_combo)
+
+        self._chip_mode_combo = QComboBox()
+        for label, _ in _CHIP_MODE_OPTIONS:
+            self._chip_mode_combo.addItem(label)
+        chip_idx = next(
+            (
+                i
+                for i, (_, v) in enumerate(_CHIP_MODE_OPTIONS)
+                if v == current_chip_mode
+            ),
+            0,
+        )
+        self._chip_mode_combo.setCurrentIndex(chip_idx)
+        form.addRow("Chip style:", self._chip_mode_combo)
 
         layout.addLayout(form)
 
@@ -89,3 +110,10 @@ class PreferencesDialog(QDialog):
         if 0 <= idx < len(_SNAP_OPTIONS):
             return _SNAP_OPTIONS[idx][1]
         return 15
+
+    @property
+    def chip_mode(self) -> str:
+        idx = self._chip_mode_combo.currentIndex()
+        if 0 <= idx < len(_CHIP_MODE_OPTIONS):
+            return _CHIP_MODE_OPTIONS[idx][1]
+        return "bars"

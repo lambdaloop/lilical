@@ -16,6 +16,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 from lilical.backends.base import (
     AuthExpired,
     ConflictError,
@@ -147,11 +148,12 @@ def _parse_google_dt(part: dict | None) -> tuple[datetime | None, str, bool]:
     if "date" in part:
         try:
             d = _date_cls.fromisoformat(part["date"])
-            return datetime.combine(d, time.min), "UTC", True
+            local = local_zoneinfo()
+            return datetime.combine(d, time.min, tzinfo=local), local_iana_tz(), True
         except ValueError:
-            return None, "UTC", True
+            return None, local_iana_tz(), True
     raw = part.get("dateTime")
-    tz = str(part.get("timeZone") or "UTC")
+    tz = str(part.get("timeZone") or local_iana_tz())
     if not raw:
         return None, tz, False
     try:
@@ -213,7 +215,9 @@ def _parse_recurrence_lines(lines: list[str]) -> tuple[str | None, tuple, tuple]
                     for entry in dts:
                         val = getattr(entry, "dt", None)
                         if isinstance(val, datetime):
-                            bucket.append(val if val.tzinfo else val.replace(tzinfo=timezone.utc))
+                            bucket.append(
+                                val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+                            )
                         elif isinstance(val, _date_cls):
                             bucket.append(datetime.combine(val, time.min))
             except Exception:
@@ -243,8 +247,14 @@ def _google_event_to_change(ev_json: dict, calendar_id: str) -> EventChange | No
 
     rrule, exdates, rdates = _parse_recurrence_lines(ev_json.get("recurrence") or [])
 
-    g_status = "CONFIRMED" if status == "confirmed" else (status.upper() if status else "CONFIRMED")
-    transparency = "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
+    g_status = (
+        "CONFIRMED"
+        if status == "confirmed"
+        else (status.upper() if status else "CONFIRMED")
+    )
+    transparency = (
+        "TRANSPARENT" if ev_json.get("transparency") == "transparent" else "OPAQUE"
+    )
 
     attendees_raw = ev_json.get("attendees") or []
     attendees: list[str] = []
@@ -379,12 +389,14 @@ class GoogleBackend:
             colour = cal.get("backgroundColor")
             if colour and not colour.startswith("#"):
                 colour = "#" + colour
-            out.append({
-                "id": cal["id"],
-                "display_name": cal.get("summary", cal["id"]),
-                "provider_id": cal["id"],
-                "color": (colour or "").lower() or None,
-            })
+            out.append(
+                {
+                    "id": cal["id"],
+                    "display_name": cal.get("summary", cal["id"]),
+                    "provider_id": cal["id"],
+                    "color": (colour or "").lower() or None,
+                }
+            )
         return out
 
     @_classify_errors

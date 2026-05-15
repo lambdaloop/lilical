@@ -1,4 +1,5 @@
 """Tests for pure helpers and UI wiring in ConflictDialog."""
+
 from __future__ import annotations
 
 import os

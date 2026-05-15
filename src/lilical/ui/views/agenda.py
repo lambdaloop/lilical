@@ -32,6 +32,7 @@ def _color_swatch_icon(color_hex: str | None, size: int = 12) -> QIcon:
     p.end()
     return QIcon(pm)
 
+
 log = logging.getLogger(__name__)
 
 _DAYS_AHEAD = 30
@@ -56,7 +57,9 @@ class AgendaView(QWidget):
         self._tree.header().setStretchLastSection(True)
         self._tree.setUniformRowHeights(False)
         self._tree.setAlternatingRowColors(True)
-        self._tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._tree.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self._tree)
 
@@ -68,6 +71,10 @@ class AgendaView(QWidget):
 
     def go_today(self) -> None:
         self._start = date.today()
+        self.refresh()
+
+    def go_to_date(self, d: date) -> None:
+        self._start = d
         self.refresh()
 
     def range_label(self) -> str:
@@ -164,6 +171,7 @@ class AgendaView(QWidget):
         dlg = EventDialog(self, store=self._store, event=event)
         if dlg.exec():
             import dataclasses
+
             updated = dataclasses.replace(
                 dlg.build_event(event.uid),
                 calendar_id=dlg.calendar_id or event.calendar_id,

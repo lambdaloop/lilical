@@ -5,6 +5,7 @@ QGraphicsSceneMouseEvent objects, and asserts the drag_progress /
 drag_committed / drag_cancelled / edit_requested signals fire with the
 correct payloads.
 """
+
 from __future__ import annotations
 
 import os
@@ -82,6 +83,7 @@ def _release(chip, pos, scene_pos=None):
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
 
 def test_body_drag_emits_progress_and_committed(qapp):
     """Press in body, move > MOVE_THRESHOLD_PX → drag_progress + drag_committed."""
@@ -216,8 +218,9 @@ def test_small_chip_no_edge_resize(qapp):
     small_chip.drag_progress.connect(lambda e, m, p: progress_calls.append((e, m, p)))
 
     # Press near the very top — should still be "pending" not "resize_top"
-    top_pos = QPointF(small_chip.boundingRect().center().x(),
-                      small_chip.boundingRect().top() + 2)
+    top_pos = QPointF(
+        small_chip.boundingRect().center().x(), small_chip.boundingRect().top() + 2
+    )
     _press(small_chip, top_pos)
     assert small_chip._drag_mode == "pending"
 

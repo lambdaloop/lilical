@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import override
 
 from PySide6.QtCore import QSettings, QSize, Qt
-from PySide6.QtGui import QAction, QFontMetrics, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QAction, QFont, QFontMetrics, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -51,8 +51,9 @@ class _ElidingLabel(QLabel):
     preserved in the tooltip.
     """
 
-    def __init__(self, text: str = "", *, width: int = 260,
-                 parent: QWidget | None = None) -> None:
+    def __init__(
+        self, text: str = "", *, width: int = 260, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._full_text = text
         self.setFixedWidth(width)
@@ -73,8 +74,9 @@ class _ElidingLabel(QLabel):
         fm = QFontMetrics(self.font())
         # Reserve a few pixels of padding either side so the text doesn't
         # touch the bordering widgets.
-        elided = fm.elidedText(self._full_text, Qt.TextElideMode.ElideRight,
-                               self.width() - 4)
+        elided = fm.elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, self.width() - 4
+        )
         painter.drawText(
             self.rect().adjusted(2, 0, -2, 0),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
@@ -236,7 +238,10 @@ class MainWindow(QMainWindow):
 
         # ── System tray ────────────────────────────────────────────────────
         self._tray = SystemTray(self)
-        if QApplication.instance() and QApplication.instance().property("__tray_available") is not False:
+        if (
+            QApplication.instance()
+            and QApplication.instance().property("__tray_available") is not False
+        ):
             self._tray.show()
 
         # ── Theme ──────────────────────────────────────────────────────────
@@ -338,21 +343,6 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        # ── Month view: Text vs Bars toggle ─────────────────────────────
-        self._mode_toggle = QToolButton()
-        self._mode_toggle.setText("Bars")
-        self._mode_toggle.setCheckable(True)
-        self._mode_toggle.setToolTip("Toggle Bars/Text rendering")
-        # Fixed width so "Bars" / "Text" can't shift sibling widgets around.
-        self._mode_toggle.setFixedWidth(46)
-        saved_mode = str(self._settings.value("chip_mode", "bars") or "bars")
-        self._mode_toggle.setChecked(saved_mode == "text")
-        self._mode_toggle.setText("Text" if saved_mode == "text" else "Bars")
-        self._mode_toggle.toggled.connect(self._on_mode_toggled)
-        tb.addWidget(self._mode_toggle)
-
-        tb.addSeparator()
-
         # Current range label (pushed to right by spacer)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -363,7 +353,11 @@ class MainWindow(QMainWindow):
         # (and push the window wider) when the range string lengthens —
         # e.g. switching day-count from 1 → 14 turns "May 11, 2026" into
         # "May 11 – May 24, 2026".
-        self._range_label.setFixedWidth(210)
+        _range_font = QFont(self._range_label.font())
+        _range_font.setPointSize(16)
+        _range_font.setBold(True)
+        self._range_label.setFont(_range_font)
+        self._range_label.setFixedWidth(310)
         self._range_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tb.addWidget(self._range_label)
 
@@ -518,12 +512,15 @@ class MainWindow(QMainWindow):
             view.go_today()
             self._update_range_label()
 
-    def _on_sidebar_date_selected(self, d) -> None:
-        """Jump to the clicked date in mini-month: show Day view for that date."""
-        day_view = self._views.get("Day")
-        if isinstance(day_view, DayView):
-            day_view.set_day(d)
-        self._switch_view("Day")
+    def _on_sidebar_date_selected(self, d: date) -> None:
+        """Navigate the current view to the selected date without switching views."""
+        view = self._current_view
+        if isinstance(view, DayView):
+            view.set_day(d)
+        elif isinstance(view, (WeekView, MonthView, AgendaView)):
+            view.go_to_date(d)
+        self._update_range_label()
+        self._sync_mini_month()
 
     def _on_month_day_activated(self, d) -> None:
         """User clicked '+N more' in Month view: switch to Day view of that date."""
@@ -551,12 +548,9 @@ class MainWindow(QMainWindow):
         self._day_count_label.setVisible(is_week)
         self._day_count_slider.setVisible(is_week)
         self._day_count_value_label.setVisible(is_week)
-        # Bars/Text toggle applies wherever chips render — Month, Week, Day.
-        # Agenda is a text list; toggle is hidden there.
-        self._mode_toggle.setVisible(name in {"Month", "Week", "Day"})
         self._update_range_label()
 
-    # ── Toolbar handlers (slider + mode toggle) ───────────────────────────
+    # ── Toolbar handlers ──────────────────────────────────────────────────
 
     def _on_day_count_changed(self, slider_value: int) -> None:
         if slider_value < 0 or slider_value >= len(VALID_DAY_COUNTS):
@@ -568,15 +562,6 @@ class MainWindow(QMainWindow):
         if isinstance(week_view, WeekView):
             week_view.set_day_count(n)
             self._update_range_label()
-
-    def _on_mode_toggled(self, checked: bool) -> None:
-        mode = ChipMode.TEXT if checked else ChipMode.BARS
-        self._mode_toggle.setText("Text" if checked else "Bars")
-        self._settings.setValue("chip_mode", "text" if checked else "bars")
-        # Apply to every view that supports the toggle (Month/Week/Day).
-        for view in self._views.values():
-            if hasattr(view, "set_chip_mode"):
-                view.set_chip_mode(mode)
 
     # ── Events ─────────────────────────────────────────────────────────────
 
@@ -614,18 +599,23 @@ class MainWindow(QMainWindow):
     def _open_preferences(self) -> None:
         from lilical.ui.widgets.preferences_dialog import PreferencesDialog
 
+        current_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
         dlg = PreferencesDialog(
             self,
             current_theme=self._theme,
             current_default_view=self._default_view_name,
             current_snap_minutes=self._snap_minutes,
+            current_chip_mode=current_chip_mode,
         )
         if dlg.exec() == QDialog.Accepted:
             if dlg.theme != self._theme:
                 self._theme = dlg.theme
                 self._apply_theme(self._theme)
                 self._settings.setValue("theme", self._theme)
-            if dlg.default_view != self._default_view_name and dlg.default_view in _VIEW_NAMES:
+            if (
+                dlg.default_view != self._default_view_name
+                and dlg.default_view in _VIEW_NAMES
+            ):
                 self._default_view_name = dlg.default_view
                 self._settings.setValue("default_view", self._default_view_name)
             if dlg.snap_minutes != self._snap_minutes:
@@ -634,6 +624,14 @@ class MainWindow(QMainWindow):
                 for v in self._views.values():
                     if hasattr(v, "set_snap_minutes"):
                         v.set_snap_minutes(self._snap_minutes)
+            if dlg.chip_mode != current_chip_mode:
+                self._settings.setValue("chip_mode", dlg.chip_mode)
+                chip_mode_enum = (
+                    ChipMode.TEXT if dlg.chip_mode == "text" else ChipMode.BARS
+                )
+                for v in self._views.values():
+                    if hasattr(v, "set_chip_mode"):
+                        v.set_chip_mode(chip_mode_enum)
 
     def _apply_theme(self, name: str) -> None:
         try:
@@ -733,7 +731,9 @@ class MainWindow(QMainWindow):
         self._syncing_accounts.add(account_id)
         self._sync_status.set_syncing(self._account_label(account_id))
 
-    def _on_sync_progress(self, account_id: str, calendar_label: str, count: int) -> None:
+    def _on_sync_progress(
+        self, account_id: str, calendar_label: str, count: int
+    ) -> None:
         label = f"{self._account_label(account_id)} / {calendar_label}"
         self._sync_status.set_syncing(f"{label} ({count} events)")
 
@@ -787,7 +787,9 @@ class MainWindow(QMainWindow):
             calendar_display_name=display_name or identity or "Calendar",
         )
         self._sidebar.refresh()
-        self._fire_async(self._sync.start_account(account_id), f"start_account/{account_id}")
+        self._fire_async(
+            self._sync.start_account(account_id), f"start_account/{account_id}"
+        )
 
     def _on_rename_account(self, account_id: str) -> None:
         acc = self._store.get_account(account_id)
@@ -831,7 +833,9 @@ class MainWindow(QMainWindow):
             server_url=server_url,
         )
         self._sidebar.refresh()
-        self._fire_async(self._restart_account_sync(account_id), f"restart_sync/{account_id}")
+        self._fire_async(
+            self._restart_account_sync(account_id), f"restart_sync/{account_id}"
+        )
         # Clear any auth-expired warning
         self._sync_status.set_ready()
 
@@ -874,7 +878,9 @@ class MainWindow(QMainWindow):
         await self._sync.stop_account(account_id)
         await self._sync.start_account(account_id)
 
-    def _on_calendar_visibility_changed(self, calendar_id: str, is_visible: bool) -> None:
+    def _on_calendar_visibility_changed(
+        self, calendar_id: str, is_visible: bool
+    ) -> None:
         try:
             self._store.set_calendar_visibility(calendar_id, is_visible)
         except Exception:

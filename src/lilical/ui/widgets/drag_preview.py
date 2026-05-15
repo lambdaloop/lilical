@@ -4,6 +4,7 @@ The same item is used for drag-to-create, drag-to-move, and drag-to-resize on
 both Week and Day views. The owning view manages the rect + label and removes
 the item from the scene when the drag commits or cancels.
 """
+
 from __future__ import annotations
 
 from typing import override
@@ -58,7 +59,9 @@ class DragPreview(QGraphicsItem):
         if not self._label:
             return
         painter.setPen(QColor(theme.TEXT_PRIMARY))
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold)
+        )
         painter.drawText(
             self._rect.adjusted(4, 2, -4, -2),
             int(Qt.AlignmentFlag.AlignCenter),

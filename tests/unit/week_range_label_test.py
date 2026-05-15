@@ -3,6 +3,7 @@
 range_label uses only self._start (date) and self._day_count (int), so we can
 test it via the unbound method on a simple namespace without a full WeekView.
 """
+
 from __future__ import annotations
 
 import os

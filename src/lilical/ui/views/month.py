@@ -84,7 +84,9 @@ class MonthGrid(QGraphicsItem):
 
         # Day-of-week strip.
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_MONTH_HEADER, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_MONTH_HEADER, QFont.Weight.Bold)
+        )
         painter.setPen(QColor(theme.TEXT_SECONDARY))
         for i, d in enumerate(days):
             painter.drawText(
@@ -107,7 +109,9 @@ class MonthGrid(QGraphicsItem):
         painter.drawLine(0, HEADER_H, COLS * CELL_W, HEADER_H)
 
         # Day numbers.
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_DAY_NUMBER, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_DAY_NUMBER, QFont.Weight.Bold)
+        )
         cur = self._start
         for r in range(ROWS):
             for c in range(COLS):
@@ -132,7 +136,9 @@ class MonthGrid(QGraphicsItem):
                     )
 
                 painter.setPen(
-                    QColor(theme.TEXT_PRIMARY) if in_month else QColor(theme.TEXT_DISABLED)
+                    QColor(theme.TEXT_PRIMARY)
+                    if in_month
+                    else QColor(theme.TEXT_DISABLED)
                 )
                 painter.drawText(x + 2, y + 14, str(cur.day))
                 cur += timedelta(days=1)
@@ -163,7 +169,9 @@ class _OverflowChip(QGraphicsItem):
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QColor(theme.TEXT_SECONDARY))
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION, QFont.Weight.Medium))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION, QFont.Weight.Medium)
+        )
         painter.drawText(
             self._rect.adjusted(4, 0, -4, 0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -179,7 +187,7 @@ class _OverflowChip(QGraphicsItem):
 
 
 class MonthView(QGraphicsView):
-    day_activated = Signal(object)   # emits date — for switching to Day view
+    day_activated = Signal(object)  # emits date — for switching to Day view
 
     def __init__(self, store: EventStore) -> None:
         super().__init__()
@@ -230,6 +238,11 @@ class MonthView(QGraphicsView):
         self._rebuild_grid()
         self.refresh()
 
+    def go_to_date(self, d: date) -> None:
+        self._year, self._month = d.year, d.month
+        self._rebuild_grid()
+        self.refresh()
+
     def range_label(self) -> str:
         return date(self._year, self._month, 1).strftime("%B %Y")
 
@@ -268,7 +281,9 @@ class MonthView(QGraphicsView):
         # An instance is "multi-day" when its end-date (exclusive at midnight)
         # is on a strictly later local date than its start.
         single_by_day: dict[date, list] = {}
-        multi_spans: list[tuple[date, date, object]] = []  # (start, end_inclusive, inst)
+        multi_spans: list[
+            tuple[date, date, object]
+        ] = []  # (start, end_inclusive, inst)
         for inst in instances:
             try:
                 t = datetime.fromisoformat(inst.dtstart_local).astimezone()
@@ -361,7 +376,9 @@ class MonthView(QGraphicsView):
                 if placed_track >= max_chips_per_cell - 1:
                     # No room: count as overflow contribution per covered cell.
                     for cc in range(col, seg_end_col + 1):
-                        hidden_per_cell[(row, cc)] = hidden_per_cell.get((row, cc), 0) + 1
+                        hidden_per_cell[(row, cc)] = (
+                            hidden_per_cell.get((row, cc), 0) + 1
+                        )
                 else:
                     # Render the span chip.
                     cell = self._grid.cell_rect(d)
@@ -370,7 +387,12 @@ class MonthView(QGraphicsView):
                         continue
                     x = col * CELL_W + 2
                     w = (seg_end_col - col + 1) * CELL_W - 4
-                    y = HEADER_H + row * CELL_H + 22 + placed_track * (CHIP_H + CHIP_GAP)
+                    y = (
+                        HEADER_H
+                        + row * CELL_H
+                        + 22
+                        + placed_track * (CHIP_H + CHIP_GAP)
+                    )
                     chip = EventChip(
                         event,
                         QRectF(x, y, w, CHIP_H),
@@ -404,7 +426,9 @@ class MonthView(QGraphicsView):
             occupied_tracks = {
                 t for (t, _t2) in per_row_track_occupied.get((row, col), [])
             }
-            free_tracks = [t for t in range(max_chips_per_cell) if t not in occupied_tracks]
+            free_tracks = [
+                t for t in range(max_chips_per_cell) if t not in occupied_tracks
+            ]
 
             items.sort(key=lambda x: (not x[1].all_day, x[0]))
             shown = 0
@@ -487,6 +511,7 @@ class MonthView(QGraphicsView):
         dlg = EventDialog(self.parent(), store=self._store, event=event)
         if dlg.exec():
             import dataclasses
+
             updated = dataclasses.replace(
                 dlg.build_event(event.uid),
                 calendar_id=dlg.calendar_id or event.calendar_id,

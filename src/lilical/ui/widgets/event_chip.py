@@ -9,15 +9,16 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsSceneContextMenuEvent, QMenu
 
 from lilical.ui import theme
+from lilical.utils.timezone import local_zoneinfo
 
 if TYPE_CHECKING:
     from lilical.models.event import Event
 
 
 class ChipMode(Enum):
-    BARS = "bars"   # solid fill, title overlaid in contrasting text
-    TEXT = "text"   # 3 px coloured left bar, neutral background
-    DOT = "dot"     # tiny coloured dot + title, for ultra-tight rows
+    BARS = "bars"  # solid fill, title overlaid in contrasting text
+    TEXT = "text"  # 3 px coloured left bar, neutral background
+    DOT = "dot"  # tiny coloured dot + title, for ultra-tight rows
 
 
 def _resolve_color(event_color: str | None, fallback: str | None) -> QColor:
@@ -88,6 +89,8 @@ def _format_time_prefix_from(event: "Event") -> str | None:
     start = _coerce_dt(event.dtstart)
     if start is None:
         return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=local_zoneinfo())
     s = start.astimezone().strftime("%H:%M")
     return s
 
@@ -102,7 +105,7 @@ class EventChip(QGraphicsObject):
         h >= 38 px : + location (if event.location set)
     """
 
-    edit_requested = Signal(object)    # emits Event
+    edit_requested = Signal(object)  # emits Event
     delete_requested = Signal(object)  # emits Event
     # Drag signals: see docstring for the chip-drag state machine.
     # Payload: (event, mode, scene_pos). mode ∈ {"move", "resize_top",
@@ -236,17 +239,15 @@ class EventChip(QGraphicsObject):
             self._draw_continuation_glyphs(painter, text_color)
             return
 
-        # Layout: 4 px left/right padding, 2 px top padding.
-        pad_l = 4 if not self._continues_left else 10
-        pad_r = 4 if not self._continues_right else 10
+        # Layout: 3 px left/right padding, 1 px top padding.
+        pad_l = 3 if not self._continues_left else 10
+        pad_r = 3 if not self._continues_right else 10
         text_x = self._rect.x() + pad_l
         text_w = max(8.0, self._rect.width() - pad_l - pad_r)
-        cursor_y = self._rect.y() + 2
+        cursor_y = self._rect.y() + 1
 
         painter.setPen(text_color)
-        painter.setClipRect(
-            QRectF(text_x, self._rect.y() + 1, text_w, h - 2)
-        )
+        painter.setClipRect(QRectF(text_x, self._rect.y(), text_w, h - 1))
 
         # Time prefix on its own line if we have vertical room.
         has_prefix = False
@@ -278,9 +279,7 @@ class EventChip(QGraphicsObject):
         # Reserve space at the bottom for the location line if it'll fit.
         loc_reserved = 0.0
         location = (self._event.location or "").strip()
-        show_location = (
-            location and h >= theme.CHIP_MIN_LOCATION_H
-        )
+        show_location = location and h >= theme.CHIP_MIN_LOCATION_H
         if show_location:
             loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
             loc_fm = QFontMetricsF(loc_font)
@@ -320,7 +319,7 @@ class EventChip(QGraphicsObject):
             loc_color = QColor(text_color)
             loc_color.setAlphaF(0.7)
             painter.setPen(loc_color)
-            loc_y = self._rect.bottom() - loc_fm.height() - 2
+            loc_y = self._rect.bottom() - loc_fm.height() - 1
             painter.drawText(
                 QRectF(text_x, loc_y, text_w, loc_fm.height()),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
@@ -331,15 +330,18 @@ class EventChip(QGraphicsObject):
         self._draw_continuation_glyphs(painter, text_color)
         _ = has_prefix  # silence unused-var lint
 
-    # ── Text mode (Month-view "Text" toggle) ─────────────────────────────
+    # ── Text mode ─────────────────────────────────────────────────────────
     def _paint_text_mode(self, painter: QPainter, base: QColor) -> None:
-        # 3 px coloured left bar, neutral background, primary text colour.
+        # Neutral background + left colour bar; same tiered text layout as BARS.
+        _BAR_W = 3
         body = self._rect.adjusted(0, 0, -1, -1)
         painter.setBrush(QColor(theme.BG_SURFACE_ALT))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(body, 2, 2)
 
-        bar_rect = QRectF(self._rect.x() + 1, self._rect.y() + 1, 3, self._rect.height() - 3)
+        bar_rect = QRectF(
+            self._rect.x() + 1, self._rect.y() + 1, _BAR_W, self._rect.height() - 3
+        )
         painter.setBrush(base)
         painter.drawRect(bar_rect)
 
@@ -348,24 +350,82 @@ class EventChip(QGraphicsObject):
         if h < theme.CHIP_MIN_TITLE_H:
             return
 
-        pad_l = 8  # leave room for the 3 px bar + spacing
-        pad_r = 4
+        pad_l = _BAR_W + 5  # bar + 2 px gap + 3 px body pad
+        pad_r = 3
         text_x = self._rect.x() + pad_l
         text_w = max(8.0, self._rect.width() - pad_l - pad_r)
+        cursor_y = self._rect.y() + 1
+
+        painter.setClipRect(QRectF(text_x, self._rect.y(), text_w, h - 1))
+
+        if h >= theme.CHIP_MIN_PREFIX_H:
+            prefix = self._prefix_text()
+            if prefix:
+                f = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX)
+                painter.setFont(f)
+                fm = QFontMetricsF(f)
+                pen_color = QColor(text_color)
+                pen_color.setAlphaF(0.7)
+                painter.setPen(pen_color)
+                painter.drawText(
+                    QRectF(text_x, cursor_y, text_w, fm.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                    _ellipsize(painter, prefix, text_w),
+                )
+                cursor_y += fm.height()
+                painter.setPen(text_color)
+
         title = self._event.summary or "(no title)"
+        title_font = self._make_title_font()
+        painter.setFont(title_font)
+        title_fm = QFontMetricsF(title_font)
 
-        painter.setPen(text_color)
-        painter.setFont(self._make_title_font())
-        painter.setClipRect(QRectF(text_x, self._rect.y(), text_w, h))
+        loc_reserved = 0.0
+        location = (self._event.location or "").strip()
+        show_location = location and h >= theme.CHIP_MIN_LOCATION_H
+        if show_location:
+            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+            loc_fm = QFontMetricsF(loc_font)
+            loc_reserved = loc_fm.height() + 1
 
-        prefix = self._prefix_text()
-        if prefix:
-            title = f"{prefix}  {title}"
-        painter.drawText(
-            QRectF(text_x, self._rect.y() + 1, text_w, h - 2),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            _ellipsize(painter, title, text_w),
+        title_rect = QRectF(
+            text_x,
+            cursor_y,
+            text_w,
+            max(title_fm.height(), self._rect.bottom() - cursor_y - 1 - loc_reserved),
         )
+        painter.setPen(text_color)
+        if h < theme.CHIP_MIN_PREFIX_H:
+            painter.drawText(
+                title_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                _ellipsize(painter, title, text_w),
+            )
+        else:
+            painter.drawText(
+                title_rect,
+                int(
+                    Qt.AlignmentFlag.AlignLeft
+                    | Qt.AlignmentFlag.AlignTop
+                    | Qt.TextFlag.TextWordWrap
+                ),
+                title,
+            )
+
+        if show_location:
+            loc_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION)
+            painter.setFont(loc_font)
+            loc_fm = QFontMetricsF(loc_font)
+            loc_color = QColor(text_color)
+            loc_color.setAlphaF(0.65)
+            painter.setPen(loc_color)
+            loc_y = self._rect.bottom() - loc_fm.height() - 1
+            painter.drawText(
+                QRectF(text_x, loc_y, text_w, loc_fm.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                _ellipsize(painter, location, text_w),
+            )
+
         painter.setClipping(False)
 
     # ── Dot mode (Agenda children, very dense rows) ──────────────────────
@@ -397,7 +457,9 @@ class EventChip(QGraphicsObject):
         if not (self._continues_left or self._continues_right):
             return
         painter.setPen(fg)
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold)
+        )
         if self._continues_left:
             painter.drawText(
                 QRectF(self._rect.x() + 1, self._rect.y(), 10, self._rect.height()),

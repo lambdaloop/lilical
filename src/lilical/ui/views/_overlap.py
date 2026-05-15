@@ -15,6 +15,7 @@ The algorithm — Google Calendar / Business Calendar 2 style:
 `pack_overlapping([...])` returns parallel-indexed tuples of
 `(col, cols, xspan, payload)` for each input item.
 """
+
 from __future__ import annotations
 
 from typing import Any

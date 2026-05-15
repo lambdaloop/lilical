@@ -1,4 +1,5 @@
 """Tests for lilical.logging_setup.setup_logging."""
+
 from __future__ import annotations
 
 import logging
@@ -9,13 +10,16 @@ import pytest
 from lilical.logging_setup import setup_logging
 
 
-def test_setup_logging_calls_basicconfig_with_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_setup_logging_calls_basicconfig_with_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("LILICAL_LOG_LEVEL", raising=False)
     with patch("lilical.logging_setup.logging.basicConfig") as mock_cfg:
         setup_logging()
     assert mock_cfg.called
     handlers = mock_cfg.call_args.kwargs.get("handlers", [])
     import sys
+
     assert any(getattr(h, "stream", None) is sys.stderr for h in handlers)
 
 

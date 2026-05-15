@@ -154,9 +154,7 @@ class SyncEngine(QObject):
                 # The op will never succeed as-is (bad ID, occurrence delete,
                 # etc). Drop it so we don't crash sync every tick — surface the
                 # error but keep pulling remote changes.
-                log.error(
-                    "dropping pending %s op for %s: %s", op.op, op.uid, e
-                )
+                log.error("dropping pending %s op for %s: %s", op.op, op.uid, e)
                 self._store.delete_pending_op(op.id)
                 self.sync_failed.emit(account.id, f"{op.op} {op.uid}: {e}")
 

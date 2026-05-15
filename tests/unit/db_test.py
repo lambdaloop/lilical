@@ -1,4 +1,5 @@
 """Tests for storage.db: PRAGMA verification and ensure_schema."""
+
 from __future__ import annotations
 
 from pathlib import Path

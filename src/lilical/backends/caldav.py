@@ -14,6 +14,8 @@ from urllib.parse import urljoin, urlparse
 
 import caldav
 import icalendar
+
+from lilical.utils.timezone import local_iana_tz
 from caldav.elements import dav as _dav_elements
 from caldav.lib.error import AuthorizationError, DAVError, ReportError
 
@@ -220,9 +222,7 @@ def _vevent_to_event(
     exdates = _safe(
         lambda: _prop_dt_tuple(ve.get("EXDATE")), field="EXDATE", default=()
     )
-    rdates = _safe(
-        lambda: _prop_dt_tuple(ve.get("RDATE")), field="RDATE", default=()
-    )
+    rdates = _safe(lambda: _prop_dt_tuple(ve.get("RDATE")), field="RDATE", default=())
 
     attendees_raw = ve.get("ATTENDEE")
     self_response: str | None = None
@@ -269,6 +269,31 @@ def _vevent_to_event(
     last_modified = _safe(
         lambda: _prop_dt(ve.get("LAST-MODIFIED")), field="LAST-MODIFIED"
     )
+
+    # Re-localize events whose source had no explicit TZID (Z-suffix or bare
+    # UTC). This makes the timezone combo in the event dialog show the user's
+    # local zone instead of "UTC". The instant is preserved; only the
+    # wall-clock representation changes. Events with an explicit non-UTC TZID
+    # (e.g. TZID=Europe/London) are left alone.
+    if tz == "UTC" and not all_day and dtstart is not None:
+        local_name = local_iana_tz()
+        if local_name != "UTC":
+            local_zone = zoneinfo.ZoneInfo(local_name)
+            dtstart = dtstart.astimezone(local_zone)
+            if dtend is not None:
+                dtend = dtend.astimezone(local_zone)
+            tz = local_name
+
+    # All-day events arrive as naive midnight datetime (no tzinfo). Attach the
+    # local zone so that .date() in display code returns the right calendar day
+    # for users west of UTC (otherwise May 14 00:00 UTC → May 13 in EDT).
+    if all_day and dtstart is not None and dtstart.tzinfo is None:
+        local_name = local_iana_tz()
+        local_zone = zoneinfo.ZoneInfo(local_name)
+        dtstart = dtstart.replace(tzinfo=local_zone)
+        if dtend is not None and dtend.tzinfo is None:
+            dtend = dtend.replace(tzinfo=local_zone)
+        tz = local_name
 
     return Event(
         uid=str(ve.get("UID", "")),
@@ -367,7 +392,7 @@ def _normalise_hex_color(s: str | None) -> str | None:
     if len(s) == 7:  # #RRGGBB
         return s.lower()
     if len(s) == 4:  # #RGB → #RRGGBB
-        return f"#{s[1]*2}{s[2]*2}{s[3]*2}"
+        return f"#{s[1] * 2}{s[2] * 2}{s[3] * 2}"
     return None
 
 
@@ -463,7 +488,9 @@ class CalDavBackend:
             depth=0,
         )
         home_raw = _home(resp.results)
-        home_url = client._make_absolute_url(home_raw) if home_raw else str(principal.url)
+        home_url = (
+            client._make_absolute_url(home_raw) if home_raw else str(principal.url)
+        )
 
         # PROPFIND 2 (depth=1): calendar list + display names + colors in one shot.
         resp = client.propfind(
@@ -481,7 +508,9 @@ class CalDavBackend:
                 url = client._make_absolute_url(url)
             name = item.properties.get("{DAV:}displayname")
             raw_color = item.properties.get("{http://apple.com/ns/ical/}calendar-color")
-            color = _normalise_hex_color(str(raw_color) if raw_color is not None else None)
+            color = _normalise_hex_color(
+                str(raw_color) if raw_color is not None else None
+            )
             cal_id = url.rstrip("/").rsplit("/", 1)[-1] or url
             result.append(
                 {
@@ -625,7 +654,9 @@ class CalDavBackend:
                     except Exception:
                         log.exception("error mapping delta VEVENT for %s", href)
                         continue
-                    changes.append(EventChange(kind="upsert", event=event, uid=event.uid))
+                    changes.append(
+                        EventChange(kind="upsert", event=event, uid=event.uid)
+                    )
             else:
                 # Deleted: derive UID from the .ics filename in the URL.
                 href = str(obj.url) if obj.url is not None else ""

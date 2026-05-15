@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSiz
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
@@ -18,9 +19,9 @@ log = logging.getLogger(__name__)
 
 TIME_AXIS_WIDTH = 60
 DAY_HEADER_H = 32
-ALL_DAY_ROW_H = 18           # one row inside the all-day band
-ALL_DAY_BAND_MIN = 22        # always-reserved minimum band height
-ALL_DAY_MAX_ROWS = 4         # spec §4: max 4 rows before scrolling
+ALL_DAY_ROW_H = 22  # one row inside the all-day band
+ALL_DAY_BAND_MIN = 28  # always-reserved minimum band height
+ALL_DAY_MAX_ROWS = 4  # spec §4: max 4 rows before scrolling
 DEFAULT_PX_PER_HOUR = 48
 PX_PER_HOUR_MIN = 20
 PX_PER_HOUR_MAX = 96
@@ -147,7 +148,9 @@ class WeekGrid(QGraphicsItem):
             painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
         # Half-hour marks (lighter) when there's enough vertical room.
         if self._px_per_hour >= 36:
-            painter.setPen(QPen(QColor(theme.BORDER).darker(125), 1, Qt.PenStyle.DotLine))
+            painter.setPen(
+                QPen(QColor(theme.BORDER).darker(125), 1, Qt.PenStyle.DotLine)
+            )
             for h in range(HOURS):
                 y = body_top + h * self._px_per_hour + self._px_per_hour / 2
                 painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
@@ -235,7 +238,9 @@ class _StickyHeader(QGraphicsItem):
         all_day_band_h = self._all_day_band_h
         body_top = DAY_HEADER_H + all_day_band_h
 
-        painter.fillRect(QRectF(0, 0, self._width, DAY_HEADER_H), QColor(theme.BG_SURFACE))
+        painter.fillRect(
+            QRectF(0, 0, self._width, DAY_HEADER_H), QColor(theme.BG_SURFACE)
+        )
         painter.fillRect(
             QRectF(0, DAY_HEADER_H, self._width, all_day_band_h),
             QColor(theme.BG_WEEKEND),
@@ -275,12 +280,16 @@ class _StickyHeader(QGraphicsItem):
         painter.drawLine(0, body_top, self._width, body_top)
 
         # Day-of-week labels.
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_DAY_NUMBER, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_DAY_NUMBER, QFont.Weight.Bold)
+        )
         for i in range(self._day_count):
             d = self._start + timedelta(days=i)
             x = TIME_AXIS_WIDTH + i * col_w
             painter.setPen(
-                QColor(theme.TEXT_PRIMARY) if d == today else QColor(theme.TEXT_SECONDARY)
+                QColor(theme.TEXT_PRIMARY)
+                if d == today
+                else QColor(theme.TEXT_SECONDARY)
             )
             painter.drawText(
                 QRectF(x, 0, col_w, DAY_HEADER_H),
@@ -309,7 +318,9 @@ class WeekView(QGraphicsView):
         self._drag_current_min: int | None = None
         self._drag_end_day_offset: int | None = None
         self._drag_chip_event = None  # the Event being dragged
-        self._drag_chip_mode: str | None = None  # "move" / "resize_top" / "resize_bottom"
+        self._drag_chip_mode: str | None = (
+            None  # "move" / "resize_top" / "resize_bottom"
+        )
         self._drag_chip_origin: tuple | None = None  # (day_off, start_min, end_min)
         self._drag_preview: DragPreview | None = None
         self._press_scene_pos: QPointF | None = None
@@ -332,8 +343,9 @@ class WeekView(QGraphicsView):
         self._start = week_start
         # Initial width is a temporary value — resizeEvent will set the real
         # viewport width as soon as the widget is laid out.
-        self._grid = WeekGrid(week_start, self._day_count, 1,
-                              px_per_hour=self._px_per_hour)
+        self._grid = WeekGrid(
+            week_start, self._day_count, 1, px_per_hour=self._px_per_hour
+        )
         self._scene.addItem(self._grid)
         self._sticky = _StickyHeader(week_start, self._day_count, 1)
         self._scene.addItem(self._sticky)
@@ -507,6 +519,12 @@ class WeekView(QGraphicsView):
         self.refresh()
         QTimer.singleShot(0, self._scroll_to_first_event)
 
+    def go_to_date(self, d: date) -> None:
+        self._start = d - timedelta(days=d.weekday())
+        self._rebuild_grid()
+        self.refresh()
+        QTimer.singleShot(0, self._scroll_to_first_event)
+
     def range_label(self) -> str:
         end = self._start + timedelta(days=self._day_count - 1)
         if self._start.month == end.month:
@@ -663,9 +681,7 @@ class WeekView(QGraphicsView):
                 chip_x = day_x + 1 + col_i * sub_w
                 chip_w = max(8.0, xspan * sub_w)
                 chip_y = body_top + start_min * self._px_per_hour / 60
-                chip_h = max(
-                    14.0, (end_min - start_min) * self._px_per_hour / 60
-                )
+                chip_h = max(14.0, (end_min - start_min) * self._px_per_hour / 60)
                 chip = EventChip(
                     payload["event"],
                     QRectF(chip_x, chip_y, chip_w, chip_h),
@@ -698,6 +714,7 @@ class WeekView(QGraphicsView):
         dlg = EventDialog(self.parent(), store=self._store, event=event)
         if dlg.exec():
             import dataclasses
+
             updated = dataclasses.replace(
                 dlg.build_event(event.uid),
                 calendar_id=dlg.calendar_id or event.calendar_id,
@@ -739,14 +756,20 @@ class WeekView(QGraphicsView):
         return (scene_y - body_top) * 60 / max(1, self._px_per_hour)
 
     def _scene_x_to_day_offset(self, scene_x: float) -> int | None:
-        col_w = max(1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+        col_w = max(
+            1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
+        )
         offset = int((scene_x - TIME_AXIS_WIDTH) / col_w)
         if offset < 0 or offset >= self._day_count:
             return None
         return offset
 
-    def _compute_timed_chip_rect(self, day_off: int, start_min: int, end_min: int) -> QRectF:
-        col_w = max(1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+    def _compute_timed_chip_rect(
+        self, day_off: int, start_min: int, end_min: int
+    ) -> QRectF:
+        col_w = max(
+            1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
+        )
         body_top = self._grid.hour_top()
         pph = self._px_per_hour
         x = TIME_AXIS_WIDTH + day_off * col_w + 1
@@ -756,14 +779,18 @@ class WeekView(QGraphicsView):
         return QRectF(x, y, w, h)
 
     def _compute_allday_chip_rect(self, start_off: int, end_off: int) -> QRectF:
-        col_w = max(1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+        col_w = max(
+            1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
+        )
         scroll_y = float(self.verticalScrollBar().value())
         x = TIME_AXIS_WIDTH + start_off * col_w + 1
         y = scroll_y + DAY_HEADER_H + 2
         w = (end_off - start_off + 1) * col_w - 2
         return QRectF(x, y, w, ALL_DAY_ROW_H - 2)
 
-    def _format_drag_label(self, mode: str, day_off: int, start_min: int, end_min: int) -> str:
+    def _format_drag_label(
+        self, mode: str, day_off: int, start_min: int, end_min: int
+    ) -> str:
         sh, sm = divmod(start_min, 60)
         eh, em = divmod(end_min % 1440, 60)
         duration = end_min - start_min
@@ -846,7 +873,9 @@ class WeekView(QGraphicsView):
             end_min = max(self._drag_start_min, current_min)
             if end_min <= start_min:
                 end_min = start_min + self._snap_minutes
-            rect = self._compute_timed_chip_rect(self._drag_day_offset, start_min, end_min)
+            rect = self._compute_timed_chip_rect(
+                self._drag_day_offset, start_min, end_min
+            )
             sh, sm = divmod(start_min, 60)
             eh, em = divmod(end_min % 1440, 60)
             duration = end_min - start_min
@@ -861,7 +890,11 @@ class WeekView(QGraphicsView):
         else:  # create_allday
             end_day = self._scene_x_to_day_offset(scene_pos.x())
             if end_day is None:
-                end_day = self._drag_end_day_offset if self._drag_end_day_offset is not None else self._drag_day_offset
+                end_day = (
+                    self._drag_end_day_offset
+                    if self._drag_end_day_offset is not None
+                    else self._drag_day_offset
+                )
             self._drag_end_day_offset = end_day
             start_off = min(self._drag_day_offset, end_day)
             end_off = max(self._drag_day_offset, end_day)
@@ -892,23 +925,37 @@ class WeekView(QGraphicsView):
             if end_min - start_min < self._snap_minutes:
                 end_min = start_min + 60
             day_date = self._start + timedelta(days=self._drag_day_offset)
-            tz = datetime.now().astimezone().tzinfo
-            start_dt = datetime(day_date.year, day_date.month, day_date.day,
-                                start_min // 60, start_min % 60, tzinfo=tz)
+            tz = local_zoneinfo()
+            start_dt = datetime(
+                day_date.year,
+                day_date.month,
+                day_date.day,
+                start_min // 60,
+                start_min % 60,
+                tzinfo=tz,
+            )
             end_dt = start_dt + timedelta(minutes=end_min - start_min)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=False)
         else:  # create_allday
             start_off = self._drag_day_offset
-            end_off = self._drag_end_day_offset if self._drag_end_day_offset is not None else start_off
+            end_off = (
+                self._drag_end_day_offset
+                if self._drag_end_day_offset is not None
+                else start_off
+            )
             start_off, end_off = min(start_off, end_off), max(start_off, end_off)
             start_date = self._start + timedelta(days=start_off)
             end_date = self._start + timedelta(days=end_off)
-            tz = datetime.now().astimezone().tzinfo
-            start_dt = datetime(start_date.year, start_date.month, start_date.day, tzinfo=tz)
+            tz = local_zoneinfo()
+            start_dt = datetime(
+                start_date.year, start_date.month, start_date.day, tzinfo=tz
+            )
             end_day_excl = end_date + timedelta(days=1)
-            end_dt = datetime(end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz)
+            end_dt = datetime(
+                end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz
+            )
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=True)
@@ -941,7 +988,9 @@ class WeekView(QGraphicsView):
 
     def _on_chip_drag_progress(self, event, mode: str, scene_pos: QPointF) -> None:
         pph = self._px_per_hour
-        col_w = max(1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+        col_w = max(
+            1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
+        )
         body_top = self._grid.hour_top()
 
         if self._drag_chip_event is None:
@@ -1025,7 +1074,9 @@ class WeekView(QGraphicsView):
             return
 
         pph = self._px_per_hour
-        col_w = max(1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count)
+        col_w = max(
+            1.0, (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count
+        )
         origin_day, origin_start, origin_end = self._drag_chip_origin
         press = self._press_scene_pos
         duration = origin_end - origin_start
@@ -1036,13 +1087,28 @@ class WeekView(QGraphicsView):
             new_day = max(0, min(self._day_count - 1, origin_day + delta_day))
             if event.dtstart:
                 new_dtstart = event.dtstart + timedelta(days=new_day - origin_day)
-                new_dtend = (event.dtend + timedelta(days=new_day - origin_day)) if event.dtend else (new_dtstart + timedelta(days=1))
+                new_dtend = (
+                    (event.dtend + timedelta(days=new_day - origin_day))
+                    if event.dtend
+                    else (new_dtstart + timedelta(days=1))
+                )
             else:
                 new_day_date = self._start + timedelta(days=new_day)
-                tz_local = datetime.now().astimezone().tzinfo
-                new_dtstart = datetime(new_day_date.year, new_day_date.month, new_day_date.day, tzinfo=tz_local)
+                tz_local = local_zoneinfo()
+                new_dtstart = datetime(
+                    new_day_date.year,
+                    new_day_date.month,
+                    new_day_date.day,
+                    tzinfo=tz_local,
+                )
                 new_dtend = new_dtstart + timedelta(days=1)
-            updated = dataclasses.replace(event, dtstart=new_dtstart, dtend=new_dtend, sequence=event.sequence + 1, local_dirty=True)
+            updated = dataclasses.replace(
+                event,
+                dtstart=new_dtstart,
+                dtend=new_dtend,
+                sequence=event.sequence + 1,
+                local_dirty=True,
+            )
             self._store.queue_update(updated, event.etag)
             self._teardown_preview()
             self._drag_chip_event = None
@@ -1073,10 +1139,14 @@ class WeekView(QGraphicsView):
             new_day = origin_day
 
         new_day_date = self._start + timedelta(days=new_day)
-        local_tz = datetime.now().astimezone().tzinfo
+        local_tz = local_zoneinfo()
         new_dtstart = datetime(
-            new_day_date.year, new_day_date.month, new_day_date.day,
-            new_start // 60, new_start % 60, 0,
+            new_day_date.year,
+            new_day_date.month,
+            new_day_date.day,
+            new_start // 60,
+            new_start % 60,
+            0,
             tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
@@ -1084,7 +1154,7 @@ class WeekView(QGraphicsView):
             event,
             dtstart=new_dtstart,
             dtend=new_dtend,
-            tz=str(local_tz),
+            tz=local_iana_tz(),
             sequence=event.sequence + 1,
             local_dirty=True,
         )
@@ -1107,7 +1177,9 @@ class WeekView(QGraphicsView):
             self._scene.removeItem(self._drag_preview)
             self._drag_preview = None
 
-    def _open_create_dialog(self, start_dt: datetime, end_dt: datetime, *, all_day: bool = False) -> None:
+    def _open_create_dialog(
+        self, start_dt: datetime, end_dt: datetime, *, all_day: bool = False
+    ) -> None:
         import uuid
         from lilical.ui.widgets.event_dialog import EventDialog
 

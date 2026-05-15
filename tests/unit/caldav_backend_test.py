@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 import icalendar
@@ -69,12 +69,18 @@ class _FakeClient:
     def propfind(self, url: str, props, depth: int = 0):
         if depth == 0:
             # home-set lookup
-            return _FakePropfindResponse([
-                _FakePropfindItem(
-                    href=str(self._principal_result.url) if not isinstance(self._principal_result, Exception) else "",
-                    properties={"{urn:ietf:params:xml:ns:caldav}calendar-home-set": self._home_url},
-                )
-            ])
+            return _FakePropfindResponse(
+                [
+                    _FakePropfindItem(
+                        href=str(self._principal_result.url)
+                        if not isinstance(self._principal_result, Exception)
+                        else "",
+                        properties={
+                            "{urn:ietf:params:xml:ns:caldav}calendar-home-set": self._home_url
+                        },
+                    )
+                ]
+            )
         # depth=1: calendar list
         return _FakePropfindResponse(self._cal_items)
 
@@ -479,10 +485,13 @@ def test_vevent_to_event_extracts_all_day_event() -> None:
     vevents = _parse_vevents(_VCAL_ALL_DAY)
     event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
     assert event.all_day is True
-    # All-day → naive datetime at midnight; EventStore._ensure_aware_dt then
-    # assumes UTC, which keeps the date consistent.
-    assert event.dtstart == datetime(2026, 7, 4, 0, 0)
-    assert event.dtend == datetime(2026, 7, 5, 0, 0)
+    # All-day events are now stored as midnight in the local zone so that
+    # .date() returns the right calendar day regardless of the runner's UTC offset.
+    assert event.dtstart is not None
+    assert event.dtstart.tzinfo is not None
+    assert event.dtstart.date() == date(2026, 7, 4)
+    assert event.dtend is not None
+    assert event.dtend.date() == date(2026, 7, 5)
 
 
 def test_vevent_to_event_computes_dtend_from_duration() -> None:
@@ -609,10 +618,18 @@ def test_parsed_rrule_event_expands_into_event_instances(tmp_path) -> None:
     assert len(instances) == 9
     # Sanity: all instances belong to our event and have monotonic dtstart_utc.
     assert all(i.uid == "weekly-1@example.com" for i in instances)
+    # Compare in UTC so the test passes regardless of the runner's local tz.
+    # dtstart_local is re-localized to the local zone, so we parse + convert.
+    from datetime import timezone as _tz
+
+    starts_utc = {
+        datetime.fromisoformat(i.dtstart_local).astimezone(_tz.utc) for i in instances
+    }
+    exdate_utc = datetime(2026, 5, 27, 9, 0, 0, tzinfo=_tz.utc)
+    first_utc = datetime(2026, 5, 13, 9, 0, 0, tzinfo=_tz.utc)
     # The EXDATE on 2026-05-27T09:00:00Z must not appear among instances.
-    starts_iso = {i.dtstart_local for i in instances}
-    assert "2026-05-27T09:00:00+00:00" not in starts_iso
-    assert "2026-05-13T09:00:00+00:00" in starts_iso  # first occurrence
+    assert exdate_utc not in starts_utc
+    assert first_utc in starts_utc  # first occurrence
 
 
 def test_parsed_non_recurring_event_creates_single_instance(tmp_path) -> None:
@@ -716,7 +733,12 @@ class _FakeSyncResult:
         return iter(self.objects)
 
 
-def _wire_fake_client2(backend: CalDavBackend, get_objects_by_sync_token_fn, search_fn=None, get_properties_fn=None):
+def _wire_fake_client2(
+    backend: CalDavBackend,
+    get_objects_by_sync_token_fn,
+    search_fn=None,
+    get_properties_fn=None,
+):
     """Wire a backend so _get_client returns a fake, and _run dispatches to lambdas."""
     import caldav as _caldav
 
@@ -756,7 +778,9 @@ async def test_incremental_sync_uses_sync_collection_when_token_available() -> N
     import caldav as _caldav
 
     result = _FakeSyncResult(
-        objects=[_FakeSyncObj("https://cal/1/test-uid-1@example.com.ics", _VEVENT_ICAL)],
+        objects=[
+            _FakeSyncObj("https://cal/1/test-uid-1@example.com.ics", _VEVENT_ICAL)
+        ],
         sync_token="http://example.com/sync/token/v2",
     )
     called_with: list[dict] = []
@@ -827,9 +851,15 @@ async def test_incremental_sync_falls_back_without_token() -> None:
 
         class _FakeCal:
             url = "https://cal/1/"
-            def get_objects_by_sync_token(self, **kw): raise AssertionError("should not be called")  # noqa: E704
-            def search(self, **kw): return search(**kw)
-            def get_properties(self, p): return {}
+
+            def get_objects_by_sync_token(self, **kw):
+                raise AssertionError("should not be called")  # noqa: E704
+
+            def search(self, **kw):
+                return search(**kw)
+
+            def get_properties(self, p):
+                return {}
 
         _caldav.Calendar = lambda client, url: _FakeCal()  # type: ignore[attr-defined]
         backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
@@ -888,7 +918,10 @@ async def test_initial_sync_returns_sync_token_in_cursor() -> None:
 
         class _FakeCal:
             url = "https://cal/1/"
-            def search(self, **kw): return [_FakeEv()]
+
+            def search(self, **kw):
+                return [_FakeEv()]
+
             def get_properties(self, props):
                 return {_dav.SyncToken.tag: "http://example.com/token/1"}
 

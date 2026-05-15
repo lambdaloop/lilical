@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
@@ -28,8 +29,8 @@ log = logging.getLogger(__name__)
 
 TIME_AXIS_WIDTH = 60
 DAY_HEADER_H = 40
-ALL_DAY_ROW_H = 22
-ALL_DAY_BAND_MIN = 30
+ALL_DAY_ROW_H = 26
+ALL_DAY_BAND_MIN = 34
 ALL_DAY_MAX_ROWS = 4
 DEFAULT_PX_PER_HOUR = 64
 PX_PER_HOUR_MIN = 24
@@ -106,8 +107,9 @@ class DayGrid(QGraphicsItem):
         # Today tint over body.
         if is_today:
             painter.fillRect(
-                QRectF(TIME_AXIS_WIDTH, body_top,
-                       self._width - TIME_AXIS_WIDTH, body_h),
+                QRectF(
+                    TIME_AXIS_WIDTH, body_top, self._width - TIME_AXIS_WIDTH, body_h
+                ),
                 QColor(62, 130, 246, 28),
             )
 
@@ -133,7 +135,9 @@ class DayGrid(QGraphicsItem):
             painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
         # Half-hour dotted lines.
         if self._px_per_hour >= 40:
-            painter.setPen(QPen(QColor(theme.BORDER).darker(125), 1, Qt.PenStyle.DotLine))
+            painter.setPen(
+                QPen(QColor(theme.BORDER).darker(125), 1, Qt.PenStyle.DotLine)
+            )
             for hour in range(HOURS):
                 y = body_top + hour * self._px_per_hour + self._px_per_hour / 2
                 painter.drawLine(TIME_AXIS_WIDTH, y, self._width, y)
@@ -203,15 +207,21 @@ class _DayStickyHeader(QGraphicsItem):
         all_day_band_h = self._all_day_band_h
         body_top = DAY_HEADER_H + all_day_band_h
 
-        painter.fillRect(QRectF(0, 0, self._width, DAY_HEADER_H), QColor(theme.BG_SURFACE))
+        painter.fillRect(
+            QRectF(0, 0, self._width, DAY_HEADER_H), QColor(theme.BG_SURFACE)
+        )
         painter.fillRect(
             QRectF(0, DAY_HEADER_H, self._width, all_day_band_h),
             QColor(theme.BG_WEEKEND),
         )
         if is_today:
             painter.fillRect(
-                QRectF(TIME_AXIS_WIDTH, DAY_HEADER_H,
-                       self._width - TIME_AXIS_WIDTH, all_day_band_h),
+                QRectF(
+                    TIME_AXIS_WIDTH,
+                    DAY_HEADER_H,
+                    self._width - TIME_AXIS_WIDTH,
+                    all_day_band_h,
+                ),
                 QColor(62, 130, 246, 28),
             )
 
@@ -226,7 +236,9 @@ class _DayStickyHeader(QGraphicsItem):
 
         # Header text.
         painter.setPen(QColor(theme.TEXT_PRIMARY))
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_DAY_HEADER, QFont.Weight.Bold))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_DAY_HEADER, QFont.Weight.Bold)
+        )
         painter.drawText(
             QRectF(0, 0, self._width, DAY_HEADER_H),
             Qt.AlignmentFlag.AlignCenter,
@@ -405,10 +417,13 @@ class _DayCanvas(QGraphicsView):
             return
 
         # Count all-day events for band sizing.
-        all_day_count = sum(1 for inst in instances if inst.all_day
-                            and _is_on(inst, self._day))
+        all_day_count = sum(
+            1 for inst in instances if inst.all_day and _is_on(inst, self._day)
+        )
         rows_shown = min(all_day_count, ALL_DAY_MAX_ROWS)
-        band_h = ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H)
+        band_h = (
+            ALL_DAY_BAND_MIN if rows_shown == 0 else (4 + rows_shown * ALL_DAY_ROW_H)
+        )
         if abs(band_h - self._grid.all_day_band_h) > 0.5:
             self._grid.set_all_day_band_h(band_h)
             self._sticky.set_all_day_band_h(band_h)
@@ -486,9 +501,7 @@ class _DayCanvas(QGraphicsView):
                 chip_x = TIME_AXIS_WIDTH + 1 + col_i * sub_w
                 chip_w = max(8.0, xspan * sub_w)
                 chip_y = body_top + start_min * self._px_per_hour / 60
-                chip_h = max(
-                    14.0, (end_min - start_min) * self._px_per_hour / 60
-                )
+                chip_h = max(14.0, (end_min - start_min) * self._px_per_hour / 60)
                 chip = EventChip(
                     payload["event"],
                     QRectF(chip_x, chip_y, chip_w, chip_h),
@@ -507,6 +520,7 @@ class _DayCanvas(QGraphicsView):
         dlg = EventDialog(self.parent(), store=self._store, event=event)
         if dlg.exec():
             import dataclasses
+
             updated = dataclasses.replace(
                 dlg.build_event(event.uid),
                 calendar_id=dlg.calendar_id or event.calendar_id,
@@ -665,18 +679,28 @@ class _DayCanvas(QGraphicsView):
             end_min = max(self._drag_start_min, current_min)
             if end_min - start_min < self._snap_minutes:
                 end_min = start_min + 60
-            tz = datetime.now().astimezone().tzinfo
-            start_dt = datetime(self._day.year, self._day.month, self._day.day,
-                                start_min // 60, start_min % 60, tzinfo=tz)
+            tz = local_zoneinfo()
+            start_dt = datetime(
+                self._day.year,
+                self._day.month,
+                self._day.day,
+                start_min // 60,
+                start_min % 60,
+                tzinfo=tz,
+            )
             end_dt = start_dt + timedelta(minutes=end_min - start_min)
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=False)
         else:  # create_allday
-            tz = datetime.now().astimezone().tzinfo
-            start_dt = datetime(self._day.year, self._day.month, self._day.day, tzinfo=tz)
+            tz = local_zoneinfo()
+            start_dt = datetime(
+                self._day.year, self._day.month, self._day.day, tzinfo=tz
+            )
             end_day_excl = self._day + timedelta(days=1)
-            end_dt = datetime(end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz)
+            end_dt = datetime(
+                end_day_excl.year, end_day_excl.month, end_day_excl.day, 0, 0, tzinfo=tz
+            )
             self._teardown_preview()
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=True)
@@ -803,10 +827,14 @@ class _DayCanvas(QGraphicsView):
             new_end = min(new_end, 1440)
             new_start = origin_start
 
-        local_tz = datetime.now().astimezone().tzinfo
+        local_tz = local_zoneinfo()
         new_dtstart = datetime(
-            self._day.year, self._day.month, self._day.day,
-            new_start // 60, new_start % 60, 0,
+            self._day.year,
+            self._day.month,
+            self._day.day,
+            new_start // 60,
+            new_start % 60,
+            0,
             tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
@@ -814,7 +842,7 @@ class _DayCanvas(QGraphicsView):
             event,
             dtstart=new_dtstart,
             dtend=new_dtend,
-            tz=str(local_tz),
+            tz=local_iana_tz(),
             sequence=event.sequence + 1,
             local_dirty=True,
         )
@@ -837,7 +865,9 @@ class _DayCanvas(QGraphicsView):
             self._scene.removeItem(self._drag_preview)
             self._drag_preview = None
 
-    def _open_create_dialog(self, start_dt: datetime, end_dt: datetime, *, all_day: bool = False) -> None:
+    def _open_create_dialog(
+        self, start_dt: datetime, end_dt: datetime, *, all_day: bool = False
+    ) -> None:
         import uuid
         from lilical.ui.widgets.event_dialog import EventDialog
 
