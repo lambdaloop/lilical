@@ -363,7 +363,7 @@ class Sidebar(QWidget):
         h.addWidget(menu_btn)
         v.addWidget(header)
 
-        cals = self._store.list_calendars(account.id, visible_only=False)
+        cals = self._store.list_calendars(account.id, visible_only=True)
         for cal in cals:
             row = QWidget()
             row.setObjectName("cal-row")
