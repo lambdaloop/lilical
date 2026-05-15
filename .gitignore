@@ -9,6 +9,7 @@ build/
 
 # pixi
 .pixi/
+pixi.lock
 
 # IDE
 .vscode/
