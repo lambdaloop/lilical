@@ -36,17 +36,17 @@ QToolButton:pressed, QToolButton:checked {
     border-color: #1e3a8a;
 }
 QToolButton#account-menu-btn {
-    background-color: #f5f5f5;
-    color: #000000;
-    border: 1px solid #808080;
-    border-radius: 3px;
+    background: transparent;
+    color: #a0a0a0;
+    border: none;
     padding: 0px;
     font-size: 14pt;
     font-weight: bold;
 }
 QToolButton#account-menu-btn:hover {
-    background-color: #e5e5e5;
-    border-color: #000000;
+    background-color: #e4e4e4;
+    color: #111111;
+    border-radius: 3px;
 }
 QToolButton#account-menu-btn::menu-indicator { image: none; }
 
@@ -126,18 +126,6 @@ QCheckBox::indicator { border-radius: 2px; }
 QRadioButton::indicator { border-radius: 7px; }
 QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #000000; }
 QCheckBox::indicator:checked { background-color: #1d4ed8; border-color: #1e3a8a; }
-QCheckBox#cal-cb::indicator {
-    width: 12px; height: 12px;
-    border: 1px solid #808080;
-    background-color: transparent;
-    border-radius: 2px;
-}
-QCheckBox#cal-cb::indicator:hover { border-color: #303030; }
-QCheckBox#cal-cb::indicator:checked {
-    image: url(./check-light.svg);
-    background-color: transparent;
-    border-color: #404040;
-}
 QRadioButton::indicator:checked { background-color: #1d4ed8; border: 4px solid #1d4ed8; }
 
 QGroupBox {
@@ -215,3 +203,88 @@ QProgressBar {
     color: #000000;
 }
 QProgressBar::chunk { background-color: #1d4ed8; }
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+QWidget#sidebar {
+    background-color: #f0f0f0;
+}
+
+QToolButton#mini-nav {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 14pt;
+    color: #555555;
+}
+QToolButton#mini-nav:hover {
+    background-color: #e4e4e4;
+    color: #111111;
+}
+
+QLabel#mini-month-label {
+    background: transparent;
+    color: #555555;
+    font-size: 11pt;
+}
+
+QLabel#section-heading {
+    background: transparent;
+    color: #a0a0a0;
+    font-size: 9pt;
+    font-weight: bold;
+    padding: 8px 2px 4px 2px;
+}
+
+QLabel#account-heading {
+    background: transparent;
+    color: #a0a0a0;
+    font-size: 9pt;
+    font-weight: bold;
+    padding: 2px 0px;
+}
+
+QWidget#cal-row {
+    background: transparent;
+    border-radius: 4px;
+}
+QWidget#cal-row:hover {
+    background-color: #e4e4e4;
+}
+
+QLabel#cal-name {
+    background: transparent;
+    color: #333333;
+}
+
+QLabel#cal-placeholder {
+    background: transparent;
+    color: #a0a0a0;
+    padding-left: 14px;
+}
+
+QPushButton#add-account {
+    background: transparent;
+    color: #a0a0a0;
+    border: 1px dashed #d4d4d4;
+    border-radius: 4px;
+    padding: 6px 10px;
+    min-height: 18px;
+}
+QPushButton#add-account:hover {
+    background: #e4e4e4;
+    color: #111111;
+    border-style: solid;
+    border-color: #a0a0a0;
+}
+QPushButton#add-account:pressed {
+    background: #d8d8d8;
+    border-color: #2563eb;
+}
+
+QWidget#sidebar QScrollBar:vertical {
+    width: 8px;
+}
+QWidget#sidebar QScrollBar::handle:vertical {
+    min-height: 18px;
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QTextOption
 from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
@@ -105,22 +105,28 @@ class MiniMonthGrid(QGraphicsView):
             )
             if in_range:
                 band_color = QColor(theme.ACCENT_FILL)
-                band_color.setAlpha(70)
+                band_color.setAlpha(55)
                 self._scene.addRect(
                     x, y, cw - 1, ch - 1, QPen(Qt.PenStyle.NoPen), band_color
                 )
 
             if cur == today:
-                self._scene.addRect(x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT)))
-            if cur == self._selected and not in_range:
-                self._scene.addRect(
-                    x, y, cw - 1, ch - 1, QPen(QColor(theme.ACCENT_FILL))
-                )
+                pill = QPainterPath()
+                pill.addRoundedRect(x + 1, y + 1, cw - 3, ch - 3, 4, 4)
+                self._scene.addPath(pill, QPen(Qt.PenStyle.NoPen), QColor(theme.ACCENT_FILL))
+            elif cur == self._selected and not in_range:
+                ring = QPainterPath()
+                ring.addRoundedRect(x + 1, y + 1, cw - 3, ch - 3, 4, 4)
+                ring_pen = QPen(QColor(theme.ACCENT))
+                ring_pen.setWidth(2)
+                self._scene.addPath(ring, ring_pen, QColor(Qt.GlobalColor.transparent))
 
             item = self._scene.addText(str(cur.day), QFont(theme.FONT_FAMILY, 9))
-            item.setPos(x + max(3, (cw - 16) // 2), y + 3)
+            item.setTextWidth(cw)
+            item.document().setDefaultTextOption(QTextOption(Qt.AlignmentFlag.AlignHCenter))
+            item.setPos(x, y + (ch - item.boundingRect().height()) / 2)
             if cur == today:
-                item.setDefaultTextColor(QColor(theme.ACCENT))
+                item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
             elif in_range:
                 item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
             else:
