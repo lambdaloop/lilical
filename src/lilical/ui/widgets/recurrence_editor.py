@@ -191,6 +191,62 @@ class RecurrenceEditor(QWidget):
             self._rb_never.setChecked(True)
 
 
+_BYDAY_NAME = dict(zip(_BYDAY_CODES, ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]))
+
+
+def format_rrule_human(rrule: str) -> str:
+    """Return a natural-language summary of an RRULE string.
+
+    Falls back to the raw string if the rule can't be parsed or uses
+    features the formatter doesn't handle.
+    """
+    try:
+        props = _parse_rrule(rrule)
+        freq = props.get("FREQ", "")
+        interval = int(props.get("INTERVAL", "1"))
+
+        freq_map = {
+            "DAILY": ("Daily", "day", "days"),
+            "WEEKLY": ("Weekly", "week", "weeks"),
+            "MONTHLY": ("Monthly", "month", "months"),
+            "YEARLY": ("Yearly", "year", "years"),
+        }
+        if freq not in freq_map:
+            return rrule
+
+        singular, unit_s, unit_p = freq_map[freq]
+        base = singular if interval == 1 else f"Every {interval} {unit_p}"
+
+        if freq == "WEEKLY" and "BYDAY" in props:
+            codes = [c.strip() for c in props["BYDAY"].split(",")]
+            names = [_BYDAY_NAME.get(c, c) for c in codes if c in _BYDAY_NAME]
+            if names:
+                if len(names) == 1:
+                    base += f" on {names[0]}"
+                elif len(names) == 2:
+                    base += f" on {names[0]} and {names[1]}"
+                else:
+                    base += " on " + ", ".join(names[:-1]) + f", and {names[-1]}"
+
+        if "COUNT" in props:
+            n = int(props["COUNT"])
+            base += f", {n} time{'s' if n != 1 else ''}"
+        elif "UNTIL" in props:
+            raw = props["UNTIL"].replace("Z", "").replace("T000000", "")
+            try:
+                from datetime import date
+                d = date.fromisoformat(
+                    f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) == 8 else raw[:10]
+                )
+                base += f", until {d.strftime('%b %-d, %Y')}"
+            except Exception:
+                pass
+
+        return base
+    except Exception:
+        return rrule
+
+
 def _parse_rrule(rrule: str) -> dict[str, str]:
     """Parse a flat RRULE string like FREQ=WEEKLY;BYDAY=MO,WE into a dict."""
     result: dict[str, str] = {}

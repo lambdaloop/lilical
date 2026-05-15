@@ -2,7 +2,7 @@
 
 Constructs an EventChip in an offscreen QGraphicsScene, sends synthetic
 QGraphicsSceneMouseEvent objects, and asserts the drag_progress /
-drag_committed / drag_cancelled / edit_requested signals fire with the
+drag_committed / drag_cancelled / details_requested signals fire with the
 correct payloads.
 """
 
@@ -119,18 +119,18 @@ def test_body_drag_emits_progress_and_committed(qapp):
     assert ev2 is chip._event
 
 
-def test_click_without_drag_emits_edit_requested(qapp):
-    """Press+release without exceeding threshold → edit_requested (no drag signals)."""
+def test_click_without_drag_emits_details_requested(qapp):
+    """Press+release without exceeding threshold → details_requested (no drag signals)."""
     from PySide6.QtCore import QPointF
 
     chip = _make_chip()
     progress_calls: list = []
     committed_calls: list = []
-    edit_calls: list = []
+    details_calls: list = []
 
     chip.drag_progress.connect(lambda *a: progress_calls.append(a))
     chip.drag_committed.connect(lambda *a: committed_calls.append(a))
-    chip.edit_requested.connect(lambda e: edit_calls.append(e))
+    chip.details_requested.connect(lambda e: details_calls.append(e))
 
     center = chip.boundingRect().center()
     _press(chip, center)
@@ -140,8 +140,36 @@ def test_click_without_drag_emits_edit_requested(qapp):
 
     assert not progress_calls
     assert not committed_calls
-    assert len(edit_calls) == 1
-    assert edit_calls[0] is chip._event
+    assert len(details_calls) == 1
+    assert details_calls[0] is chip._event
+
+
+def test_double_click_emits_no_signals(qapp):
+    """Left double-click is swallowed — neither details_requested nor edit_requested fires."""
+    from PySide6.QtCore import QPointF
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+
+    chip = _make_chip()
+    details_calls: list = []
+    edit_calls: list = []
+    chip.details_requested.connect(lambda e: details_calls.append(e))
+    chip.edit_requested.connect(lambda e: edit_calls.append(e))
+
+    center = chip.boundingRect().center()
+
+    def _dblclick(item, pos: QPointF) -> None:
+        ev = QGraphicsSceneMouseEvent(QGraphicsSceneMouseEvent.Type.GraphicsSceneMouseDoubleClick)
+        ev.setButton(Qt.MouseButton.LeftButton)
+        ev.setButtons(Qt.MouseButton.LeftButton)
+        ev.setPos(pos)
+        ev.setScenePos(pos)
+        item.mouseDoubleClickEvent(ev)
+
+    _dblclick(chip, center)
+
+    assert not details_calls
+    assert not edit_calls
 
 
 def test_resize_top_edge(qapp):

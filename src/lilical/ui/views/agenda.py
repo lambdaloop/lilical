@@ -60,7 +60,7 @@ class AgendaView(QWidget):
         self._tree.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self._tree)
@@ -162,7 +162,7 @@ class AgendaView(QWidget):
 
             day_item.setExpanded(True)
 
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+    def _on_item_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
@@ -170,9 +170,9 @@ class AgendaView(QWidget):
         event = self._store.get_event_for_instance(inst)
         if event is None:
             return
-        from lilical.ui.views._recurrence_actions import open_edit_dialog
+        from lilical.ui.views._recurrence_actions import open_details_dialog
 
-        open_edit_dialog(self, self._store, event, instance_dtstart)
+        open_details_dialog(self, self._store, event, instance_dtstart)
 
     def _on_context_menu(self, pos) -> None:
         from PySide6.QtWidgets import QMenu

@@ -440,6 +440,11 @@ class MonthView(QGraphicsView):
                         continues_right=(e_day > row_end_day),
                         instance_dtstart=inst_t,
                     )
+                    chip.details_requested.connect(
+                        lambda ev, c=chip: self._on_details_requested(
+                            ev, c.instance_dtstart
+                        )
+                    )
                     chip.edit_requested.connect(
                         lambda ev, c=chip: self._on_edit_requested(
                             ev, c.instance_dtstart
@@ -503,6 +508,9 @@ class MonthView(QGraphicsView):
                     time_prefix=time_prefix,
                     instance_dtstart=start_dt2,
                 )
+                chip.details_requested.connect(
+                    lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
+                )
                 chip.edit_requested.connect(
                     lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
                 )
@@ -554,6 +562,11 @@ class MonthView(QGraphicsView):
 
     def _emit_day_activated(self, d: date) -> None:
         self.day_activated.emit(d)
+
+    def _on_details_requested(self, event, instance_dtstart=None) -> None:
+        from lilical.ui.views._recurrence_actions import open_details_dialog
+
+        open_details_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog

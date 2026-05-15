@@ -532,6 +532,11 @@ class _DayCanvas(QGraphicsView):
                 self._scene.addItem(chip)
                 self._chips.append(chip)
 
+    def _on_details_requested(self, event, instance_dtstart=None) -> None:
+        from lilical.ui.views._recurrence_actions import open_details_dialog
+
+        open_details_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
 
@@ -552,6 +557,9 @@ class _DayCanvas(QGraphicsView):
     # ── Chip signal wiring ────────────────────────────────────────────────
 
     def _wire_chip_signals(self, chip: "EventChip") -> None:
+        chip.details_requested.connect(
+            lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
+        )
         chip.edit_requested.connect(
             lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
         )

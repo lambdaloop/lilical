@@ -159,7 +159,8 @@ class EventChip(QGraphicsObject):
         h >= 52 px : location wraps to up to 2 lines
     """
 
-    edit_requested = Signal(object)  # emits Event
+    details_requested = Signal(object)  # emits Event — left-click opens read-only view
+    edit_requested = Signal(object)  # emits Event — right-click → Edit
     delete_requested = Signal(object)  # emits Event
     # Drag signals: see docstring for the chip-drag state machine.
     # Payload: (event, mode, scene_pos). mode ∈ {"move", "resize_top",
@@ -806,9 +807,8 @@ class EventChip(QGraphicsObject):
         self._drag_mode = None
         self._press_scene_pos = None
         if mode == "pending":
-            # Treat as a single click — preserves the previous behaviour.
             if self.contains(event.pos()):
-                self.edit_requested.emit(self._event)
+                self.details_requested.emit(self._event)
         else:
             self.drag_committed.emit(self._event, mode, scene_pos)
         event.accept()
@@ -822,12 +822,8 @@ class EventChip(QGraphicsObject):
         self.drag_cancelled.emit(self._event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: ANN001, N802
-        # Treat a double-click as another single-click — the dialog is modal,
-        # so a second emit during the open dialog is harmless. This keeps the
-        # behaviour predictable for users who still double-click out of habit.
         if event.button() == Qt.MouseButton.LeftButton:
-            self.edit_requested.emit(self._event)
-            event.accept()
+            event.accept()  # swallow — single-click already opened the details dialog
         else:
             super().mouseDoubleClickEvent(event)
 

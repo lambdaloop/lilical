@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from lilical.storage.event_store import EventStore
 
 
+def open_details_dialog(
+    parent: QWidget,
+    store: "EventStore",
+    event: "Event",
+    instance_dtstart: datetime | None,
+) -> None:
+    """Show read-only event details; routes to edit/delete flows on user request."""
+    from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
+
+    dlg = EventDetailsDialog(parent, store=store, event=event)
+    if not dlg.exec():
+        return
+    if dlg.delete_requested:
+        open_delete_dialog(parent, store, event, instance_dtstart)
+    elif dlg.edit_requested:
+        open_edit_dialog(parent, store, event, instance_dtstart)
+
+
 def open_edit_dialog(
     parent: QWidget,
     store: "EventStore",
