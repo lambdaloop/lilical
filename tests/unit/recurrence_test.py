@@ -254,3 +254,108 @@ def test_indefinite_series_expands_within_pm_1y_window(
     end = datetime(2026, 6, 10, tzinfo=timezone.utc)
     results = expander.expand_for_storage(e, start, end)
     assert len(results) == 4
+
+
+# ── override-aware expansion ──────────────────────────────────────────────────
+
+
+def test_expander_suppresses_overridden_occurrence(
+    expander: RecurrenceExpander,
+) -> None:
+    """An override at a specific recurrence_id replaces the rrule occurrence
+    that would normally fall at that time."""
+    master = Event(
+        uid="override-suppress",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=4",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+    )
+    week2_original = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    week2_moved = datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc)
+    override = Event(
+        uid="override-suppress",
+        calendar_id="cal-1",
+        recurrence_id=week2_original,
+        dtstart=week2_moved,
+        dtend=datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc),
+    )
+    window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+    results = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+
+    # COUNT=4 → 4 total: 3 rrule occurrences + 1 override (week 2 replaced).
+    assert len(results) == 4
+    dtstart_values = [r["dtstart"] for r in results]
+    assert week2_original not in dtstart_values  # original time suppressed
+    assert week2_moved in dtstart_values          # override's modified time present
+    override_rows = [r for r in results if r.get("is_override")]
+    assert len(override_rows) == 1
+    assert override_rows[0]["dtstart"] == week2_moved
+
+
+def test_expander_excludes_overrides_outside_window(
+    expander: RecurrenceExpander,
+) -> None:
+    """An override whose modified dtstart is outside the window is suppressed
+    from rrule expansion but not appended — net effect: that occurrence vanishes."""
+    master = Event(
+        uid="override-window",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=2",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    # Override's recurrence_id matches week 2 (in-window), but its new dtstart
+    # is in July (out of window).
+    override = Event(
+        uid="override-window",
+        calendar_id="cal-1",
+        recurrence_id=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+        dtstart=datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    results = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+
+    # Week 2 original time is suppressed; July dtstart is outside the window.
+    # Only week 1 (May 13) remains.
+    assert len(results) == 1
+    assert results[0]["dtstart"] == datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+
+
+def test_expander_cache_invalidates_on_override_change(
+    expander: RecurrenceExpander,
+) -> None:
+    """Cache key includes the override hash: adding an override returns a different
+    cached result even when event and window are identical."""
+    master = Event(
+        uid="override-cache",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=3",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+    no_overrides = expander.expand_for_storage(master, window_start, window_end, overrides=[])
+
+    override = Event(
+        uid="override-cache",
+        calendar_id="cal-1",
+        recurrence_id=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+        dtstart=datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    with_override = expander.expand_for_storage(master, window_start, window_end, overrides=[override])
+
+    # Results must not be the same cached list object.
+    assert no_overrides is not with_override
+    # The dtstart sets must differ (override shifts week 2).
+    no_ov_starts = {r["dtstart"] for r in no_overrides}
+    ov_starts = {r["dtstart"] for r in with_override}
+    assert no_ov_starts != ov_starts

@@ -827,3 +827,113 @@ def test_event_from_payload_ignores_unknown_fields() -> None:
     )
     event = _event_from_payload(payload)
     assert event.uid == "u2"
+
+
+# ── recurring: update_instance / delete_instance dispatch ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_dispatches_update_instance_op_to_backend() -> None:
+    """update_instance ops must call backend.update_instance with the master's
+    provider_event_id and the parsed recurrence_id datetime."""
+    import json
+    from datetime import datetime, timezone
+
+    recurrence_id = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    master_event = Event(
+        uid="uid-master",
+        calendar_id="cal-1",
+        provider_event_id="AAMk-master",
+        summary="Standup",
+    )
+
+    class _InstanceWriteBackend(_WriteBackend):
+        def __init__(self):
+            super().__init__()
+            self.instance_updates: list = []
+
+        async def update_instance(self, calendar_id, master_pid, rid, event):
+            self.instance_updates.append((calendar_id, master_pid, rid, event))
+
+    class _InstanceOpStore(_PendingOpStore):
+        def get_event(self, uid, calendar_id):
+            return master_event if uid == "uid-master" else None
+
+    payload = json.dumps(
+        {
+            "uid": "uid-master",
+            "calendar_id": "cal-1",
+            "recurrence_id": recurrence_id.isoformat(),
+            "summary": "Standup (moved)",
+        }
+    )
+    op = SimpleNamespace(
+        id=1,
+        op="update_instance",
+        uid="uid-master",
+        calendar_id="cal-1",
+        payload=payload,
+        if_match=None,
+    )
+    store = _InstanceOpStore([op])
+    backend = _InstanceWriteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.instance_updates) == 1
+    cal_id, mpid, rid, ev = backend.instance_updates[0]
+    assert cal_id == "cal-1"
+    assert mpid == "AAMk-master"
+    assert rid == recurrence_id
+    assert 1 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
+    """delete_instance ops must call backend.delete_instance with the master's
+    provider_event_id and the parsed recurrence_id datetime."""
+    import json
+    from datetime import datetime, timezone
+
+    recurrence_id = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    master_event = Event(
+        uid="uid-master",
+        calendar_id="cal-1",
+        provider_event_id="AAMk-master",
+        summary="Standup",
+    )
+
+    class _InstanceDeleteBackend(_WriteBackend):
+        def __init__(self):
+            super().__init__()
+            self.instance_deletes: list = []
+
+        async def delete_instance(self, calendar_id, master_pid, rid):
+            self.instance_deletes.append((calendar_id, master_pid, rid))
+
+    class _InstanceOpStore(_PendingOpStore):
+        def get_event(self, uid, calendar_id):
+            return master_event if uid == "uid-master" else None
+
+    payload = json.dumps({"recurrence_id": recurrence_id.isoformat()})
+    op = SimpleNamespace(
+        id=2,
+        op="delete_instance",
+        uid="uid-master",
+        calendar_id="cal-1",
+        payload=payload,
+        if_match=None,
+    )
+    store = _InstanceOpStore([op])
+    backend = _InstanceDeleteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.instance_deletes) == 1
+    cal_id, mpid, rid = backend.instance_deletes[0]
+    assert cal_id == "cal-1"
+    assert mpid == "AAMk-master"
+    assert rid == recurrence_id
+    assert 2 in store.deleted_op_ids

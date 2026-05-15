@@ -1073,3 +1073,30 @@ async def test_dav_error_401_maps_to_auth_expired() -> None:
 
     with pytest.raises(AuthExpired):
         await backend.list_calendars()
+
+
+# ── recurring: RDATE read path ────────────────────────────────────────────────
+
+
+def test_vevent_to_event_extracts_rdate() -> None:
+    """RDATE lines in a VEVENT should be parsed into event.rdates."""
+    vcal = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:rdate-test@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DTEND:20260513T100000Z
+RRULE:FREQ=WEEKLY;COUNT=2
+RDATE:20260120T100000Z
+SUMMARY:Meeting with extra date
+END:VEVENT
+END:VCALENDAR
+"""
+    vevents = _parse_vevents(vcal)
+    event = _vevent_to_event(vevents[0], calendar_id="cal-1", href="h", etag="e")
+    assert event.rdates is not None
+    assert len(event.rdates) == 1
+    assert event.rdates[0] == datetime(2026, 1, 20, 10, 0, tzinfo=timezone.utc)

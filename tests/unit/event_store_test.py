@@ -786,3 +786,281 @@ def test_rebuild_all_instances_repopulates_instances(engine) -> None:
 
     with Session(engine) as s:
         assert s.query(EventInstanceRow).count() == 1
+
+
+# ── recurring event store methods ─────────────────────────────────────────────
+
+
+def test_queue_update_instance_upserts_override_row_and_enqueues_op(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-upd",
+                calendar_id="cal-1",
+                recurrence_id="",
+                provider_event_id="AAMk-upd",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Standup",
+                rrule="FREQ=WEEKLY;COUNT=4",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    edited = Event(
+        uid="series-upd",
+        calendar_id="cal-1",
+        summary="Standup (rescheduled)",
+        dtstart=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc),
+        tz="UTC",
+    )
+    store.queue_update_instance("series-upd", "cal-1", recurrence_id_dt, edited)
+
+    with Session(engine) as s:
+        override_row = (
+            s.query(EventRow)
+            .filter_by(uid="series-upd", calendar_id="cal-1", recurrence_id=recurrence_id_dt.isoformat())
+            .first()
+        )
+        assert override_row is not None
+        assert override_row.summary == "Standup (rescheduled)"
+        assert override_row.local_dirty == 1
+
+        pending = s.query(PendingOpRow).one()
+        assert pending.op == "update_instance"
+        payload = json.loads(pending.payload)
+        assert payload["recurrence_id"] == recurrence_id_dt.isoformat()
+
+        override_inst = (
+            s.query(EventInstanceRow)
+            .filter_by(uid="series-upd", calendar_id="cal-1", is_override=1)
+            .first()
+        )
+        assert override_inst is not None
+        assert override_inst.recurrence_id == recurrence_id_dt.isoformat()
+
+
+def test_queue_delete_instance_appends_exdate_and_enqueues_op(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-del",
+                calendar_id="cal-1",
+                recurrence_id="",
+                provider_event_id="AAMk-del",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Weekly",
+                rrule="FREQ=WEEKLY;COUNT=4",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    store.queue_delete_instance("series-del", "cal-1", recurrence_id_dt)
+
+    with Session(engine) as s:
+        master = (
+            s.query(EventRow)
+            .filter_by(uid="series-del", calendar_id="cal-1", recurrence_id="")
+            .first()
+        )
+        assert master is not None
+        assert master.local_dirty == 1
+        exdates = json.loads(master.exdates)
+        assert recurrence_id_dt.isoformat() in exdates
+
+        pending = s.query(PendingOpRow).one()
+        assert pending.op == "delete_instance"
+        payload = json.loads(pending.payload)
+        assert payload["recurrence_id"] == recurrence_id_dt.isoformat()
+
+        deleted_inst = (
+            s.query(EventInstanceRow)
+            .filter_by(uid="series-del", calendar_id="cal-1")
+            .filter(EventInstanceRow.dtstart_utc == int(recurrence_id_dt.timestamp()))
+            .first()
+        )
+        assert deleted_inst is None
+
+
+def test_get_event_for_instance_returns_override_when_present(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    rid_iso = "2026-05-20T09:00:00+00:00"
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-gef",
+                calendar_id="cal-1",
+                recurrence_id="",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Master title",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-gef",
+                calendar_id="cal-1",
+                recurrence_id=rid_iso,
+                dtstart="2026-05-20T10:00:00+00:00",
+                dtend="2026-05-20T10:30:00+00:00",
+                tz="UTC",
+                summary="Override title",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventInstanceRow(
+                uid="series-gef",
+                calendar_id="cal-1",
+                dtstart_utc=int(datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc).timestamp()),
+                dtend_utc=int(datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc).timestamp()),
+                dtstart_local="2026-05-13T09:00:00+00:00",
+                dtend_local="2026-05-13T09:30:00+00:00",
+                recurrence_id="",
+            )
+        )
+        s.add(
+            EventInstanceRow(
+                uid="series-gef",
+                calendar_id="cal-1",
+                dtstart_utc=int(datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc).timestamp()),
+                dtend_utc=int(datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc).timestamp()),
+                dtstart_local="2026-05-20T10:00:00+00:00",
+                dtend_local="2026-05-20T10:30:00+00:00",
+                is_override=1,
+                recurrence_id=rid_iso,
+            )
+        )
+
+    store = EventStore(engine)
+    with Session(engine) as s:
+        normal_inst = s.query(EventInstanceRow).filter_by(recurrence_id="").first()
+        override_inst = s.query(EventInstanceRow).filter_by(recurrence_id=rid_iso).first()
+
+    master_event = store.get_event_for_instance(normal_inst)
+    assert master_event is not None
+    assert master_event.summary == "Master title"
+
+    override_event = store.get_event_for_instance(override_inst)
+    assert override_event is not None
+    assert override_event.summary == "Override title"
+    assert override_event.recurrence_id is not None
+
+
+def test_get_override_events_returns_non_deleted_overrides(engine) -> None:
+    rid1_iso = "2026-05-20T09:00:00+00:00"
+    rid2_iso = "2026-05-27T09:00:00+00:00"
+    with Session(engine) as s, s.begin():
+        s.add(
+            EventRow(
+                uid="series-ov",
+                calendar_id="cal-1",
+                recurrence_id="",
+                dtstart="2026-05-13T09:00:00+00:00",
+                dtend="2026-05-13T09:30:00+00:00",
+                tz="UTC",
+                summary="Master",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-ov",
+                calendar_id="cal-1",
+                recurrence_id=rid1_iso,
+                dtstart="2026-05-20T10:00:00+00:00",
+                dtend="2026-05-20T10:30:00+00:00",
+                tz="UTC",
+                summary="Override 1",
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        s.add(
+            EventRow(
+                uid="series-ov",
+                calendar_id="cal-1",
+                recurrence_id=rid2_iso,
+                dtstart="2026-05-27T10:00:00+00:00",
+                dtend="2026-05-27T10:30:00+00:00",
+                tz="UTC",
+                summary="Override 2 (deleted)",
+                deleted_locally=1,
+                inserted_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+
+    store = EventStore(engine)
+    overrides = store.get_override_events("series-ov", "cal-1")
+
+    assert len(overrides) == 1
+    assert overrides[0].summary == "Override 1"
+    assert overrides[0].recurrence_id is not None
+
+
+def test_rebuild_instances_for_override_delegates_to_master(engine) -> None:
+    """apply_remote_changes on an override calls _rebuild_instances_for(override),
+    which must delegate to the master and produce an is_override instance row."""
+    from lilical.backends.base import EventChange
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    master_event = Event(
+        uid="series-rb",
+        calendar_id="cal-1",
+        provider_event_id="AAMk-rb",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+        tz="UTC",
+        summary="Master",
+        rrule="FREQ=WEEKLY;COUNT=3",
+    )
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=master_event, uid="series-rb")],
+        "{}",
+    )
+
+    # Now apply an override — _rebuild_instances_for(override) should delegate
+    # to the master and regenerate all instances, including an override row.
+    override_event = Event(
+        uid="series-rb",
+        calendar_id="cal-1",
+        recurrence_id=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+        dtstart=datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 20, 11, 30, tzinfo=timezone.utc),
+        tz="UTC",
+        summary="Master (rescheduled)",
+    )
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=override_event, uid="series-rb")],
+        "{}",
+    )
+
+    with Session(engine) as s:
+        instances = (
+            s.query(EventInstanceRow)
+            .filter_by(uid="series-rb", calendar_id="cal-1")
+            .all()
+        )
+
+    assert len(instances) >= 1
+    override_insts = [i for i in instances if i.is_override == 1]
+    assert len(override_insts) == 1
+    modified_ts = int(datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc).timestamp())
+    assert override_insts[0].dtstart_utc == modified_ts

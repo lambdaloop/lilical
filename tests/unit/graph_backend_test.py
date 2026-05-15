@@ -1165,3 +1165,80 @@ async def test_aclose_noop_when_no_client() -> None:
     # No HTTP client created yet.
     assert backend._http is None
     await backend.aclose()  # must not raise
+
+
+# ── recurring: exception override read path ───────────────────────────────────
+
+
+def test_event_to_change_exception_returns_override_event() -> None:
+    """exception-type Graph events produce an override Event: uid is the master's
+    id, recurrence_id is the original start of the cancelled occurrence, rrule=None."""
+    data = {
+        "id": "AAMk-exc",
+        "iCalUId": "uid-series@outlook.com",
+        "subject": "Standup (moved)",
+        "type": "exception",
+        "seriesMasterId": "AAMk-master",
+        "originalStart": {
+            "dateTime": "2026-05-20T09:00:00.0000000",
+            "timeZone": "UTC",
+        },
+        "start": {
+            "dateTime": "2026-05-20T10:00:00.0000000",
+            "timeZone": "UTC",
+        },
+        "end": {
+            "dateTime": "2026-05-20T10:30:00.0000000",
+            "timeZone": "UTC",
+        },
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    ev = change.event
+    assert ev is not None
+    assert ev.uid == "AAMk-master"
+    assert ev.recurrence_id is not None
+    assert ev.recurrence_id == datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    assert ev.rrule is None
+    assert ev.summary == "Standup (moved)"
+
+
+# ── recurring: event-to-Graph-JSON write path ─────────────────────────────────
+
+
+def test_event_to_graph_json_emits_recurrence_for_rrule() -> None:
+    """_event_to_graph_json must include a recurrence block for events with rrule."""
+    from lilical.backends.graph import _event_to_graph_json
+    from lilical.models.event import Event as _Event
+
+    event = _Event(
+        uid="uid-w@outlook.com",
+        calendar_id="cal-1",
+        summary="Weekly standup",
+        rrule="FREQ=WEEKLY;BYDAY=MO,WE",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+    )
+    body = _event_to_graph_json(event)
+    assert "recurrence" in body
+    rec = body["recurrence"]
+    assert rec["pattern"]["type"] == "weekly"
+    assert "monday" in rec["pattern"]["daysOfWeek"]
+    assert "wednesday" in rec["pattern"]["daysOfWeek"]
+    assert rec["range"]["type"] == "noEnd"
+
+
+def test_event_to_graph_json_omits_recurrence_for_non_recurring() -> None:
+    """Non-recurring events must not include a recurrence key."""
+    from lilical.backends.graph import _event_to_graph_json
+    from lilical.models.event import Event as _Event
+
+    event = _Event(
+        uid="uid-s@outlook.com",
+        calendar_id="cal-1",
+        summary="One-off",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    body = _event_to_graph_json(event)
+    assert "recurrence" not in body
