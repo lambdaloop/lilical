@@ -645,3 +645,141 @@ def test_fallback_palette_size_and_stability() -> None:
     b = EventStore._fallback_color("snail-id-1")
     assert a == b
     assert a in EventStore._FALLBACK_PALETTE
+
+
+# ── queue_delete ─────────────────────────────────────────────────────────────
+
+
+def test_queue_delete_soft_deletes_and_queues_pending_op(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event())
+
+    store.queue_delete("event-1", "cal-1")
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="event-1").one()
+        ops = s.query(PendingOpRow).all()
+
+    assert row.deleted_locally == 1
+    assert row.local_dirty == 1
+    delete_ops = [op for op in ops if op.op == "delete"]
+    assert len(delete_ops) == 1
+    assert delete_ops[0].uid == "event-1"
+    assert delete_ops[0].calendar_id == "cal-1"
+
+
+def test_queue_delete_noop_for_missing_event(engine) -> None:
+    store = EventStore(engine)
+    # Should not raise even when the event doesn't exist.
+    store.queue_delete("nonexistent", "cal-1")
+
+    with Session(engine) as s:
+        ops = s.query(PendingOpRow).all()
+    assert ops == []
+
+
+def test_queue_delete_removes_instances(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    with Session(engine) as s:
+        before = s.query(EventInstanceRow).count()
+    assert before == 1
+
+    store.queue_delete("event-1", "cal-1")
+
+    with Session(engine) as s:
+        after = s.query(EventInstanceRow).count()
+    assert after == 0
+
+
+# ── apply_remote_changes signal emission ──────────────────────────────────────
+
+
+def test_apply_remote_changes_emits_events_changed_signal(engine) -> None:
+    store = EventStore(engine)
+    captured: list[tuple[str, set]] = []
+    store.events_changed.connect(lambda cid, uids: captured.append((cid, uids)))
+
+    remote = _event(calendar_id="provider-cal-1")
+    store.apply_remote_changes(
+        "cal-1",
+        [EventChange(kind="upsert", event=remote, uid="event-1")],
+        json.dumps({"type": "google", "sync_token": "t1"}),
+    )
+
+    assert len(captured) == 1
+    cal_id, uids = captured[0]
+    assert cal_id == "cal-1"
+    assert "event-1" in uids
+
+
+# ── list_instances range queries ──────────────────────────────────────────────
+
+
+def test_list_instances_returns_events_in_range(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    start = datetime(2026, 5, 13, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc)
+    results = store.list_instances(start, end)
+    assert len(results) == 1
+    assert results[0].uid == "event-1"
+
+
+def test_list_instances_filters_by_calendar_ids(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    start = datetime(2026, 5, 13, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc)
+
+    # Filtering with the right calendar_id returns it.
+    results = store.list_instances(start, end, calendar_ids={"cal-1"})
+    assert len(results) == 1
+
+    # Filtering with a different calendar_id returns nothing.
+    results = store.list_instances(start, end, calendar_ids={"cal-other"})
+    assert len(results) == 0
+
+
+def test_list_instances_excludes_events_outside_window(engine) -> None:
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    # Window entirely before the event
+    before = datetime(2026, 5, 10, 0, 0, tzinfo=timezone.utc)
+    before_end = datetime(2026, 5, 12, 0, 0, tzinfo=timezone.utc)
+    assert store.list_instances(before, before_end) == []
+
+    # Window entirely after the event
+    after = datetime(2026, 5, 14, tzinfo=timezone.utc)
+    after_end = datetime(2026, 5, 15, tzinfo=timezone.utc)
+    assert store.list_instances(after, after_end) == []
+
+
+# ── rebuild_all_instances ─────────────────────────────────────────────────────
+
+
+def test_rebuild_all_instances_repopulates_instances(engine) -> None:
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    store.queue_create(_event(rrule=None))
+
+    # Manually wipe instances to simulate corruption / migration.
+    with Session(engine) as s, s.begin():
+        s.query(EventInstanceRow).delete()
+
+    with Session(engine) as s:
+        assert s.query(EventInstanceRow).count() == 0
+
+    store.rebuild_all_instances()
+
+    with Session(engine) as s:
+        assert s.query(EventInstanceRow).count() == 1

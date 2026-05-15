@@ -113,3 +113,108 @@ def test_cache_miss_when_dtstart_changes(expander: RecurrenceExpander) -> None:
     assert len(r1) == 2
     assert len(r2) == 2
     assert r1 is not r2
+
+
+# ── additional RRULE shapes ───────────────────────────────────────────────────
+
+
+def test_weekly_byday_expands_mo_we_fr(expander: RecurrenceExpander) -> None:
+    # MO/WE/FR for 2 weeks starting 2026-06-01 (Monday) → 6 occurrences in window
+    e = Event(
+        uid="weekly-byday",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;BYDAY=MO,WE,FR;COUNT=6",
+        dtstart=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 11, 0, tzinfo=timezone.utc),
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    assert len(results) == 6
+
+
+def test_yearly_anniversary(expander: RecurrenceExpander) -> None:
+    e = Event(
+        uid="yearly-anniv",
+        calendar_id="cal-1",
+        rrule="FREQ=YEARLY;COUNT=2",
+        dtstart=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc),
+    )
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2028, 1, 1, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    assert len(results) == 2
+    years = [r["dtstart"].year for r in results]
+    assert years == [2026, 2027]
+
+
+def test_until_terminator(expander: RecurrenceExpander) -> None:
+    # UNTIL at May 15 → only May 13 and May 14 occurrences qualify
+    e = Event(
+        uid="until-test",
+        calendar_id="cal-1",
+        rrule="FREQ=DAILY;UNTIL=20260515T000000Z",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    assert len(results) == 2
+
+
+def test_exdate_removes_specific_occurrence(expander: RecurrenceExpander) -> None:
+    exdate = datetime(2026, 5, 14, 9, 0, tzinfo=timezone.utc)
+    e = Event(
+        uid="exdate-test",
+        calendar_id="cal-1",
+        rrule="FREQ=DAILY;COUNT=5",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+        exdates=(exdate,),
+    )
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    # May 14 is excluded → 4 occurrences remain
+    assert len(results) == 4
+    dtstart_dates = [r["dtstart"] for r in results]
+    assert exdate not in dtstart_dates
+
+
+def test_rdate_adds_extra_occurrence(expander: RecurrenceExpander) -> None:
+    rdate = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    e = Event(
+        uid="rdate-test",
+        calendar_id="cal-1",
+        rrule="FREQ=DAILY;COUNT=3",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+        rdates=(rdate,),
+    )
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 31, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    # RRULE gives May 13, 14, 15; RDATE adds May 20 → 4 occurrences
+    assert len(results) == 4
+    dtstart_dates = [r["dtstart"] for r in results]
+    assert rdate in dtstart_dates
+
+
+def test_indefinite_series_expands_within_pm_1y_window(
+    expander: RecurrenceExpander,
+) -> None:
+    # No COUNT/UNTIL → expander limits to whatever the window covers
+    e = Event(
+        uid="indefinite",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    # 4-week window → 4 weekly occurrences
+    start = datetime(2026, 5, 13, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    assert len(results) == 4

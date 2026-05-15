@@ -170,6 +170,11 @@ class EventDialog(QDialog):
             self._all_day_cb.setChecked(True)
             self._start_edit.setDisplayFormat("yyyy-MM-dd")
             self._end_edit.setDisplayFormat("yyyy-MM-dd")
+            # dtend uses exclusive RFC 5545 convention (midnight of next day);
+            # show the inclusive last day to the user
+            ed_local = end_default.astimezone() if end_default.tzinfo else end_default
+            if ed_local.hour == 0 and ed_local.minute == 0:
+                self._end_edit.setDateTime(_dt_to_qdatetime(end_default - timedelta(days=1)))
 
         self._all_day_cb.toggled.connect(self._on_all_day_toggled)
 
@@ -322,6 +327,10 @@ class EventDialog(QDialog):
         all_day = self._all_day_cb.isChecked()
         start_dt = _qdatetime_to_dt(self._start_edit.dateTime(), tz_name)
         end_dt = _qdatetime_to_dt(self._end_edit.dateTime(), tz_name)
+        if all_day:
+            # Dialog shows the inclusive last day; convert to exclusive midnight of next day
+            end_dt = datetime(end_dt.year, end_dt.month, end_dt.day, 0, 0, 0,
+                              tzinfo=end_dt.tzinfo) + timedelta(days=1)
         cal_id = self.calendar_id or ""
         color = self._selected_color() or None
         url = self._url_edit.text().strip() or None

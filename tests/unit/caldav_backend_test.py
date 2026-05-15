@@ -904,3 +904,135 @@ async def test_initial_sync_returns_sync_token_in_cursor() -> None:
 
     assert len(cursors) == 1
     assert cursors[0].to_json()["sync_token"] == "http://example.com/token/1"
+
+
+# ── create_event ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_event_builds_vevent_and_calls_save_event() -> None:
+    """create_event must call cal_obj.save_event with VEVENT data and return the event."""
+    import caldav as _caldav
+
+    from lilical.models.event import Event
+
+    saved: list[str] = []
+
+    class _FakeCal:
+        url = "https://cal/1/"
+
+        def save_event(self, data: str) -> None:
+            saved.append(data)
+
+    original = _caldav.Calendar
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _caldav.Calendar = lambda client, url: _FakeCal()  # type: ignore[attr-defined]
+        backend._get_client = lambda: _aresult(object())  # type: ignore[method-assign]
+        backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+        event = Event(
+            uid="test-uid",
+            calendar_id="https://cal/1/",
+            summary="My meeting",
+            dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
+        )
+        returned = await backend.create_event("https://cal/1/", event)
+    finally:
+        _caldav.Calendar = original
+
+    assert len(saved) == 1
+    assert "BEGIN:VEVENT" in saved[0]
+    assert "test-uid" in saved[0]
+    assert "My meeting" in saved[0]
+    assert returned is event
+
+
+# ── _normalise_hex_color matrix ───────────────────────────────────────────────
+
+
+def test_normalise_hex_color_none_returns_none() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    assert _normalise_hex_color(None) is None
+
+
+def test_normalise_hex_color_empty_returns_none() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    assert _normalise_hex_color("") is None
+
+
+def test_normalise_hex_color_no_hash_returns_none() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    assert _normalise_hex_color("ff0000") is None
+
+
+def test_normalise_hex_color_seven_char_lowercased() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    assert _normalise_hex_color("#AABBCC") == "#aabbcc"
+    assert _normalise_hex_color("#aabbcc") == "#aabbcc"
+
+
+def test_normalise_hex_color_eight_char_strips_alpha() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    # Apple sends #RRGGBBAA; we keep only #RRGGBB
+    assert _normalise_hex_color("#FF0000FF") == "#ff0000"
+
+
+def test_normalise_hex_color_three_char_expands() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    result = _normalise_hex_color("#F0A")
+    assert result is not None
+    assert result.lower() == "#ff00aa"
+
+
+def test_normalise_hex_color_invalid_length_returns_none() -> None:
+    from lilical.backends.caldav import _normalise_hex_color
+
+    assert _normalise_hex_color("#12345") is None  # 6-char string but only 5 hex digits
+    assert _normalise_hex_color("#1234567890") is None
+
+
+# ── error classification: AuthorizationError / DAVError 401 / 403 ─────────────
+
+
+@pytest.mark.asyncio
+async def test_authorization_error_maps_to_auth_expired() -> None:
+    from caldav.lib.error import AuthorizationError
+
+    from lilical.backends.base import AuthExpired
+
+    backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+    async def _raise_auth(_):
+        raise AuthorizationError("401 Unauthorized")
+
+    backend._get_client = lambda: _raise_auth(None)  # type: ignore[method-assign]
+
+    with pytest.raises(AuthExpired):
+        await backend.list_calendars()
+
+
+@pytest.mark.asyncio
+async def test_dav_error_401_maps_to_auth_expired() -> None:
+    from caldav.lib.error import DAVError
+
+    from lilical.backends.base import AuthExpired
+
+    backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+    async def _raise_dav(_):
+        e = DAVError("401 error")
+        e.url = "HTTP/1.1 401 Unauthorized"  # type: ignore[attr-defined]
+        raise e
+
+    backend._get_client = lambda: _raise_dav(None)  # type: ignore[method-assign]
+
+    with pytest.raises(AuthExpired):
+        await backend.list_calendars()

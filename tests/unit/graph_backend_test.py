@@ -994,3 +994,111 @@ def test_series_master_creates_multiple_instance_rows(tmp_path) -> None:
         },
     }
     assert _graph_event_to_change(data, "cal-1") is None
+
+
+# ── write path ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_event_posts_with_correct_body() -> None:
+    from lilical.models.event import Event
+
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": "AAMk-new",
+                "iCalUId": "uid-new@outlook.com",
+                "@odata.etag": 'W/"etag-new"',
+            },
+        )
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _handler)
+
+    event = Event(
+        uid="uid-new@outlook.com",
+        calendar_id="cal-A",
+        summary="New event",
+        dtstart=datetime(2026, 5, 14, 10, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
+    )
+    result = await backend.create_event("cal-A", event)
+
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert "/me/calendars/cal-A/events" in str(requests[0].url)
+    assert result.provider_event_id == "AAMk-new"
+    assert result.etag == 'W/"etag-new"'
+
+
+@pytest.mark.asyncio
+async def test_update_event_uses_ifmatch_header() -> None:
+    from lilical.models.event import Event
+
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"id": "AAMk-1", "@odata.etag": 'W/"new-etag"'},
+        )
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _handler)
+
+    event = Event(
+        uid="u1",
+        calendar_id="cal-A",
+        provider_event_id="AAMk-1",
+        summary="Updated event",
+    )
+    await backend.update_event("cal-A", event, if_match='W/"old-etag"')
+
+    assert len(requests) == 1
+    assert requests[0].method == "PATCH"
+    assert requests[0].headers.get("If-Match") == 'W/"old-etag"'
+    assert "/me/events/AAMk-1" in str(requests[0].url)
+
+
+@pytest.mark.asyncio
+async def test_delete_event_uses_ifmatch_header() -> None:
+    requests: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _handler)
+
+    await backend.delete_event("cal-A", "AAMk-del", if_match='W/"etag"')
+
+    assert len(requests) == 1
+    assert requests[0].method == "DELETE"
+    assert requests[0].headers.get("If-Match") == 'W/"etag"'
+    assert "/me/events/AAMk-del" in str(requests[0].url)
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_and_clears_http_client() -> None:
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    # Force client creation.
+    _attach_mock(backend, lambda r: httpx.Response(200, json={}))
+    assert backend._http is not None
+
+    await backend.aclose()
+
+    assert backend._http is None
+
+
+@pytest.mark.asyncio
+async def test_aclose_noop_when_no_client() -> None:
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    # No HTTP client created yet.
+    assert backend._http is None
+    await backend.aclose()  # must not raise

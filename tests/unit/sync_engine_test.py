@@ -8,7 +8,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilical.backends.base import AuthExpired, CursorExpired, EventChange
+from lilical.backends.base import (
+    AuthExpired,
+    ConflictError,
+    CursorExpired,
+    EventChange,
+    PermanentError,
+    TransientError,
+)
 from lilical.models.event import Event
 from lilical.sync.engine import SyncEngine
 
@@ -595,3 +602,226 @@ async def test_run_account_emits_sync_failed_on_transient_error() -> None:
         await task
 
     assert any(acc == "acc-1" and "server down" in msg for acc, msg in failed)
+
+
+# ── pending-op drain pipeline ─────────────────────────────────────────────────
+
+
+def _op(op_type: str, uid: str = "uid-1", calendar_id: str = "cal-1", if_match=None):
+    import json
+
+    payload = json.dumps({"uid": uid, "calendar_id": calendar_id})
+    return SimpleNamespace(
+        id=1,
+        op=op_type,
+        uid=uid,
+        calendar_id=calendar_id,
+        payload=payload,
+        if_match=if_match,
+    )
+
+
+class _PendingOpStore:
+    """FakeStore variant that tracks pending-op mutations."""
+
+    def __init__(self, ops: list) -> None:
+        self._ops = ops
+        self.deleted_op_ids: list[int] = []
+        self.queue_update_calls: list[tuple] = []
+
+    def list_pending_ops(self, account_id: str) -> list:
+        return list(self._ops)
+
+    def list_calendars(self, account_id: str, visible_only: bool = True) -> list:
+        return []
+
+    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+        return 0
+
+    def upsert_calendars(self, account_id: str, calendars: list) -> None:
+        pass
+
+    def delete_pending_op(self, op_id: int) -> None:
+        self.deleted_op_ids.append(op_id)
+
+    def queue_update(self, event, prev_etag) -> None:
+        self.queue_update_calls.append((event, prev_etag))
+
+
+class _WriteBackend:
+    """Backend that records write calls and can be configured to raise."""
+
+    def __init__(
+        self,
+        create_raises=None,
+        update_raises=None,
+        delete_raises=None,
+        canonical_event=None,
+    ) -> None:
+        self.creates: list = []
+        self.updates: list = []
+        self.deletes: list = []
+        self._create_raises = create_raises
+        self._update_raises = update_raises
+        self._delete_raises = delete_raises
+        self._canonical = canonical_event
+
+    async def list_calendars(self) -> list:
+        return []
+
+    async def create_event(self, calendar_id: str, event) -> object:
+        self.creates.append((calendar_id, event))
+        if self._create_raises:
+            raise self._create_raises
+        return self._canonical or event
+
+    async def update_event(self, calendar_id: str, event, if_match=None) -> None:
+        self.updates.append((calendar_id, event, if_match))
+        if self._update_raises:
+            raise self._update_raises
+
+    async def delete_event(self, calendar_id: str, uid: str, if_match=None) -> None:
+        self.deletes.append((calendar_id, uid, if_match))
+        if self._delete_raises:
+            raise self._delete_raises
+
+
+@pytest.mark.asyncio
+async def test_tick_drains_pending_ops_in_fifo_order() -> None:
+    ops = [
+        _op("create", uid="u1"),
+        _op("update", uid="u2"),
+        _op("delete", uid="u3"),
+    ]
+    for i, op in enumerate(ops):
+        op.id = i + 1
+    store = _PendingOpStore(ops)
+    backend = _WriteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.creates) == 1
+    assert len(backend.updates) == 1
+    assert len(backend.deletes) == 1
+    assert store.deleted_op_ids == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_tick_deletes_pending_op_on_success() -> None:
+    op = _op("delete", uid="u1")
+    op.id = 99
+    store = _PendingOpStore([op])
+    backend = _WriteBackend()
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert 99 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_conflict_error_emits_conflict_detected_and_leaves_op_queued() -> None:
+    op = _op("update", uid="u-conflict")
+    op.id = 77
+    store = _PendingOpStore([op])
+    backend = _WriteBackend(update_raises=ConflictError("412"))
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    conflicts: list[str] = []
+    engine.conflict_detected.connect(lambda uid: conflicts.append(uid))
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert "u-conflict" in conflicts
+    assert 77 not in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_permanent_error_drops_pending_op_and_emits_sync_failed() -> None:
+    op = _op("delete", uid="u-perm")
+    op.id = 55
+    store = _PendingOpStore([op])
+    backend = _WriteBackend(delete_raises=PermanentError("404 not found"))
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    failures: list[tuple[str, str]] = []
+    engine.sync_failed.connect(lambda acc, msg: failures.append((acc, msg)))
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert 55 in store.deleted_op_ids
+    assert any("acc-1" == acc for acc, _ in failures)
+
+
+@pytest.mark.asyncio
+async def test_transient_error_during_drain_propagates() -> None:
+    op = _op("update", uid="u-transient")
+    op.id = 33
+    store = _PendingOpStore([op])
+    backend = _WriteBackend(update_raises=TransientError("503"))
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    with pytest.raises(TransientError):
+        await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    # Op must NOT be deleted when a TransientError propagates
+    assert 33 not in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_apply_pending_create_calls_queue_update_with_canonical() -> None:
+    canonical = Event(uid="u-can", calendar_id="cal-1", summary="Canonical")
+    op = _op("create", uid="u-new")
+    op.id = 11
+    store = _PendingOpStore([op])
+    backend = _WriteBackend(canonical_event=canonical)
+    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(store.queue_update_calls) == 1
+    saved_event, prev_etag = store.queue_update_calls[0]
+    assert saved_event.uid == "u-can"
+    assert prev_etag is None
+
+
+# ── _event_from_payload edge cases ────────────────────────────────────────────
+
+
+def test_event_from_payload_none_returns_empty_event() -> None:
+    from lilical.sync.engine import _event_from_payload
+
+    event = _event_from_payload(None)
+    assert event.uid == ""
+    assert event.calendar_id == ""
+
+
+def test_event_from_payload_empty_string_returns_empty_event() -> None:
+    from lilical.sync.engine import _event_from_payload
+
+    event = _event_from_payload("")
+    assert event.uid == ""
+
+
+def test_event_from_payload_extracts_known_fields() -> None:
+    import json
+
+    from lilical.sync.engine import _event_from_payload
+
+    payload = json.dumps({"uid": "u1", "calendar_id": "cal-1", "summary": "Test"})
+    event = _event_from_payload(payload)
+    assert event.uid == "u1"
+    assert event.summary == "Test"
+
+
+def test_event_from_payload_ignores_unknown_fields() -> None:
+    import json
+
+    from lilical.sync.engine import _event_from_payload
+
+    payload = json.dumps(
+        {"uid": "u2", "calendar_id": "cal-1", "unknown_field": "should_be_ignored"}
+    )
+    event = _event_from_payload(payload)
+    assert event.uid == "u2"

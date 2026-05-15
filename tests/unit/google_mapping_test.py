@@ -292,3 +292,156 @@ async def test_incremental_sync_single_page_advances_token() -> None:
 
     assert len(changes) == 1
     assert cursor.to_json()["sync_token"] == "tok-next"
+
+
+# ── write path ────────────────────────────────────────────────────────────────
+
+
+def _make_http_error(status: int) -> "HttpError":
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    return HttpError(resp=resp, content=b"error")
+
+
+@pytest.mark.asyncio
+async def test_create_event_inserts_with_send_updates_none() -> None:
+    from lilical.models.event import Event
+
+    insert_calls: list[dict] = []
+
+    def _fake_insert(**kwargs):
+        insert_calls.append(kwargs)
+        req = MagicMock()
+        req.execute.return_value = {
+            "id": "prov-id-1",
+            "iCalUID": "uid-1@google.com",
+            "summary": "Meeting",
+            "etag": '"etag1"',
+        }
+        return req
+
+    events_res = MagicMock()
+    events_res.insert.side_effect = _fake_insert
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(side_effect=lambda req: req.execute())
+
+    event = Event(uid="uid-1@google.com", calendar_id="cal-1", summary="Meeting")
+    result = await backend.create_event("cal-1", event)
+
+    assert len(insert_calls) == 1
+    assert insert_calls[0]["sendUpdates"] == "none"
+    assert insert_calls[0]["calendarId"] == "cal-1"
+    assert result.uid == "uid-1@google.com"
+    assert result.provider_event_id == "prov-id-1"
+
+
+@pytest.mark.asyncio
+async def test_update_event_calls_service_update() -> None:
+    from lilical.models.event import Event
+
+    update_calls: list[dict] = []
+
+    def _fake_update(**kwargs):
+        update_calls.append(kwargs)
+        req = MagicMock()
+        req.execute.return_value = {
+            "id": "prov-id-2",
+            "iCalUID": "uid-2@google.com",
+            "summary": "Updated",
+            "etag": '"etag2"',
+        }
+        return req
+
+    events_res = MagicMock()
+    events_res.update.side_effect = _fake_update
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(side_effect=lambda req: req.execute())
+
+    event = Event(
+        uid="uid-2@google.com",
+        calendar_id="cal-1",
+        provider_event_id="prov-id-2",
+        summary="Updated",
+    )
+    await backend.update_event("cal-1", event, if_match='"etag1"')
+
+    assert len(update_calls) == 1
+    assert update_calls[0]["calendarId"] == "cal-1"
+    assert update_calls[0]["eventId"] == "prov-id-2"
+    assert update_calls[0]["sendUpdates"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_update_event_412_maps_to_conflict_error() -> None:
+    from lilical.backends.base import ConflictError
+    from lilical.models.event import Event
+
+    events_res = MagicMock()
+    req = MagicMock()
+    req.execute.side_effect = _make_http_error(412)
+    events_res.update.return_value = req
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(side_effect=lambda r: r.execute())
+
+    event = Event(uid="u1", calendar_id="cal-1", provider_event_id="p1")
+    with pytest.raises(ConflictError):
+        await backend.update_event("cal-1", event, if_match='"old"')
+
+
+@pytest.mark.asyncio
+async def test_delete_event_calls_service_delete() -> None:
+    delete_calls: list[dict] = []
+
+    def _fake_delete(**kwargs):
+        delete_calls.append(kwargs)
+        req = MagicMock()
+        req.execute.return_value = None
+        return req
+
+    events_res = MagicMock()
+    events_res.delete.side_effect = _fake_delete
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(side_effect=lambda req: req.execute())
+
+    await backend.delete_event("cal-1", "uid-to-delete", if_match='"etag"')
+
+    assert len(delete_calls) == 1
+    assert delete_calls[0]["calendarId"] == "cal-1"
+    assert delete_calls[0]["eventId"] == "uid-to-delete"
+
+
+@pytest.mark.asyncio
+async def test_429_user_rate_limit_maps_to_transient() -> None:
+    from lilical.backends.base import TransientError
+
+    events_res = MagicMock()
+    req = MagicMock()
+    req.execute.side_effect = _make_http_error(429)
+    events_res.delete.return_value = req
+    service = MagicMock()
+    service.events.return_value = events_res
+
+    backend = GoogleBackend("acc-1", token_json=None)
+    backend._ensure_service = AsyncMock(return_value=service)
+    backend._execute = AsyncMock(side_effect=lambda r: r.execute())
+
+    with pytest.raises(TransientError):
+        await backend.delete_event("cal-1", "u1", if_match=None)
