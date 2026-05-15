@@ -4,10 +4,13 @@ from datetime import date, datetime, time, timedelta
 
 
 def multi_day_span(inst) -> tuple[date, date] | None:
-    """Return (start_day, end_day_inclusive) if inst spans >1 calendar day, else None.
+    """Return (start_day, end_day_inclusive) if inst should render in the all-day band.
 
-    Mirrors the midnight-end adjustment in month.py: an event ending at exactly
-    00:00 of day N is treated as ending on day N-1 (half-open interval).
+    Returns non-None for two cases:
+    - True multi-day events (end_day > start_day after half-open midnight adjustment).
+    - Midnight-to-midnight whole-day events (00:00 → 00:00 next day) that Graph stores
+      with isAllDay=false. These collapse to a single visible day in the band. Mirrors
+      the heuristic in backends/caldav.py:228.
     """
     try:
         t = datetime.fromisoformat(inst.dtstart_local).astimezone()
@@ -16,8 +19,14 @@ def multi_day_span(inst) -> tuple[date, date] | None:
         return None
     start_day = t.date()
     end_day = et.date()
-    if et.time() == time.min and end_day > start_day:
+    if end_day <= start_day:
+        return None
+    # Half-open: event ending at 00:00 of day N actually ends on day N-1.
+    if et.time() == time.min:
         end_day = end_day - timedelta(days=1)
     if end_day > start_day:
         return start_day, end_day
+    # After adjustment end_day == start_day: catches midnight-to-midnight whole-day events.
+    if t.time() == time.min and et.time() == time.min:
+        return start_day, start_day
     return None
