@@ -46,13 +46,19 @@ _EVENTS_LIST_FIELDS = (
     "attendees(email,displayName,self,responseStatus,organizer))"
 )
 
-SCOPES = [
+BASE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/contacts.other.readonly",
-    "https://www.googleapis.com/auth/directory.readonly",
 ]
+GOOGLE_DIRECTORY_SCOPE = "https://www.googleapis.com/auth/directory.readonly"
+# Keep for backward compat with code that imports SCOPES directly.
+SCOPES = BASE_SCOPES
+
+
+def _scopes_for_google(include_directory: bool) -> list[str]:
+    return BASE_SCOPES + ([GOOGLE_DIRECTORY_SCOPE] if include_directory else [])
 
 
 def _load_client_config() -> dict[str, object]:
@@ -477,13 +483,13 @@ def _google_event_to_change(
     return EventChange(kind="upsert", event=event, uid=uid)
 
 
-async def run_google_oauth_flow() -> str:
+async def run_google_oauth_flow(include_directory: bool = False) -> str:
     from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
         InstalledAppFlow,
     )
 
     _validate_client_config()
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
+    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, _scopes_for_google(include_directory))
     creds = await asyncio.to_thread(
         lambda: flow.run_local_server(open_browser=True, timeout_seconds=300)
     )
@@ -512,10 +518,12 @@ class GoogleBackend:
         account_id: str,
         token_json: str | None = None,
         on_token_refreshed=None,
+        include_directory: bool = False,
     ) -> None:
         self.account_id = account_id
         self._token_json = token_json
         self._on_token_refreshed = on_token_refreshed
+        self._include_directory = include_directory
         self._creds: Credentials | None = None
         self._http: Any = None  # httpx.AsyncClient, created lazily
 
@@ -524,7 +532,7 @@ class GoogleBackend:
             return self._creds
         if self._token_json:
             self._creds = Credentials.from_authorized_user_info(
-                json.loads(self._token_json), SCOPES
+                json.loads(self._token_json), _scopes_for_google(self._include_directory)
             )
         else:
             self._creds = None
@@ -867,7 +875,8 @@ class GoogleBackend:
         )
 
     def supported_contact_sources(self) -> tuple[str, ...]:
-        return ("personal", "other", "directory")
+        base = ("personal", "other")
+        return base + ("directory",) if self._include_directory else base
 
     @_classify_errors
     async def list_contacts(

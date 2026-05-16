@@ -1024,7 +1024,7 @@ class MainWindow(QMainWindow):
         data = dlg.result_data()
         if data is None:
             return
-        kind, display_name, identity, server_url, secret_data = data
+        kind, display_name, identity, server_url, secret_data, include_directory = data
         account_id = str(uuid.uuid4())
         calendar_id = str(uuid.uuid4())
         self._secrets.set(account_id, secret_data)
@@ -1036,6 +1036,7 @@ class MainWindow(QMainWindow):
             server_url=server_url,
             calendar_id=calendar_id,
             calendar_display_name=display_name or identity or "Calendar",
+            include_directory=include_directory,
         )
         label = display_name or identity or ""
         self._account_display_names[account_id] = label
@@ -1078,7 +1079,7 @@ class MainWindow(QMainWindow):
         data = dlg.result_data()
         if data is None:
             return
-        _kind, display_name, identity, server_url, secret_data = data
+        _kind, display_name, identity, server_url, secret_data, include_directory = data
         # Only persist secrets if the user actually entered new values. An
         # empty dict (or a dict with only empty values) means "keep the
         # existing secret" — never overwrite a working credential with "".
@@ -1089,6 +1090,7 @@ class MainWindow(QMainWindow):
             display_name=display_name,
             identity=identity,
             server_url=server_url,
+            include_directory=include_directory,
         )
         self._sidebar.refresh()
         self._fire_async(

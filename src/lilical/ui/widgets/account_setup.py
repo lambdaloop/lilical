@@ -8,6 +8,7 @@ from typing import Any
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -50,6 +51,7 @@ class AccountSetupDialog(QDialog):
         self.setMinimumWidth(420)
 
         self._secret_data: dict[str, Any] = {}
+        self._chosen_include_directory: bool = False
         self._active_oauth_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
         layout = QVBoxLayout(self)
@@ -105,8 +107,20 @@ class AccountSetupDialog(QDialog):
             if existing_account.server_url:
                 self._server_edit.setText(existing_account.server_url)
 
+        self._dir_checkbox = QCheckBox(
+            "Include organization directory in contacts — may require admin approval"
+        )
+        self._dir_checkbox.setToolTip(
+            "If your organization restricts third-party app access, leave this off.\n"
+            "lilical will still autocomplete invitees from people you've emailed before."
+        )
+        layout.addWidget(self._dir_checkbox)
+
         self._kind_combo.currentTextChanged.connect(self._on_kind_changed)
         self._on_kind_changed(self._kind_combo.currentText())
+
+        if self._reauth and existing_account is not None:
+            self._dir_checkbox.setChecked(bool(existing_account.include_directory))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
@@ -127,6 +141,7 @@ class AccountSetupDialog(QDialog):
         if not is_caldav:
             self._server_edit.clear()
             self._password_edit.clear()
+        self._dir_checkbox.setVisible(not is_caldav)
 
     def _collect_data(
         self,
@@ -167,18 +182,21 @@ class AccountSetupDialog(QDialog):
 
         kind, _display_name, _identity, _server_url, secret_data = data
 
+        include_directory = self._dir_checkbox.isChecked() and kind in ("google", "graph")
+
         if kind == "google":
-            token = self._run_oauth_flow("google")
+            token = self._run_oauth_flow("google", include_directory=include_directory)
             if token is None:
                 return
             secret_data["token"] = token
         elif kind == "graph":
-            cache_json = self._run_graph_device_flow()
+            cache_json = self._run_graph_device_flow(include_directory=include_directory)
             if cache_json is None:
                 return
             secret_data["msal_cache"] = cache_json
 
         self._secret_data = secret_data
+        self._chosen_include_directory = include_directory
         self.accept()
 
     def _cancel_active_oauth(self) -> None:
@@ -186,7 +204,7 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
 
-    def _run_oauth_flow(self, kind: str) -> str | None:
+    def _run_oauth_flow(self, kind: str, *, include_directory: bool = False) -> str | None:
         progress = QProgressDialog(
             "Opening browser for authentication...\n"
             "Complete the sign-in in your browser window, then return here.",
@@ -204,7 +222,7 @@ class AccountSetupDialog(QDialog):
         self._active_oauth_pool = pool
         try:
             if kind == "google":
-                future = pool.submit(_run_google_oauth_sync)
+                future = pool.submit(_run_google_oauth_sync, include_directory)
             else:
                 raise RuntimeError(f"unexpected oauth kind: {kind}")
             while not future.done():
@@ -223,7 +241,7 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool = None
             progress.close()
 
-    def _run_graph_device_flow(self) -> str | None:
+    def _run_graph_device_flow(self, *, include_directory: bool = False) -> str | None:
         import importlib.util as _util
 
         if _util.find_spec("msal") is None:
@@ -241,7 +259,7 @@ class AccountSetupDialog(QDialog):
         )
 
         try:
-            app, cache, flow = initiate_graph_device_flow()
+            app, cache, flow = initiate_graph_device_flow(include_directory=include_directory)
         except Exception as e:
             QMessageBox.critical(self, "Authentication failed", str(e))
             return None
@@ -322,7 +340,7 @@ class AccountSetupDialog(QDialog):
 
     def result_data(
         self,
-    ) -> tuple[str | None, str, str, str | None, dict[str, Any]] | None:
+    ) -> tuple[str | None, str, str, str | None, dict[str, Any], bool] | None:
         kind_map = {
             "Google Calendar": "google",
             "Microsoft / Outlook": "graph",
@@ -338,10 +356,10 @@ class AccountSetupDialog(QDialog):
         if not identity:
             return None
 
-        return (kind, display_name, identity, server_url, dict(self._secret_data))
+        return (kind, display_name, identity, server_url, dict(self._secret_data), self._chosen_include_directory)
 
 
-def _run_google_oauth_sync() -> str:
+def _run_google_oauth_sync(include_directory: bool = False) -> str:
     try:
         from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
             InstalledAppFlow,
@@ -354,11 +372,11 @@ def _run_google_oauth_sync() -> str:
 
     from lilical.backends.google import (
         CLIENT_CONFIG,
-        SCOPES,
+        _scopes_for_google,  # type: ignore[reportPrivateUsage]
         _validate_client_config,  # type: ignore[reportPrivateUsage]
     )
 
     _validate_client_config()  # type: ignore[reportPrivateUsage]
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
+    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, _scopes_for_google(include_directory))
     creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
     return creds.to_json()

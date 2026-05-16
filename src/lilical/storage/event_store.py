@@ -870,6 +870,7 @@ class EventStore(QObject):
         identity: str | None = None,
         server_url: str | None = None,
         enabled: bool | None = None,
+        include_directory: bool | None = None,
     ) -> None:
         from lilical.models.account import Account
 
@@ -885,6 +886,8 @@ class EventStore(QObject):
                 acc.server_url = server_url
             if enabled is not None:
                 acc.enabled = 1 if enabled else 0
+            if include_directory is not None:
+                acc.include_directory = 1 if include_directory else 0
 
     def delete_account(self, account_id: str) -> None:
         from lilical.models.account import Account
@@ -963,6 +966,7 @@ class EventStore(QObject):
         server_url: str | None,
         calendar_id: str,
         calendar_display_name: str,
+        include_directory: bool = False,
     ) -> None:
         from lilical.models.account import Account
         from lilical.models.calendar import Calendar
@@ -979,6 +983,7 @@ class EventStore(QObject):
                     secret_ref=account_id,
                     created_at=now,
                     enabled=1,
+                    include_directory=1 if include_directory else 0,
                 )
             )
             s.add(

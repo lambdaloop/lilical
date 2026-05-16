@@ -32,7 +32,14 @@ log = logging.getLogger(__name__)
 # not. Trade-off: the user-facing consent screen reads "Evolution / GNOME".
 GRAPH_CLIENT_ID = "20460e5d-ce91-49af-a3a5-70b6be7486d1"
 GRAPH_AUTHORITY = "https://login.microsoftonline.com/common"
-GRAPH_SCOPES = ["Calendars.ReadWrite", "User.Read", "People.Read", "Contacts.Read", "User.ReadBasic.All"]
+GRAPH_BASE_SCOPES = ["Calendars.ReadWrite", "User.Read", "People.Read", "Contacts.Read"]
+GRAPH_DIRECTORY_SCOPE = "User.ReadBasic.All"
+# Keep for backward compat with tests that import the name directly.
+GRAPH_SCOPES = GRAPH_BASE_SCOPES
+
+
+def _scopes_for_graph(include_directory: bool) -> list[str]:
+    return GRAPH_BASE_SCOPES + ([GRAPH_DIRECTORY_SCOPE] if include_directory else [])
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # calendarView/delta requires an explicit window. We default to ±2 years; events
@@ -783,7 +790,9 @@ def _new_msal_app(cache_json: str | None):
     return app, cache
 
 
-def initiate_graph_device_flow() -> tuple[Any, Any, dict[str, object]]:
+def initiate_graph_device_flow(
+    include_directory: bool = False,
+) -> tuple[Any, Any, dict[str, object]]:
     # type: ignore[reportMissingTypeArgument]
     """Start a device-code flow. Returns (msal_app, cache, flow_dict).
 
@@ -791,7 +800,7 @@ def initiate_graph_device_flow() -> tuple[Any, Any, dict[str, object]]:
     Pass the same app/cache/flow to complete_graph_device_flow to block until done.
     """
     app, cache = _new_msal_app(None)
-    flow = app.initiate_device_flow(scopes=GRAPH_SCOPES)
+    flow = app.initiate_device_flow(scopes=_scopes_for_graph(include_directory))
     if "user_code" not in flow:
         err = flow.get("error_description") or flow.get("error") or "init failed"
         raise RuntimeError(str(err))
@@ -813,10 +822,12 @@ class GraphBackend:
         account_id: str,
         token_cache_json: str | None = None,
         on_token_refreshed: Callable[[str], None] | None = None,
+        include_directory: bool = False,
     ) -> None:
         self.account_id = account_id
         self._cache_json = token_cache_json
         self._on_token_refreshed = on_token_refreshed
+        self._include_directory = include_directory
         self._http = None  # httpx.AsyncClient, created lazily
 
     def _acquire_token(self) -> str:
@@ -824,7 +835,7 @@ class GraphBackend:
         accounts = app.get_accounts()
         if not accounts:
             raise AuthExpired("no cached account; re-authenticate required")
-        result = app.acquire_token_silent(GRAPH_SCOPES, account=accounts[0])
+        result = app.acquire_token_silent(_scopes_for_graph(self._include_directory), account=accounts[0])
         if not result or "access_token" not in result:
             raise AuthExpired("silent token acquisition failed")
         if cache.has_state_changed:
@@ -1261,7 +1272,8 @@ class GraphBackend:
         await self._request("DELETE", f"/me/events/{instance_id}")
 
     def supported_contact_sources(self) -> tuple[str, ...]:
-        return ("other", "personal", "directory")
+        base = ("other", "personal")
+        return base + ("directory",) if self._include_directory else base
 
     @_classify_errors
     async def list_contacts(

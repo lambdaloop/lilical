@@ -33,6 +33,7 @@ def build_backend_factory(secrets: SecretsStore):
                 account_id=account.id,
                 token_json=secret.get("token"),
                 on_token_refreshed=_save_google_token,
+                include_directory=bool(account.include_directory),
             )
         if account.kind == "graph":
             from lilical.backends.graph import GraphBackend
@@ -41,6 +42,7 @@ def build_backend_factory(secrets: SecretsStore):
                 account_id=account.id,
                 token_cache_json=secret.get("msal_cache"),
                 on_token_refreshed=_save_graph_cache,
+                include_directory=bool(account.include_directory),
             )
         raise NotImplementedError(f"Backend for {account.kind} not yet implemented")
 

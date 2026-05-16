@@ -16,6 +16,7 @@ def _account(kind: str, **extra) -> SimpleNamespace:
         kind=kind,
         identity="user@example.com",
         server_url=extra.get("server_url"),
+        include_directory=extra.get("include_directory", 0),
     )
 
 

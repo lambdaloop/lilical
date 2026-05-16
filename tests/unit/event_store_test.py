@@ -60,7 +60,8 @@ def _create_test_schema(engine) -> None:
                 secret_ref TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 sort_order INTEGER DEFAULT 0,
-                enabled INTEGER DEFAULT 1
+                enabled INTEGER DEFAULT 1,
+                include_directory INTEGER DEFAULT 0
             )
             """
         )
