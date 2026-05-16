@@ -120,7 +120,7 @@ def _create_test_schema(engine) -> None:
                 local_modified_at TEXT,
                 inserted_at TEXT,
                 PRIMARY KEY(uid, calendar_id, recurrence_id),
-                UNIQUE(calendar_id, provider_event_id)
+                UNIQUE(calendar_id, provider_event_id, recurrence_id)
             )
             """
         )
@@ -2103,3 +2103,62 @@ def test_queue_truncate_series_missing_master_raises_value_error(engine) -> None
     until_dt = datetime(2026, 6, 9, 9, 0, tzinfo=timezone.utc)
     with pytest.raises(ValueError, match="No master event"):
         store.queue_truncate_series("nonexistent", "cal-1", until_dt)
+
+
+# ── CalDAV recurring-override regression (uq_events_provider) ──────────────────
+
+
+def test_caldav_master_and_override_same_provider_event_id_both_persist(engine) -> None:
+    """Master and recurrence override from the same .ics URL must not collide.
+
+    CalDAV returns a single .ics resource that contains both the master VEVENT
+    and one VEVENT per RECURRENCE-ID override. Both get the same provider_event_id
+    (the .ics URL). The unique constraint must allow this because recurrence_id
+    differs between them.
+    """
+    from lilical.backends.base import EventChange
+
+    store = EventStore(engine)
+    ics_url = "https://dav.example.com/cal/organizing-meeting.ics"
+
+    master = Event(
+        uid="3nhua1nmrlbjfu2hj0tktmrt1q@google.com",
+        calendar_id="cal-1",
+        provider_event_id=ics_url,
+        dtstart=datetime(2024, 10, 21, 18, 0, tzinfo=timezone.utc),
+        dtend=datetime(2024, 10, 21, 19, 0, tzinfo=timezone.utc),
+        tz="America/Los_Angeles",
+        summary="organizing meeting",
+        rrule="FREQ=WEEKLY",
+    )
+    override = Event(
+        uid="3nhua1nmrlbjfu2hj0tktmrt1q@google.com",
+        calendar_id="cal-1",
+        provider_event_id=ics_url,
+        recurrence_id=datetime(2024, 10, 21, 18, 0, tzinfo=timezone.utc),
+        dtstart=datetime(2024, 10, 24, 18, 0, tzinfo=timezone.utc),
+        dtend=datetime(2024, 10, 24, 19, 0, tzinfo=timezone.utc),
+        tz="America/Los_Angeles",
+        summary="organizing meeting",
+    )
+
+    count = store.apply_remote_changes(
+        "cal-1",
+        [
+            EventChange(kind="upsert", event=master, uid=master.uid),
+            EventChange(kind="upsert", event=override, uid=override.uid),
+        ],
+        "{}",
+    )
+
+    assert count == 2
+    with Session(engine) as s:
+        rows = (
+            s.query(EventRow)
+            .filter_by(uid="3nhua1nmrlbjfu2hj0tktmrt1q@google.com", calendar_id="cal-1")
+            .all()
+        )
+    assert len(rows) == 2
+    recurrence_ids = {r.recurrence_id for r in rows}
+    assert "" in recurrence_ids  # master
+    assert any(r != "" for r in recurrence_ids)  # override

@@ -28,7 +28,10 @@ class Organizer:
 class EventRow(Base):
     __tablename__ = "events"
     __table_args__ = (
-        UniqueConstraint("calendar_id", "provider_event_id", name="uq_events_provider"),
+        UniqueConstraint(
+            "calendar_id", "provider_event_id", "recurrence_id",
+            name="uq_events_provider",
+        ),
         Index("idx_events_calendar", "calendar_id"),
         Index("idx_events_dirty", "local_dirty", sqlite_where=text("local_dirty=1")),
         Index(
