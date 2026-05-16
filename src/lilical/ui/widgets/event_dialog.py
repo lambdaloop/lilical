@@ -121,6 +121,7 @@ class EventDialog(QDialog):
         super().__init__(parent)
         self._store = store
         self._event = event
+        self._invitees_edit = None  # set below once we know the contact store
         self._editing = event is not None
         self.setWindowTitle("Edit event" if event else "New event")
         self.setMinimumWidth(480)
@@ -243,6 +244,20 @@ class EventDialog(QDialog):
         if event and event.url:
             self._url_edit.setText(event.url)
         form.addRow("URL:", self._url_edit)
+
+        # ── Invitees ───────────────────────────────────────────────────────────
+        from lilical.ui.widgets.contact_completer import InviteeChipEdit
+
+        contact_store = getattr(store, "contacts", None)
+        account_ids = [acc.id for acc in store.list_accounts(enabled_only=False)]
+        self._invitees_edit = InviteeChipEdit(
+            contact_store=contact_store,
+            account_ids=account_ids,
+            parent=self,
+        )
+        if event and event.attendees:
+            self._invitees_edit.set_invitees(event.attendees)
+        form.addRow("Invitees:", self._invitees_edit)
 
         # ── Notes ──────────────────────────────────────────────────────────────
         self._notes_edit = QTextEdit()
@@ -382,6 +397,12 @@ class EventDialog(QDialog):
         rrule = self._rrule_editor.value()
 
         src = self._event
+        invitees = tuple(self._invitees_edit.invitees()) if self._invitees_edit else ()
+        # Re-attach the self attendee from the original event so our own entry is preserved.
+        if src and src.attendees:
+            self_att = next((a for a in src.attendees if a.is_self), None)
+            if self_att and not any(a.email == self_att.email for a in invitees):
+                invitees = (self_att,) + invitees
         return Event(
             uid=uid,
             calendar_id=cal_id,
@@ -403,5 +424,7 @@ class EventDialog(QDialog):
             color=color,
             status=self._selected_status(),
             transparency=self._selected_transparency(),
+            attendees=invitees,
+            organizer=src.organizer if src else None,
             local_dirty=True,
         )

@@ -61,6 +61,21 @@ def event_to_vcalendar(
     if event.recurrence_id is not None:
         _add_dt_with_tzid(ve, "recurrence-id", event.recurrence_id, event.tz)
 
+    for att in event.attendees:
+        attendee_val = icalendar.vCalAddress(f"mailto:{att.email}")
+        attendee_val.params["ROLE"] = "REQ-PARTICIPANT"
+        attendee_val.params["PARTSTAT"] = att.response
+        attendee_val.params["RSVP"] = "TRUE"
+        if att.display_name:
+            attendee_val.params["CN"] = att.display_name
+        ve.add("attendee", attendee_val)
+
+    if event.organizer:
+        org_val = icalendar.vCalAddress(f"mailto:{event.organizer.email}")
+        if event.organizer.display_name:
+            org_val.params["CN"] = event.organizer.display_name
+        ve.add("organizer", org_val)
+
     cal.add_component(ve)
     return cal
 

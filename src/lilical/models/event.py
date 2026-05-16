@@ -9,6 +9,22 @@ from sqlalchemy.orm import Mapped, mapped_column
 from lilical.models.db import Base
 
 
+@dataclass(frozen=True, slots=True)
+class Attendee:
+    email: str
+    display_name: str | None = None
+    response: str = "NEEDS-ACTION"  # ACCEPTED / TENTATIVE / DECLINED / NEEDS-ACTION
+    is_organizer: bool = False
+    is_self: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Organizer:
+    email: str
+    display_name: str | None = None
+    is_self: bool = False
+
+
 class EventRow(Base):
     __tablename__ = "events"
     __table_args__ = (
@@ -45,6 +61,7 @@ class EventRow(Base):
     exdates: Mapped[str | None] = mapped_column(Text)
     rdates: Mapped[str | None] = mapped_column(Text)
     attendees: Mapped[str | None] = mapped_column(Text)
+    organizer: Mapped[str | None] = mapped_column(Text)
     categories: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, default="CONFIRMED")
@@ -95,7 +112,8 @@ class Event:
     recurrence_id: datetime | None = None
     exdates: tuple[datetime, ...] = ()
     rdates: tuple[datetime, ...] = ()
-    attendees: tuple[str, ...] = ()
+    attendees: tuple[Attendee, ...] = ()
+    organizer: Organizer | None = None
     categories: tuple[str, ...] = ()
     color: str | None = None
     status: str = "CONFIRMED"

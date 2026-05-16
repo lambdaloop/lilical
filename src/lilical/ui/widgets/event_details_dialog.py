@@ -169,11 +169,19 @@ class EventDetailsDialog(QDialog):
             _add_row("Show as:", "Free")
 
 
+        # ── Organizer ────────────────────────────────────────────────────────
+        if event.organizer:
+            _add_row("Organizer:", _format_organizer(event.organizer))
+
         # ── Attendees ─────────────────────────────────────────────────────────
         if event.attendees:
-            _add_row(
-                "Attendees:", "\n".join(_format_attendee(a) for a in event.attendees)
-            )
+            groups = _group_attendees(event.attendees)
+            for group_label, group_items in groups:
+                if group_items:
+                    _add_row(
+                        f"{group_label}:",
+                        "\n".join(_format_attendee_line(a) for a in group_items),
+                    )
 
         # ── Categories ────────────────────────────────────────────────────────
         if event.categories:
@@ -352,11 +360,70 @@ def _linkify(text: str) -> str:
     return "".join(out)
 
 
-def _format_attendee(raw: str) -> str:
-    # Strip iCal parameters (e.g. "RSVP=TRUE:mailto:foo@bar.com" → "foo@bar.com").
+def _format_organizer(organizer: object) -> str:
+    from lilical.models.event import Organizer
+
+    if not isinstance(organizer, Organizer):
+        return str(organizer)
+    if organizer.display_name:
+        return f"{organizer.display_name} <{organizer.email}>" + (" (you)" if organizer.is_self else "")
+    return organizer.email + (" (you)" if organizer.is_self else "")
+
+
+_RESPONSE_ORDER = ["ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"]
+_RESPONSE_LABEL = {
+    "ACCEPTED": "Accepted",
+    "TENTATIVE": "Tentative",
+    "DECLINED": "Declined",
+    "NEEDS-ACTION": "No response",
+}
+
+
+def _group_attendees(
+    attendees: tuple,
+) -> list[tuple[str, list]]:
+    from lilical.models.event import Attendee
+
+    groups: dict[str, list] = {k: [] for k in _RESPONSE_ORDER}
+    for a in attendees:
+        if isinstance(a, Attendee):
+            resp = (a.response or "NEEDS-ACTION").upper()
+            bucket = resp if resp in groups else "NEEDS-ACTION"
+            groups[bucket].append(a)
+        else:
+            # Legacy string shape — put in no-response bucket.
+            groups["NEEDS-ACTION"].append(a)
+    return [(_RESPONSE_LABEL[k], groups[k]) for k in _RESPONSE_ORDER]
+
+
+def _format_attendee_line(a: object) -> str:
+    from lilical.models.event import Attendee
+
+    if not isinstance(a, Attendee):
+        return _format_attendee_legacy(str(a))
+    parts = []
+    if a.display_name:
+        parts.append(f"{a.display_name} <{a.email}>")
+    else:
+        parts.append(a.email)
+    if a.is_organizer:
+        parts.append("(organizer)")
+    if a.is_self:
+        parts.append("(you)")
+    return " ".join(parts)
+
+
+def _format_attendee_legacy(raw: str) -> str:
     if ":" in raw:
         raw = raw.rsplit(":", 1)[-1]
-    # Strip mailto: prefix (case-insensitive).
     if raw.lower().startswith("mailto:"):
         raw = raw[7:]
     return raw
+
+
+def _format_attendee(raw: object) -> str:
+    from lilical.models.event import Attendee
+
+    if isinstance(raw, Attendee):
+        return _format_attendee_line(raw)
+    return _format_attendee_legacy(str(raw))

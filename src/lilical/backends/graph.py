@@ -19,7 +19,8 @@ from lilical.backends.base import (
     SyncCursor,
     TransientError,
 )
-from lilical.models.event import Event
+from lilical.models.contact import Contact
+from lilical.models.event import Attendee, Event, Organizer
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ log = logging.getLogger(__name__)
 # not. Trade-off: the user-facing consent screen reads "Evolution / GNOME".
 GRAPH_CLIENT_ID = "20460e5d-ce91-49af-a3a5-70b6be7486d1"
 GRAPH_AUTHORITY = "https://login.microsoftonline.com/common"
-GRAPH_SCOPES = ["Calendars.ReadWrite", "User.Read"]
+GRAPH_SCOPES = ["Calendars.ReadWrite", "User.Read", "People.Read", "Contacts.Read", "User.ReadBasic.All"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # calendarView/delta requires an explicit window. We default to ±2 years; events
@@ -500,21 +501,41 @@ def _graph_event_to_change(
     categories = tuple(str(c) for c in categories_raw if c)
 
     attendees_raw = cast("list[object]", ev_json.get("attendees") or [])
-    attendees: list[str] = []
-    for a in attendees_raw:
-        email = (
-            (a.get("emailAddress") or {}).get("address")
-            if isinstance(a, dict)
-            else None
-        )
-        if email:
-            attendees.append(str(email))
-
-    # Microsoft Graph exposes the current user's response at the event level.
+    attendees: list[Attendee] = []
+    # Graph exposes the user's own response at the top-level responseStatus block.
     response_obj = cast("dict[str, object]", ev_json.get("responseStatus") or {})
     self_response = _GRAPH_RESPONSE_MAP.get(
         str(response_obj.get("response") or "").lower()
     )
+    organizer_obj = cast("dict[str, object]", ev_json.get("organizer") or {})
+    organizer_email_obj = cast("dict[str, object]", organizer_obj.get("emailAddress") or {})
+    organizer: Organizer | None = None
+    if organizer_email_obj.get("address"):
+        organizer = Organizer(
+            email=str(organizer_email_obj["address"]),
+            display_name=str(organizer_email_obj["name"]) if organizer_email_obj.get("name") else None,
+            is_self=bool(organizer_obj.get("self")),
+        )
+    for a in attendees_raw:
+        if not isinstance(a, dict):
+            continue
+        ea = cast("dict[str, object]", a.get("emailAddress") or {})
+        email = str(ea.get("address") or "")
+        if not email:
+            continue
+        # Graph has no per-attendee response — all use the top-level responseStatus.
+        # For the self attendee, use that; otherwise NEEDS-ACTION.
+        is_self = bool(a.get("self"))
+        resp = self_response if is_self else "NEEDS-ACTION"
+        attendees.append(
+            Attendee(
+                email=email,
+                display_name=str(ea.get("name") or "") or None,
+                response=resp or "NEEDS-ACTION",
+                is_organizer=False,
+                is_self=is_self,
+            )
+        )
 
     last_modified = _safe(
         lambda: _parse_graph_dt(
@@ -568,6 +589,7 @@ def _graph_event_to_change(
         rrule=rrule,
         recurrence_id=recurrence_id,
         attendees=tuple(attendees),
+        organizer=organizer,
         categories=categories,
         status=status,
         self_response=self_response,
@@ -708,14 +730,10 @@ def _event_to_graph_json(event: Event) -> dict[str, Any]:
     if event.categories:
         body["categories"] = list(event.categories)
     if event.attendees:
-        attendees_list = []
-        for att in event.attendees:
-            if isinstance(att, dict):
-                email = att.get("email", "")
-                name = att.get("name", "")
-                attendees_list.append(
-                    {"emailAddress": {"address": email, "name": name}}
-                )
+        attendees_list = [
+            {"emailAddress": {"address": att.email, "name": att.display_name or ""}}
+            for att in event.attendees
+        ]
         if attendees_list:
             body["attendees"] = attendees_list
     return body
@@ -1241,6 +1259,103 @@ class GraphBackend:
                 f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
             )
         await self._request("DELETE", f"/me/events/{instance_id}")
+
+    def supported_contact_sources(self) -> tuple[str, ...]:
+        return ("other", "personal", "directory")
+
+    @_classify_errors
+    async def list_contacts(
+        self, source: str, cursor: dict | None
+    ) -> tuple[list[Contact], dict | None, bool]:
+        contacts: list[Contact] = []
+        if source == "other":
+            # /me/people — relevance-ranked from mail+calendar interactions.
+            skip = (cursor or {}).get("skip", 0)
+            resp = await self._request(
+                "GET",
+                f"/me/people?$top=500&$skip={skip}&$select=id,displayName,scoredEmailAddresses,personType",
+            )
+            data = resp.json()
+            people = data.get("value") or []
+            for p in people:
+                if not isinstance(p, dict):
+                    continue
+                name = str(p.get("displayName") or "").strip() or None
+                for ea in (p.get("scoredEmailAddresses") or []):
+                    addr = str(ea.get("address") or "").strip().lower() if isinstance(ea, dict) else ""
+                    if addr and "@" in addr:
+                        contacts.append(Contact(
+                            email=addr,
+                            display_name=name,
+                            source="other",
+                            account_id=self.account_id,
+                            source_id=str(p.get("id") or "") or None,
+                        ))
+            next_link = data.get("@odata.nextLink")
+            if next_link:
+                return contacts, {"skip": skip + len(people)}, False
+            return contacts, None, True
+
+        if source == "personal":
+            skip_token = (cursor or {}).get("skipToken", "")
+            url = "/me/contacts?$top=100&$select=id,displayName,emailAddresses"
+            if skip_token:
+                url += f"&$skiptoken={skip_token}"
+            resp = await self._request("GET", url)
+            data = resp.json()
+            for c in (data.get("value") or []):
+                if not isinstance(c, dict):
+                    continue
+                name = str(c.get("displayName") or "").strip() or None
+                for ea in (c.get("emailAddresses") or []):
+                    addr = str(ea.get("address") or "").strip().lower() if isinstance(ea, dict) else ""
+                    if addr and "@" in addr:
+                        contacts.append(Contact(
+                            email=addr,
+                            display_name=name,
+                            source="personal",
+                            account_id=self.account_id,
+                            source_id=str(c.get("id") or "") or None,
+                        ))
+            next_link = data.get("@odata.nextLink")
+            if next_link:
+                import urllib.parse as _up
+                parsed = _up.urlparse(next_link)
+                qs = dict(_up.parse_qsl(parsed.query))
+                return contacts, {"skipToken": qs.get("$skiptoken", "")}, False
+            return contacts, None, True
+
+        if source == "directory":
+            skip_token = (cursor or {}).get("skipToken", "")
+            url = "/users?$top=999&$select=id,displayName,mail,userPrincipalName"
+            if skip_token:
+                url += f"&$skiptoken={skip_token}"
+            resp = await self._request("GET", url)
+            data = resp.json()
+            for u in (data.get("value") or []):
+                if not isinstance(u, dict):
+                    continue
+                name = str(u.get("displayName") or "").strip() or None
+                for field in ("mail", "userPrincipalName"):
+                    addr = str(u.get(field) or "").strip().lower()
+                    if addr and "@" in addr:
+                        contacts.append(Contact(
+                            email=addr,
+                            display_name=name,
+                            source="directory",
+                            account_id=self.account_id,
+                            source_id=str(u.get("id") or "") or None,
+                        ))
+                        break
+            next_link = data.get("@odata.nextLink")
+            if next_link:
+                import urllib.parse as _up
+                parsed = _up.urlparse(next_link)
+                qs = dict(_up.parse_qsl(parsed.query))
+                return contacts, {"skipToken": qs.get("$skiptoken", "")}, False
+            return contacts, None, True
+
+        return [], None, True
 
     async def aclose(self) -> None:
         if self._http is not None:

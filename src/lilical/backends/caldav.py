@@ -26,7 +26,8 @@ from lilical.backends.base import (
     SyncCursor,
     TransientError,
 )
-from lilical.models.event import Event
+from lilical.models.contact import Contact
+from lilical.models.event import Attendee, Event, Organizer
 from lilical.utils.timezone import local_iana_tz
 
 log = logging.getLogger(__name__)
@@ -267,27 +268,44 @@ def _vevent_to_event(
     attendees_raw = ve.get("ATTENDEE")
     self_response: str | None = None
     user_email_norm = (user_email or "").strip().lower()
+    attendees: tuple[Attendee, ...]
     if attendees_raw is None:
-        attendees: tuple[str, ...] = ()
+        attendees = ()
     else:
         items = attendees_raw if isinstance(attendees_raw, list) else [attendees_raw]
-        attendees = tuple(str(a) for a in items)
-        # If we know the user's email, scan attendees for a matching mailto:
-        # and capture that attendee's PARTSTAT parameter.
-        if user_email_norm:
-            for a in items:
-                addr = str(a).strip().lower()
-                if addr.startswith("mailto:"):
-                    addr = addr[7:]
-                if addr != user_email_norm:
-                    continue
-                params = getattr(a, "params", None)
-                if params is None:
-                    continue
-                partstat = str(params.get("PARTSTAT", "")).upper()
-                if partstat in {"ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"}:
-                    self_response = partstat
-                break
+        built: list[Attendee] = []
+        for a in items:
+            raw_addr = str(a).strip().lower()
+            if raw_addr.startswith("mailto:"):
+                raw_addr = raw_addr[7:]
+            params = getattr(a, "params", None) or {}
+            partstat = str(params.get("PARTSTAT", "NEEDS-ACTION")).upper()
+            if partstat not in {"ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"}:
+                partstat = "NEEDS-ACTION"
+            cn = str(params.get("CN", "")).strip() or None
+            is_self = bool(raw_addr and raw_addr == user_email_norm)
+            if is_self and partstat != "NEEDS-ACTION":
+                self_response = partstat
+            built.append(Attendee(
+                email=raw_addr,
+                display_name=cn,
+                response=partstat,
+                is_organizer=False,
+                is_self=is_self,
+            ))
+        attendees = tuple(built)
+
+    # Parse ORGANIZER property.
+    org_prop = ve.get("ORGANIZER")
+    organizer: Organizer | None = None
+    if org_prop is not None:
+        org_addr = str(org_prop).strip().lower()
+        if org_addr.startswith("mailto:"):
+            org_addr = org_addr[7:]
+        org_params = getattr(org_prop, "params", None) or {}
+        org_cn = str(org_params.get("CN", "")).strip() or None
+        is_self_org = bool(org_addr and org_addr == user_email_norm)
+        organizer = Organizer(email=org_addr, display_name=org_cn, is_self=is_self_org)
 
     categories_raw = ve.get("CATEGORIES")
     if categories_raw is None:
@@ -362,6 +380,7 @@ def _vevent_to_event(
         exdates=exdates,
         rdates=rdates,
         attendees=attendees,
+        organizer=organizer,
         categories=categories,
         status=str(ve.get("STATUS", "CONFIRMED")),
         self_response=self_response,
@@ -890,3 +909,177 @@ class CalDavBackend:
         await self._run(event_obj.save)
         new_etag = getattr(event_obj, "etag", None)
         return _dc.replace(event, etag=new_etag, self_response=response)
+
+    def supported_contact_sources(self) -> tuple[str, ...]:
+        return ("personal",)
+
+    @_classify_errors
+    async def list_contacts(
+        self, source: str, cursor: dict | None
+    ) -> tuple[list[Contact], dict | None, bool]:
+        if source != "personal":
+            return [], None, True
+        try:
+            return await self._list_carddav_contacts(cursor)
+        except Exception as e:
+            log.warning("CardDAV contact discovery failed: %s — falling back to harvested", e)
+            return [], None, True
+
+    async def _list_carddav_contacts(
+        self, cursor: dict | None
+    ) -> tuple[list[Contact], dict | None, bool]:
+        import xml.etree.ElementTree as ET
+
+        client = await self._get_client()
+        base_url = str(client.url)
+
+        # Step 1: Discover principal URL.
+        principal_url = await self._carddav_propfind(
+            base_url,
+            "<D:current-user-principal/>",
+            client,
+        )
+        if not principal_url:
+            principal_url = base_url
+
+        # Step 2: Find addressbook-home-set.
+        ab_home = await self._carddav_propfind(
+            principal_url,
+            "<C:addressbook-home-set xmlns:C='urn:ietf:params:xml:ns:carddav'/>",
+            client,
+        )
+        if not ab_home:
+            log.debug("CardDAV: no addressbook-home-set found on %s", principal_url)
+            return [], None, True
+
+        # Step 3: Enumerate address-book collections.
+        ab_urls = await self._carddav_list_addressbooks(ab_home, client)
+        if not ab_urls:
+            return [], None, True
+
+        # Step 4: Fetch VCARDs from each address book.
+        contacts: list[Contact] = []
+        try:
+            import vobject  # type: ignore[reportMissingModuleSource]
+        except ImportError:
+            log.warning("vobject not installed — CardDAV contact parsing skipped")
+            return [], None, True
+
+        for ab_url in ab_urls:
+            vcards = await self._carddav_fetch_vcards(ab_url, client)
+            for vcard_text in vcards:
+                try:
+                    vcard = vobject.readOne(vcard_text)
+                    name: str | None = None
+                    fn = getattr(vcard, "fn", None)
+                    if fn is not None:
+                        name = str(fn.value).strip() or None
+                    emails_prop = getattr(vcard, "email_list", None) or []
+                    if not emails_prop:
+                        ep = getattr(vcard, "email", None)
+                        emails_prop = [ep] if ep else []
+                    for ep in emails_prop:
+                        addr = str(ep.value).strip().lower()
+                        if addr and "@" in addr:
+                            contacts.append(Contact(
+                                email=addr,
+                                display_name=name,
+                                source="personal",
+                                account_id=self.account_id,
+                            ))
+                except Exception as e:
+                    log.debug("vcard parse error: %s", e)
+
+        return contacts, None, True
+
+    async def _carddav_propfind(
+        self, url: str, prop_xml: str, client
+    ) -> str | None:
+        import xml.etree.ElementTree as ET
+
+        body = (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<D:propfind xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            f"<D:prop>{prop_xml}</D:prop>"
+            "</D:propfind>"
+        )
+        try:
+            resp = await self._run(
+                lambda: client.request(
+                    "PROPFIND",
+                    url,
+                    body=body,
+                    headers={"Depth": "0", "Content-Type": "application/xml"},
+                )
+            )
+            raw = resp.raw if hasattr(resp, "raw") else str(resp)
+            root = ET.fromstring(raw if isinstance(raw, (str, bytes)) else "")
+            ns = {"D": "DAV:", "C": "urn:ietf:params:xml:ns:carddav"}
+            for href_el in root.iter("{DAV:}href"):
+                val = (href_el.text or "").strip()
+                if val and val != url.rstrip("/"):
+                    from urllib.parse import urljoin
+                    return urljoin(url, val)
+        except Exception as e:
+            log.debug("PROPFIND %s failed: %s", url, e)
+        return None
+
+    async def _carddav_list_addressbooks(self, home_url: str, client) -> list[str]:
+        import xml.etree.ElementTree as ET
+
+        body = (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<D:propfind xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            "<D:prop><D:resourcetype/></D:prop>"
+            "</D:propfind>"
+        )
+        urls: list[str] = []
+        try:
+            resp = await self._run(
+                lambda: client.request(
+                    "PROPFIND",
+                    home_url,
+                    body=body,
+                    headers={"Depth": "1", "Content-Type": "application/xml"},
+                )
+            )
+            raw = resp.raw if hasattr(resp, "raw") else str(resp)
+            root = ET.fromstring(raw if isinstance(raw, (str, bytes)) else "")
+            for response in root.iter("{DAV:}response"):
+                rt = response.find(".//{DAV:}resourcetype")
+                if rt is not None and rt.find("{urn:ietf:params:xml:ns:carddav}addressbook") is not None:
+                    href_el = response.find("{DAV:}href")
+                    if href_el is not None and href_el.text:
+                        from urllib.parse import urljoin
+                        urls.append(urljoin(home_url, href_el.text.strip()))
+        except Exception as e:
+            log.debug("addressbook listing failed for %s: %s", home_url, e)
+        return urls
+
+    async def _carddav_fetch_vcards(self, ab_url: str, client) -> list[str]:
+        body = (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<C:addressbook-query xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            "<D:prop><D:getetag/><C:address-data/></D:prop>"
+            "</C:addressbook-query>"
+        )
+        import xml.etree.ElementTree as ET
+
+        vcards: list[str] = []
+        try:
+            resp = await self._run(
+                lambda: client.request(
+                    "REPORT",
+                    ab_url,
+                    body=body,
+                    headers={"Depth": "1", "Content-Type": "application/xml"},
+                )
+            )
+            raw = resp.raw if hasattr(resp, "raw") else str(resp)
+            root = ET.fromstring(raw if isinstance(raw, (str, bytes)) else "")
+            for ad in root.iter("{urn:ietf:params:xml:ns:carddav}address-data"):
+                if ad.text:
+                    vcards.append(ad.text)
+        except Exception as e:
+            log.debug("addressbook-query failed for %s: %s", ab_url, e)
+        return vcards

@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from lilical.models.calendar import Calendar
-from lilical.models.event import Event, EventInstanceRow, EventRow
+from lilical.models.event import Attendee, Event, EventInstanceRow, EventRow, Organizer
 from lilical.models.pending_op import PendingOpRow
 from lilical.utils.timezone import local_iana_tz
 
@@ -46,6 +46,34 @@ def _json_loads_tuple(s: str | None) -> tuple[Any, ...]:
     return tuple(json.loads(s))
 
 
+def _attendee_from_json(d: Any) -> Attendee:
+    if isinstance(d, dict):
+        return Attendee(
+            email=str(d.get("email", "")),
+            display_name=d.get("display_name") or None,
+            response=str(d.get("response", "NEEDS-ACTION")),
+            is_organizer=bool(d.get("is_organizer", False)),
+            is_self=bool(d.get("is_self", False)),
+        )
+    # Legacy string shape — strip mailto: and iCal params.
+    raw = str(d)
+    if ":" in raw:
+        raw = raw.rsplit(":", 1)[-1]
+    if raw.lower().startswith("mailto:"):
+        raw = raw[7:]
+    return Attendee(email=raw)
+
+
+def _organizer_from_json(d: Any) -> Organizer | None:
+    if not d or not isinstance(d, dict):
+        return None
+    return Organizer(
+        email=str(d.get("email", "")),
+        display_name=d.get("display_name") or None,
+        is_self=bool(d.get("is_self", False)),
+    )
+
+
 def _row_to_event(row: EventRow) -> Event:
     return Event(
         uid=row.uid,
@@ -63,7 +91,13 @@ def _row_to_event(row: EventRow) -> Event:
         rrule=row.rrule,
         exdates=_parse_dt_tuple(row.exdates),
         rdates=_parse_dt_tuple(row.rdates),
-        attendees=_json_loads_tuple(row.attendees),
+        attendees=tuple(
+            _attendee_from_json(a)
+            for a in (json.loads(row.attendees) if row.attendees else [])
+        ),
+        organizer=_organizer_from_json(
+            json.loads(row.organizer) if row.organizer else None
+        ),
         categories=_json_loads_tuple(row.categories),
         color=row.color,
         status=row.status or "CONFIRMED",
@@ -94,13 +128,14 @@ def _dt_tuple_to_json(dts: tuple[datetime, ...]) -> str | None:
 
 def _event_to_json(event: Event) -> str:
     d = dataclasses.asdict(event)
+    # Fix datetime fields (asdict preserves datetime objects, json.dumps won't).
     d["dtstart"] = _to_iso(event.dtstart)
     d["dtend"] = _to_iso(event.dtend)
     d["recurrence_id"] = _to_iso(event.recurrence_id)
     d["last_modified"] = _to_iso(event.last_modified)
     d["exdates"] = [dt.isoformat() for dt in event.exdates]
     d["rdates"] = [dt.isoformat() for dt in event.rdates]
-    d["attendees"] = list(event.attendees)
+    # attendees / organizer are already dicts via dataclasses.asdict — keep them.
     d["categories"] = list(event.categories)
     d["valarms"] = list(event.valarms)
     return json.dumps(d)
@@ -123,7 +158,8 @@ def _event_to_row(event: Event) -> EventRow:
         rrule=event.rrule,
         exdates=_dt_tuple_to_json(event.exdates),
         rdates=_dt_tuple_to_json(event.rdates),
-        attendees=_json_dumps(list(event.attendees)) or "",
+        attendees=_json_dumps([dataclasses.asdict(a) for a in event.attendees]) or "",
+        organizer=_json_dumps(dataclasses.asdict(event.organizer) if event.organizer else None),
         categories=_json_dumps(list(event.categories)) or "",
         color=event.color,
         status=event.status,
@@ -152,6 +188,8 @@ class EventStore(QObject):
         super().__init__()
         self._engine = engine
         self._write_lock = threading.RLock()
+        # Set by app.py after construction; allows UI and sync to access contacts.
+        self.contacts: Any = None
 
     @contextlib.contextmanager
     def _write_session(self):

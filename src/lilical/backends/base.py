@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from lilical.models.contact import Contact
 from lilical.models.event import Event
 
 
@@ -91,3 +92,19 @@ class Backend(Protocol):
         backend echoes state, or None when it does not (e.g. Graph's 202).
         """
         ...
+
+    def supported_contact_sources(self) -> tuple[str, ...]:
+        """Return which contact source keys this backend provides."""
+        return ()
+
+    async def list_contacts(
+        self, source: str, cursor: dict | None
+    ) -> tuple[list[Contact], dict | None, bool]:
+        """Fetch a page of contacts for *source*.
+
+        Returns (contacts, next_cursor, is_complete).
+        *next_cursor* is None when there are no more pages.
+        *is_complete* is True when the full refresh for this source is done.
+        Backends that don't implement a given source return ([], None, True).
+        """
+        return [], None, True

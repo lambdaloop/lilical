@@ -571,7 +571,7 @@ def test_vevent_to_event_extracts_rich_fields() -> None:
     assert event.transparency == "TRANSPARENT"
     assert set(event.categories) == {"work", "important"}
     assert len(event.attendees) == 2
-    assert any("alice" in a.lower() for a in event.attendees)
+    assert any("alice" in a.email for a in event.attendees)
 
 
 def test_vevent_to_event_attaches_tzid_to_naive_datetime() -> None:

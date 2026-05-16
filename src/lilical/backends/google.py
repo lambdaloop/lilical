@@ -27,7 +27,8 @@ from lilical.backends.base import (
     SyncCursor,
     TransientError,
 )
-from lilical.models.event import Event
+from lilical.models.contact import Contact
+from lilical.models.event import Attendee, Event, Organizer
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
@@ -41,12 +42,16 @@ _EVENTS_LIST_FIELDS = (
     "htmlLink,transparency,updated,sequence,recurrence,"
     "start(date,dateTime,timeZone),end(date,dateTime,timeZone),"
     "originalStartTime(date,dateTime,timeZone),"
-    "attendees(email,self,responseStatus))"
+    "organizer(email,displayName,self),"
+    "attendees(email,displayName,self,responseStatus,organizer))"
 )
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+    "https://www.googleapis.com/auth/directory.readonly",
 ]
 
 
@@ -113,6 +118,41 @@ _GOOGLE_RESPONSE_MAP: dict[str, str] = {
     "declined": "DECLINED",
     "needsaction": "NEEDS-ACTION",
 }
+
+
+def _people_to_contacts(
+    people: list[object], account_id: str, source: str
+) -> list[Contact]:
+    out: list[Contact] = []
+    for p in people:
+        if not isinstance(p, dict):
+            continue
+        name: str | None = None
+        names = p.get("names") or []
+        if isinstance(names, list) and names:
+            n = names[0]
+            if isinstance(n, dict):
+                name = str(n.get("displayName") or "").strip() or None
+        emails = p.get("emailAddresses") or []
+        if not isinstance(emails, list):
+            continue
+        resource_name = str(p.get("resourceName") or "")
+        for e in emails:
+            if not isinstance(e, dict):
+                continue
+            addr = str(e.get("value") or "").strip().lower()
+            if not addr or "@" not in addr:
+                continue
+            out.append(
+                Contact(
+                    email=addr,
+                    display_name=name,
+                    source=source,
+                    account_id=account_id,
+                    source_id=resource_name or None,
+                )
+            )
+    return out
 
 
 class GoogleCursor(SyncCursor):
@@ -372,17 +412,37 @@ def _google_event_to_change(
     )
 
     attendees_raw = cast(list[object], ev_json.get("attendees") or [])
-    attendees: list[str] = []
+    attendees: list[Attendee] = []
     self_response: str | None = None
+    organizer_obj = cast(dict[str, object] | None, ev_json.get("organizer"))
+    organizer: Organizer | None = None
+    if isinstance(organizer_obj, dict) and organizer_obj.get("email"):
+        organizer = Organizer(
+            email=str(organizer_obj["email"]),
+            display_name=str(organizer_obj["displayName"]) if organizer_obj.get("displayName") else None,
+            is_self=bool(organizer_obj.get("self")),
+        )
     for a in attendees_raw:
         if not isinstance(a, dict):
             continue
-        if a.get("email"):
-            attendees.append(str(a["email"]))
-        if a.get("self") is True:
-            self_response = _GOOGLE_RESPONSE_MAP.get(
-                str(a.get("responseStatus") or "").lower()
+        email = str(a["email"]) if a.get("email") else ""
+        if not email:
+            continue
+        is_self = bool(a.get("self"))
+        is_org = bool(a.get("organizer"))
+        resp_raw = str(a.get("responseStatus") or "").lower()
+        response = _GOOGLE_RESPONSE_MAP.get(resp_raw, "NEEDS-ACTION")
+        if is_self:
+            self_response = _GOOGLE_RESPONSE_MAP.get(resp_raw)
+        attendees.append(
+            Attendee(
+                email=email,
+                display_name=str(a["displayName"]) if a.get("displayName") else None,
+                response=response,
+                is_organizer=is_org,
+                is_self=is_self,
             )
+        )
 
     last_modified: datetime | None = None
     updated_raw = ev_json.get("updated")
@@ -406,6 +466,7 @@ def _google_event_to_change(
         exdates=exdates,
         rdates=rdates,
         attendees=tuple(attendees),
+        organizer=organizer,
         status=g_status,
         self_response=self_response,
         transparency=transparency,
@@ -804,3 +865,65 @@ class GoogleBackend:
             f"/calendars/{encoded_cal}/events/{encoded_inst}",
             params={"sendUpdates": "none"},
         )
+
+    def supported_contact_sources(self) -> tuple[str, ...]:
+        return ("personal", "other", "directory")
+
+    @_classify_errors
+    async def list_contacts(
+        self, source: str, cursor: dict | None
+    ) -> tuple[list[Contact], dict | None, bool]:
+        PEOPLE_BASE = "https://people.googleapis.com/v1"
+        contacts: list[Contact] = []
+        if source == "personal":
+            params: dict[str, str] = {
+                "personFields": "names,emailAddresses",
+                "pageSize": "1000",
+            }
+            page_token = (cursor or {}).get("pageToken")
+            sync_token = (cursor or {}).get("syncToken")
+            if sync_token:
+                params["syncToken"] = sync_token
+                params["requestSyncToken"] = "true"
+            elif page_token:
+                params["pageToken"] = page_token
+            else:
+                params["requestSyncToken"] = "true"
+            resp = await self._request("GET", f"{PEOPLE_BASE}/people/me/connections", params=params)
+            data = resp.json()
+            contacts = _people_to_contacts(data.get("connections") or [], self.account_id, "personal")
+            next_sync = data.get("nextSyncToken")
+            next_page = data.get("nextPageToken")
+            if next_page:
+                return contacts, {"pageToken": next_page}, False
+            return contacts, {"syncToken": next_sync} if next_sync else None, True
+
+        if source == "other":
+            params = {"readMask": "names,emailAddresses", "pageSize": "1000"}
+            if cursor and cursor.get("pageToken"):
+                params["pageToken"] = cursor["pageToken"]
+            resp = await self._request("GET", f"{PEOPLE_BASE}/otherContacts", params=params)
+            data = resp.json()
+            contacts = _people_to_contacts(data.get("otherContacts") or [], self.account_id, "other")
+            next_page = data.get("nextPageToken")
+            if next_page:
+                return contacts, {"pageToken": next_page}, False
+            return contacts, None, True
+
+        if source == "directory":
+            params = {
+                "readMask": "names,emailAddresses",
+                "sources": "DIRECTORY_SOURCE_TYPE_DOMAIN_CONTACT,DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
+                "pageSize": "1000",
+            }
+            if cursor and cursor.get("pageToken"):
+                params["pageToken"] = cursor["pageToken"]
+            resp = await self._request("GET", f"{PEOPLE_BASE}/people:listDirectoryPeople", params=params)
+            data = resp.json()
+            contacts = _people_to_contacts(data.get("people") or [], self.account_id, "directory")
+            next_page = data.get("nextPageToken")
+            if next_page:
+                return contacts, {"pageToken": next_page}, False
+            return contacts, None, True
+
+        return [], None, True

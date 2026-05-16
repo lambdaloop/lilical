@@ -37,6 +37,8 @@ class SyncEngine(QObject):
     sync_failed = Signal(str, str)
     auth_expired = Signal(str, str)  # account_id, error message
     conflict_detected = Signal(str)
+    contacts_sync_started = Signal(str)   # account_id
+    contacts_sync_finished = Signal(str, int)  # account_id, count
 
     def __init__(self, store: EventStore, secrets: SecretsStore, factory) -> None:
         super().__init__()
@@ -349,7 +351,89 @@ class SyncEngine(QObject):
             else:
                 raise r
 
+        # 3) Sync contacts (lower-frequency — once per 24 h per source).
+        contact_store = getattr(self._store, "contacts", None)
+        if contact_store is not None:
+            for source in backend.supported_contact_sources():
+                if await asyncio.to_thread(
+                    contact_store.needs_refresh, account.id, source
+                ):
+                    await self._sync_contacts(account, backend, source, contact_store)
+
+        # 4) Harvest contacts from already-synced event attendees/organizers.
+        if contact_store is not None:
+            await self._harvest_contacts(account.id, contact_store)
+
         self.sync_finished.emit(account.id, n_changes)
+
+    async def _sync_contacts(self, account, backend, source: str, contact_store) -> None:
+        self.contacts_sync_started.emit(account.id)
+        count = 0
+        cursor = None
+        state = await asyncio.to_thread(contact_store.get_sync_state, account.id, source)
+        if state is not None:
+            import json as _json
+            try:
+                cursor = _json.loads(state.cursor) if state.cursor else None
+            except Exception:
+                cursor = None
+        try:
+            while True:
+                contacts, next_cursor, is_done = await backend.list_contacts(source, cursor)
+                if contacts:
+                    await asyncio.to_thread(
+                        contact_store.upsert_many, account.id, source, contacts
+                    )
+                    count += len(contacts)
+                import json as _json
+                await asyncio.to_thread(
+                    contact_store.set_sync_state,
+                    account.id,
+                    source,
+                    _json.dumps(next_cursor) if next_cursor else None,
+                    mark_refreshed=is_done,
+                )
+                cursor = next_cursor
+                if is_done:
+                    break
+        except Exception as e:
+            log.warning("contacts sync failed for %s/%s: %s", account.id, source, e)
+        self.contacts_sync_finished.emit(account.id, count)
+
+    async def _harvest_contacts(self, account_id: str, contact_store) -> None:
+        from lilical.models.event import Attendee, Organizer
+
+        cals = await asyncio.to_thread(self._store.list_calendars, account_id, False)
+        pairs: list[tuple[str, str | None]] = []
+        for cal in cals:
+            from lilical.models.event import EventRow
+            from sqlalchemy.orm import Session
+
+            with Session(self._store._engine) as s:
+                rows = (
+                    s.query(EventRow)
+                    .filter(EventRow.calendar_id == cal.id, EventRow.attendees != None)
+                    .all()
+                )
+            for row in rows:
+                if row.attendees:
+                    import json as _j
+                    try:
+                        for a in _j.loads(row.attendees):
+                            if isinstance(a, dict) and a.get("email"):
+                                pairs.append((a["email"], a.get("display_name")))
+                    except Exception:
+                        pass
+                if row.organizer:
+                    import json as _j
+                    try:
+                        o = _j.loads(row.organizer)
+                        if isinstance(o, dict) and o.get("email"):
+                            pairs.append((o["email"], o.get("display_name")))
+                    except Exception:
+                        pass
+        if pairs:
+            await asyncio.to_thread(contact_store.upsert_harvested, account_id, pairs)
 
     async def _full_resync(self, account, backend, calendar_id: str) -> None:
         log.info("full resync for %s / %s", account.id, calendar_id)
@@ -394,8 +478,42 @@ def _event_from_payload(payload: str | None):
                 elif isinstance(x, _dt):
                     parsed.append(x)
             data[field] = tuple(parsed)
+    # Deserialize attendees list of dicts → tuple of Attendee.
+    from lilical.models.event import Attendee, Organizer
+
+    raw_attendees = data.get("attendees")
+    if isinstance(raw_attendees, list):
+        rebuilt: list[Attendee] = []
+        for a in raw_attendees:
+            if isinstance(a, dict):
+                rebuilt.append(Attendee(
+                    email=str(a.get("email", "")),
+                    display_name=a.get("display_name") or None,
+                    response=str(a.get("response", "NEEDS-ACTION")),
+                    is_organizer=bool(a.get("is_organizer", False)),
+                    is_self=bool(a.get("is_self", False)),
+                ))
+            elif isinstance(a, str):
+                # legacy string shape
+                email = a.rsplit(":", 1)[-1] if ":" in a else a
+                if email.lower().startswith("mailto:"):
+                    email = email[7:]
+                rebuilt.append(Attendee(email=email))
+        data["attendees"] = tuple(rebuilt)
+
+    # Deserialize organizer dict → Organizer.
+    raw_org = data.get("organizer")
+    if isinstance(raw_org, dict):
+        data["organizer"] = Organizer(
+            email=str(raw_org.get("email", "")),
+            display_name=raw_org.get("display_name") or None,
+            is_self=bool(raw_org.get("is_self", False)),
+        )
+    else:
+        data["organizer"] = None
+
     # Ensure other tuple fields are tuples, not lists.
-    for field in ("attendees", "categories", "valarms"):
+    for field in ("categories", "valarms"):
         if isinstance(data.get(field), list):
             data[field] = tuple(data[field])
     return Event(**{k: v for k, v in data.items() if k in Event.__dataclass_fields__})

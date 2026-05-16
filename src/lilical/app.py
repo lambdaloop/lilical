@@ -12,6 +12,7 @@ from lilical.backends.factory import build_backend_factory
 from lilical.config import Config
 from lilical.logging_setup import setup_logging
 from lilical.recurrence.expander import RecurrenceExpander
+from lilical.storage.contact_store import ContactStore
 from lilical.storage.db import ensure_schema, open_engine
 from lilical.storage.event_store import EventStore
 from lilical.storage.secrets import SecretsStore
@@ -51,6 +52,8 @@ def main() -> int:
 
     secrets = SecretsStore.open(config)
     event_store = EventStore(db_engine)
+    contact_store = ContactStore(db_engine)
+    event_store.contacts = contact_store
     recurrence = RecurrenceExpander(event_store)
     backend_factory = build_backend_factory(secrets)
     sync_engine = SyncEngine(event_store, secrets, backend_factory)

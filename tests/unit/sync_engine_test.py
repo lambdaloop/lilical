@@ -1393,5 +1393,8 @@ def test_event_from_payload_list_to_tuple_conversion() -> None:
         "attendees": ["a@b.com"],
     })
     event = _event_from_payload(payload)
+    from lilical.models.event import Attendee
     assert event.categories == ("work", "personal")
-    assert event.attendees == ("a@b.com",)
+    assert len(event.attendees) == 1
+    assert event.attendees[0].email == "a@b.com"
+    assert isinstance(event.attendees[0], Attendee)

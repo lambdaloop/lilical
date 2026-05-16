@@ -346,7 +346,7 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
     change = _graph_event_to_change(data, "cal-1")
     assert change.event is not None
     assert set(change.event.categories) == {"Work", "Important"}
-    assert set(change.event.attendees) == {"alice@example.com", "bob@example.com"}
+    assert {a.email for a in change.event.attendees} == {"alice@example.com", "bob@example.com"}
 
 
 def test_event_to_change_occurrences_return_none() -> None:
@@ -1304,13 +1304,15 @@ def test_event_to_graph_json_includes_attendees_as_email_address_objects() -> No
     from lilical.backends.graph import _event_to_graph_json
     from lilical.models.event import Event as _Event
 
+    from lilical.models.event import Attendee as _Attendee
+
     event = _Event(
         uid="u@o.c",
         calendar_id="cal-1",
         summary="Team meeting",
-        attendees=(  # type: ignore[arg-type]
-            {"email": "alice@example.com", "name": "Alice"},
-            {"email": "bob@example.com", "name": "Bob"},
+        attendees=(
+            _Attendee(email="alice@example.com", display_name="Alice"),
+            _Attendee(email="bob@example.com", display_name="Bob"),
         ),
     )
     body = _event_to_graph_json(event)

@@ -31,6 +31,7 @@ def expander() -> RecurrenceExpander:
                 exdates TEXT,
                 rdates TEXT,
                 attendees TEXT,
+                organizer TEXT,
                 categories TEXT,
                 color TEXT,
                 status TEXT DEFAULT 'CONFIRMED',

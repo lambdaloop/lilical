@@ -12,7 +12,7 @@ from lilical.backends.base import EventChange
 from lilical.models.account import Account
 from lilical.models.calendar import Calendar
 from lilical.models.db import Base
-from lilical.models.event import Event, EventRow
+from lilical.models.event import Attendee, Event, EventRow
 from lilical.models.pending_op import PendingOpRow
 from lilical.models.setting import Setting
 from lilical.storage.event_store import EventStore
@@ -103,6 +103,7 @@ def _create_test_schema(engine) -> None:
                 exdates TEXT,
                 rdates TEXT,
                 attendees TEXT,
+                organizer TEXT,
                 categories TEXT,
                 color TEXT,
                 status TEXT DEFAULT 'CONFIRMED',
@@ -185,7 +186,7 @@ def _event(**overrides) -> Event:
         "rrule": "FREQ=WEEKLY;COUNT=2",
         "exdates": (datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),),
         "rdates": (datetime(2026, 5, 27, 9, 0, tzinfo=timezone.utc),),
-        "attendees": ("anna@example.com",),
+        "attendees": (Attendee(email="anna@example.com"),),
         "categories": ("work",),
         "color": "#ff0000",
         "valarms": ("TRIGGER:-PT10M",),
@@ -211,7 +212,7 @@ def test_queue_create_persists_event_fields_and_pending_op(engine) -> None:
     assert row.dtend == "2026-05-13T10:00:00+00:00"
     assert row.url == "https://meet.example/event-1"
     assert json.loads(row.exdates) == ["2026-05-20T09:00:00+00:00"]
-    assert json.loads(row.attendees) == ["anna@example.com"]
+    assert json.loads(row.attendees)[0]["email"] == "anna@example.com"
     assert row.local_dirty == 1
     assert pending.account_id == "acc-1"
     assert pending.calendar_id == "cal-1"
@@ -289,7 +290,7 @@ def test_get_event_round_trips_stored_fields(engine) -> None:
     assert event.url == "https://meet.example/event-1"
     assert event.rrule == "FREQ=WEEKLY;COUNT=2"
     assert event.exdates == (datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),)
-    assert event.attendees == ("anna@example.com",)
+    assert len(event.attendees) == 1 and event.attendees[0].email == "anna@example.com"
     assert event.categories == ("work",)
     assert event.valarms == ("TRIGGER:-PT10M",)
     assert event.last_modified == datetime(2026, 5, 12, 8, 0, tzinfo=timezone.utc)
