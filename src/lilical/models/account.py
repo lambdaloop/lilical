@@ -18,4 +18,4 @@ class Account(Base):
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[int] = mapped_column(Integer, default=1)
-    include_directory: Mapped[int] = mapped_column(Integer, default=0)
+    include_contacts: Mapped[int] = mapped_column(Integer, default=0)

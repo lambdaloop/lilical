@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -51,7 +53,7 @@ class AccountSetupDialog(QDialog):
         self.setMinimumWidth(420)
 
         self._secret_data: dict[str, Any] = {}
-        self._chosen_include_directory: bool = False
+        self._chosen_include_contacts: bool = False
         self._active_oauth_pool: concurrent.futures.ThreadPoolExecutor | None = None
 
         layout = QVBoxLayout(self)
@@ -107,20 +109,21 @@ class AccountSetupDialog(QDialog):
             if existing_account.server_url:
                 self._server_edit.setText(existing_account.server_url)
 
-        self._dir_checkbox = QCheckBox(
-            "Include organization directory in contacts — may require admin approval"
+        self._contacts_checkbox = QCheckBox(
+            "Include contacts from this account — may require admin approval on some tenants"
         )
-        self._dir_checkbox.setToolTip(
-            "If your organization restricts third-party app access, leave this off.\n"
-            "lilical will still autocomplete invitees from people you've emailed before."
+        self._contacts_checkbox.setToolTip(
+            "Off (recommended): calendar only. On: imports your address book and organization\n"
+            "directory for invite autocomplete. lilical always autocompletes from people you've\n"
+            "previously emailed, regardless of this setting."
         )
-        layout.addWidget(self._dir_checkbox)
+        layout.addWidget(self._contacts_checkbox)
 
         self._kind_combo.currentTextChanged.connect(self._on_kind_changed)
         self._on_kind_changed(self._kind_combo.currentText())
 
         if self._reauth and existing_account is not None:
-            self._dir_checkbox.setChecked(bool(existing_account.include_directory))
+            self._contacts_checkbox.setChecked(bool(existing_account.include_contacts))
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
@@ -133,6 +136,7 @@ class AccountSetupDialog(QDialog):
 
     def _on_kind_changed(self, text: str) -> None:
         is_caldav = text == "CalDAV"
+        is_graph = text == "Microsoft / Outlook"
         self._server_edit.setVisible(is_caldav)
         self._password_edit.setVisible(is_caldav)
         self._identity_edit.setPlaceholderText(
@@ -141,7 +145,7 @@ class AccountSetupDialog(QDialog):
         if not is_caldav:
             self._server_edit.clear()
             self._password_edit.clear()
-        self._dir_checkbox.setVisible(not is_caldav)
+        self._contacts_checkbox.setVisible(is_graph)
 
     def _collect_data(
         self,
@@ -182,21 +186,21 @@ class AccountSetupDialog(QDialog):
 
         kind, _display_name, _identity, _server_url, secret_data = data
 
-        include_directory = self._dir_checkbox.isChecked() and kind in ("google", "graph")
+        include_contacts = self._contacts_checkbox.isChecked() and kind == "graph"
 
         if kind == "google":
-            token = self._run_oauth_flow("google", include_directory=include_directory)
+            token = self._run_oauth_flow("google")
             if token is None:
                 return
             secret_data["token"] = token
         elif kind == "graph":
-            cache_json = self._run_graph_device_flow(include_directory=include_directory)
+            cache_json = self._run_graph_paste_flow(include_contacts=include_contacts)
             if cache_json is None:
                 return
             secret_data["msal_cache"] = cache_json
 
         self._secret_data = secret_data
-        self._chosen_include_directory = include_directory
+        self._chosen_include_contacts = include_contacts
         self.accept()
 
     def _cancel_active_oauth(self) -> None:
@@ -204,7 +208,7 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
 
-    def _run_oauth_flow(self, kind: str, *, include_directory: bool = False) -> str | None:
+    def _run_oauth_flow(self, kind: str) -> str | None:
         progress = QProgressDialog(
             "Opening browser for authentication...\n"
             "Complete the sign-in in your browser window, then return here.",
@@ -222,7 +226,7 @@ class AccountSetupDialog(QDialog):
         self._active_oauth_pool = pool
         try:
             if kind == "google":
-                future = pool.submit(_run_google_oauth_sync, include_directory)
+                future = pool.submit(_run_google_oauth_sync)
             else:
                 raise RuntimeError(f"unexpected oauth kind: {kind}")
             while not future.done():
@@ -241,7 +245,7 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool = None
             progress.close()
 
-    def _run_graph_device_flow(self, *, include_directory: bool = False) -> str | None:
+    def _run_graph_paste_flow(self, *, include_contacts: bool = False) -> str | None:
         import importlib.util as _util
 
         if _util.find_spec("msal") is None:
@@ -253,90 +257,78 @@ class AccountSetupDialog(QDialog):
             )
             return None
 
-        from lilical.backends.graph import (
-            complete_graph_device_flow,
-            initiate_graph_device_flow,
-        )
+        from lilical.backends.graph import begin_graph_auth, complete_graph_auth
 
         try:
-            app, cache, flow = initiate_graph_device_flow(include_directory=include_directory)
+            app, cache, auth_url, state = begin_graph_auth(include_contacts)
         except Exception as e:
             QMessageBox.critical(self, "Authentication failed", str(e))
             return None
 
-        user_code: str = str(flow.get("user_code", ""))
-        verification_uri = flow.get(
-            "verification_uri", "https://microsoft.com/devicelogin"
-        )
         with contextlib.suppress(Exception):
-            webbrowser.open(str(verification_uri))  # type: ignore[reportArgumentType]
+            webbrowser.open(auth_url)
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Sign in to Microsoft 365")
-        dialog.setMinimumWidth(460)
-        layout = QVBoxLayout(dialog)
+        dialog.setMinimumWidth(500)
+        dlg_layout = QVBoxLayout(dialog)
 
-        layout.addWidget(
+        dlg_layout.addWidget(
             QLabel(
-                "A browser tab is opening Microsoft's sign-in page.\n"
-                "Enter this code when prompted:"
+                "A browser tab opened to Microsoft's sign-in page.\n"
+                "After you sign in, you'll land on a page that says \"You are now signed in\".\n"
+                "Copy the URL from your browser's address bar and paste it below."
             )
         )
-        code_label = QLabel(user_code)
-        code_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        code_label.setStyleSheet(
-            "font-size: 28pt; font-weight: bold; letter-spacing: 6px; "
-            "padding: 16px; background: palette(base); border-radius: 6px;"
+
+        open_again = QLabel(f'<a href="{auth_url}">Open the browser tab again</a>')
+        open_again.setOpenExternalLinks(True)
+        dlg_layout.addWidget(open_again)
+
+        paste_edit = QPlainTextEdit()
+        paste_edit.setPlaceholderText("Paste the full URL from your browser's address bar here…")
+        paste_edit.setFixedHeight(80)
+        dlg_layout.addWidget(paste_edit)
+
+        signin_btn = QPushButton("Sign in")
+        signin_btn.setEnabled(False)
+        paste_edit.textChanged.connect(
+            lambda: signin_btn.setEnabled(bool(paste_edit.toPlainText().strip()))
         )
-        code_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(code_label)
 
-        url_label = QLabel(
-            f'<a href="{verification_uri}">{verification_uri}</a> '
-            "(if the browser did not open automatically)"
-        )
-        url_label.setOpenExternalLinks(True)
-        layout.addWidget(url_label)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        signin_btn.clicked.connect(dialog.accept)
 
-        status_label = QLabel("Waiting for sign-in...")
-        layout.addWidget(status_label)
+        btn_row_layout = QVBoxLayout()
+        btn_row_layout.addWidget(signin_btn)
+        btn_row_layout.addWidget(cancel_btn)
+        dlg_layout.addLayout(btn_row_layout)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-
-        self._cancel_active_oauth()
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._active_oauth_pool = pool
-        future = pool.submit(complete_graph_device_flow, app, cache, flow)
-
-        result: dict[str, Any] = {"token": None, "error": None}
-
-        def _check_done() -> None:
-            if future.done():
-                try:
-                    result["token"] = future.result()
-                except Exception as e:
-                    result["error"] = e
-                dialog.accept()
-
-        timer = QTimer(dialog)
-        timer.timeout.connect(_check_done)
-        timer.start(500)
-
-        try:
-            outcome = dialog.exec()
-        finally:
-            timer.stop()
-            pool.shutdown(wait=False, cancel_futures=True)
-            self._active_oauth_pool = None
-
-        if outcome != QDialog.DialogCode.Accepted:
-            return None
-        if result["error"] is not None:
-            QMessageBox.critical(self, "Authentication failed", str(result["error"]))
-            return None
-        return result["token"]
+        while True:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            pasted = paste_edit.toPlainText().strip()
+            if not pasted:
+                continue
+            self._cancel_active_oauth()
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            self._active_oauth_pool = pool
+            try:
+                future = pool.submit(
+                    complete_graph_auth, app, cache, include_contacts, pasted, state
+                )
+                while not future.done():
+                    QApplication.processEvents()
+                    with contextlib.suppress(concurrent.futures.TimeoutError):
+                        future.result(timeout=0.2)
+                return future.result()
+            except Exception as e:
+                QMessageBox.critical(self, "Authentication failed", str(e))
+                # Let the user try again — re-enter the while loop.
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+                self._active_oauth_pool = None
 
     def result_data(
         self,
@@ -356,10 +348,10 @@ class AccountSetupDialog(QDialog):
         if not identity:
             return None
 
-        return (kind, display_name, identity, server_url, dict(self._secret_data), self._chosen_include_directory)
+        return (kind, display_name, identity, server_url, dict(self._secret_data), self._chosen_include_contacts)
 
 
-def _run_google_oauth_sync(include_directory: bool = False) -> str:
+def _run_google_oauth_sync() -> str:
     try:
         from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
             InstalledAppFlow,
@@ -372,11 +364,11 @@ def _run_google_oauth_sync(include_directory: bool = False) -> str:
 
     from lilical.backends.google import (
         CLIENT_CONFIG,
-        _scopes_for_google,  # type: ignore[reportPrivateUsage]
+        SCOPES,
         _validate_client_config,  # type: ignore[reportPrivateUsage]
     )
 
     _validate_client_config()  # type: ignore[reportPrivateUsage]
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, _scopes_for_google(include_directory))
+    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
     creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
     return creds.to_json()

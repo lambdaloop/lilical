@@ -61,7 +61,7 @@ def _create_test_schema(engine) -> None:
                 created_at TEXT NOT NULL,
                 sort_order INTEGER DEFAULT 0,
                 enabled INTEGER DEFAULT 1,
-                include_directory INTEGER DEFAULT 0
+                include_contacts INTEGER DEFAULT 0
             )
             """
         )

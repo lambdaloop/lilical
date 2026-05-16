@@ -32,14 +32,16 @@ log = logging.getLogger(__name__)
 # not. Trade-off: the user-facing consent screen reads "Evolution / GNOME".
 GRAPH_CLIENT_ID = "20460e5d-ce91-49af-a3a5-70b6be7486d1"
 GRAPH_AUTHORITY = "https://login.microsoftonline.com/common"
-GRAPH_BASE_SCOPES = ["Calendars.ReadWrite", "User.Read", "People.Read", "Contacts.Read"]
-GRAPH_DIRECTORY_SCOPE = "User.ReadBasic.All"
+# The Evolution app registration only lists this redirect URI, not http://localhost.
+GRAPH_REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
+GRAPH_BASE_SCOPES = ["Calendars.ReadWrite", "User.Read"]
+GRAPH_CONTACT_SCOPES = ["People.Read", "Contacts.Read", "User.ReadBasic.All"]
 # Keep for backward compat with tests that import the name directly.
 GRAPH_SCOPES = GRAPH_BASE_SCOPES
 
 
-def _scopes_for_graph(include_directory: bool) -> list[str]:
-    return GRAPH_BASE_SCOPES + ([GRAPH_DIRECTORY_SCOPE] if include_directory else [])
+def _scopes_for_graph(include_contacts: bool) -> list[str]:
+    return GRAPH_BASE_SCOPES + (GRAPH_CONTACT_SCOPES if include_contacts else [])
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # calendarView/delta requires an explicit window. We default to ±2 years; events
@@ -790,29 +792,73 @@ def _new_msal_app(cache_json: str | None):
     return app, cache
 
 
-def initiate_graph_device_flow(
-    include_directory: bool = False,
-) -> tuple[Any, Any, dict[str, object]]:
-    # type: ignore[reportMissingTypeArgument]
-    """Start a device-code flow. Returns (msal_app, cache, flow_dict).
+def _parse_pasted_redirect(text: str) -> tuple[str, str | None, str | None]:
+    """Parse a pasted redirect URL or bare code.
 
-    The flow_dict has 'user_code', 'verification_uri', 'message', 'expires_in'.
-    Pass the same app/cache/flow to complete_graph_device_flow to block until done.
+    Returns (code, state, error). When text looks like a URL its query params
+    are parsed; otherwise the whole string is treated as a bare code (state
+    validation is then skipped by the caller).
     """
+    import urllib.parse
+
+    text = text.strip()
+    if "?" in text or "nativeclient" in text:
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(text).query)
+            err = (qs.get("error") or [None])[0]
+            err_desc = (qs.get("error_description") or [None])[0]
+            code = (qs.get("code") or [None])[0]
+            state = (qs.get("state") or [None])[0]
+            return (code or ""), state, err_desc or err
+        except Exception:
+            pass
+    return text, None, None
+
+
+def begin_graph_auth(
+    include_contacts: bool = False,
+) -> tuple[Any, Any, str, str]:
+    """Build the auth URL for an interactive auth-code sign-in.
+
+    Returns (app, cache, auth_url, state). The caller opens auth_url in a
+    browser; when the user pastes back the redirect URL, pass everything to
+    complete_graph_auth.
+    """
+    import secrets as _secrets
+
     app, cache = _new_msal_app(None)
-    flow = app.initiate_device_flow(scopes=_scopes_for_graph(include_directory))
-    if "user_code" not in flow:
-        err = flow.get("error_description") or flow.get("error") or "init failed"
-        raise RuntimeError(str(err))
-    return app, cache, flow
+    state = _secrets.token_urlsafe(16)
+    auth_url = app.get_authorization_request_url(
+        scopes=_scopes_for_graph(include_contacts),
+        redirect_uri=GRAPH_REDIRECT_URI,
+        state=state,
+        prompt="select_account",
+    )
+    return app, cache, auth_url, state
 
 
-def complete_graph_device_flow(app: Any, cache: Any, flow: dict[str, object]) -> str:
-    """Block until the user signs in via the device code; return serialized cache."""
-    result = app.acquire_token_by_device_flow(flow)
-    if "access_token" not in result:
-        err = result.get("error_description") or result.get("error") or "auth failed"
-        raise RuntimeError(str(err))
+def complete_graph_auth(
+    app: Any,
+    cache: Any,
+    include_contacts: bool,
+    pasted: str,
+    expected_state: str,
+) -> str:
+    """Exchange the pasted redirect URL for a token; return serialized cache JSON."""
+    code, returned_state, err = _parse_pasted_redirect(pasted)
+    if err:
+        raise RuntimeError(f"Microsoft returned an error: {err}")
+    if not code:
+        raise RuntimeError("No authorization code found in the pasted URL.")
+    if returned_state is not None and returned_state != expected_state:
+        raise RuntimeError("OAuth state mismatch — please try again.")
+    result = app.acquire_token_by_authorization_code(
+        code=code,
+        scopes=_scopes_for_graph(include_contacts),
+        redirect_uri=GRAPH_REDIRECT_URI,
+    )
+    if "error" in result:
+        raise RuntimeError(result.get("error_description") or result["error"])
     return cache.serialize()
 
 
@@ -822,12 +868,12 @@ class GraphBackend:
         account_id: str,
         token_cache_json: str | None = None,
         on_token_refreshed: Callable[[str], None] | None = None,
-        include_directory: bool = False,
+        include_contacts: bool = False,
     ) -> None:
         self.account_id = account_id
         self._cache_json = token_cache_json
         self._on_token_refreshed = on_token_refreshed
-        self._include_directory = include_directory
+        self._include_contacts = include_contacts
         self._http = None  # httpx.AsyncClient, created lazily
 
     def _acquire_token(self) -> str:
@@ -835,7 +881,7 @@ class GraphBackend:
         accounts = app.get_accounts()
         if not accounts:
             raise AuthExpired("no cached account; re-authenticate required")
-        result = app.acquire_token_silent(_scopes_for_graph(self._include_directory), account=accounts[0])
+        result = app.acquire_token_silent(_scopes_for_graph(self._include_contacts), account=accounts[0])
         if not result or "access_token" not in result:
             raise AuthExpired("silent token acquisition failed")
         if cache.has_state_changed:
@@ -1272,8 +1318,9 @@ class GraphBackend:
         await self._request("DELETE", f"/me/events/{instance_id}")
 
     def supported_contact_sources(self) -> tuple[str, ...]:
-        base = ("other", "personal")
-        return base + ("directory",) if self._include_directory else base
+        if self._include_contacts:
+            return ("other", "personal", "directory")
+        return ()
 
     @_classify_errors
     async def list_contacts(

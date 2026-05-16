@@ -46,19 +46,13 @@ _EVENTS_LIST_FIELDS = (
     "attendees(email,displayName,self,responseStatus,organizer))"
 )
 
-BASE_SCOPES = [
+SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/contacts.other.readonly",
+    # CardDAV gives access to the user's personal address book without any
+    # Sensitive-scope warnings or Workspace admin allowlist requirements.
+    "https://www.googleapis.com/auth/carddav",
 ]
-GOOGLE_DIRECTORY_SCOPE = "https://www.googleapis.com/auth/directory.readonly"
-# Keep for backward compat with code that imports SCOPES directly.
-SCOPES = BASE_SCOPES
-
-
-def _scopes_for_google(include_directory: bool) -> list[str]:
-    return BASE_SCOPES + ([GOOGLE_DIRECTORY_SCOPE] if include_directory else [])
 
 
 def _load_client_config() -> dict[str, object]:
@@ -483,13 +477,13 @@ def _google_event_to_change(
     return EventChange(kind="upsert", event=event, uid=uid)
 
 
-async def run_google_oauth_flow(include_directory: bool = False) -> str:
+async def run_google_oauth_flow() -> str:
     from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
         InstalledAppFlow,
     )
 
     _validate_client_config()
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, _scopes_for_google(include_directory))
+    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
     creds = await asyncio.to_thread(
         lambda: flow.run_local_server(open_browser=True, timeout_seconds=300)
     )
@@ -518,12 +512,12 @@ class GoogleBackend:
         account_id: str,
         token_json: str | None = None,
         on_token_refreshed=None,
-        include_directory: bool = False,
+        identity: str = "",
     ) -> None:
         self.account_id = account_id
         self._token_json = token_json
         self._on_token_refreshed = on_token_refreshed
-        self._include_directory = include_directory
+        self._identity = identity
         self._creds: Credentials | None = None
         self._http: Any = None  # httpx.AsyncClient, created lazily
 
@@ -532,7 +526,7 @@ class GoogleBackend:
             return self._creds
         if self._token_json:
             self._creds = Credentials.from_authorized_user_info(
-                json.loads(self._token_json), _scopes_for_google(self._include_directory)
+                json.loads(self._token_json), SCOPES
             )
         else:
             self._creds = None
@@ -875,64 +869,79 @@ class GoogleBackend:
         )
 
     def supported_contact_sources(self) -> tuple[str, ...]:
-        base = ("personal", "other")
-        return base + ("directory",) if self._include_directory else base
+        return ("personal",)
 
     @_classify_errors
     async def list_contacts(
         self, source: str, cursor: dict | None
     ) -> tuple[list[Contact], dict | None, bool]:
-        PEOPLE_BASE = "https://people.googleapis.com/v1"
+        if source != "personal":
+            return [], None, True
+        try:
+            return await self._list_carddav_contacts()
+        except Exception as exc:
+            log.warning("Google CardDAV contact listing failed: %s — falling back to empty", exc)
+            return [], None, True
+
+    async def _list_carddav_contacts(self) -> tuple[list[Contact], dict | None, bool]:
+        import xml.etree.ElementTree as ET
+
+        try:
+            import vobject  # type: ignore[reportMissingModuleSource]
+        except ImportError:
+            log.warning("vobject not installed — Google CardDAV contact parsing skipped")
+            return [], None, True
+
+        identity = urllib.parse.quote(self._identity, safe="@")
+        ab_url = f"https://www.googleapis.com/carddav/v1/principals/{identity}/lists/default/"
+        body = (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            "<C:addressbook-query xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            "<D:prop><D:getetag/><C:address-data/></D:prop>"
+            "</C:addressbook-query>"
+        )
+
+        token = await asyncio.to_thread(self._acquire_token)
+        client = self._get_http()
+        resp = await client.request(
+            "REPORT",
+            ab_url,
+            content=body.encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Depth": "1",
+                "Content-Type": "application/xml",
+            },
+        )
+        if resp.status_code >= 400:
+            log.warning("Google CardDAV REPORT returned HTTP %d", resp.status_code)
+            return [], None, True
+
+        root = ET.fromstring(resp.content)
         contacts: list[Contact] = []
-        if source == "personal":
-            params: dict[str, str] = {
-                "personFields": "names,emailAddresses",
-                "pageSize": "1000",
-            }
-            page_token = (cursor or {}).get("pageToken")
-            sync_token = (cursor or {}).get("syncToken")
-            if sync_token:
-                params["syncToken"] = sync_token
-                params["requestSyncToken"] = "true"
-            elif page_token:
-                params["pageToken"] = page_token
-            else:
-                params["requestSyncToken"] = "true"
-            resp = await self._request("GET", f"{PEOPLE_BASE}/people/me/connections", params=params)
-            data = resp.json()
-            contacts = _people_to_contacts(data.get("connections") or [], self.account_id, "personal")
-            next_sync = data.get("nextSyncToken")
-            next_page = data.get("nextPageToken")
-            if next_page:
-                return contacts, {"pageToken": next_page}, False
-            return contacts, {"syncToken": next_sync} if next_sync else None, True
+        for ad in root.iter("{urn:ietf:params:xml:ns:carddav}address-data"):
+            if not ad.text:
+                continue
+            try:
+                vcard = vobject.readOne(ad.text)
+                name: str | None = None
+                fn = getattr(vcard, "fn", None)
+                if fn is not None:
+                    name = str(fn.value).strip() or None
+                emails_prop = getattr(vcard, "email_list", None) or []
+                if not emails_prop:
+                    ep = getattr(vcard, "email", None)
+                    emails_prop = [ep] if ep else []
+                for ep in emails_prop:
+                    addr = str(ep.value).strip().lower()
+                    if addr and "@" in addr:
+                        contacts.append(Contact(
+                            email=addr,
+                            display_name=name,
+                            source="personal",
+                            account_id=self.account_id,
+                        ))
+            except Exception as exc:
+                log.debug("Google CardDAV vcard parse error: %s", exc)
 
-        if source == "other":
-            params = {"readMask": "names,emailAddresses", "pageSize": "1000"}
-            if cursor and cursor.get("pageToken"):
-                params["pageToken"] = cursor["pageToken"]
-            resp = await self._request("GET", f"{PEOPLE_BASE}/otherContacts", params=params)
-            data = resp.json()
-            contacts = _people_to_contacts(data.get("otherContacts") or [], self.account_id, "other")
-            next_page = data.get("nextPageToken")
-            if next_page:
-                return contacts, {"pageToken": next_page}, False
-            return contacts, None, True
-
-        if source == "directory":
-            params = {
-                "readMask": "names,emailAddresses",
-                "sources": "DIRECTORY_SOURCE_TYPE_DOMAIN_CONTACT,DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE",
-                "pageSize": "1000",
-            }
-            if cursor and cursor.get("pageToken"):
-                params["pageToken"] = cursor["pageToken"]
-            resp = await self._request("GET", f"{PEOPLE_BASE}/people:listDirectoryPeople", params=params)
-            data = resp.json()
-            contacts = _people_to_contacts(data.get("people") or [], self.account_id, "directory")
-            next_page = data.get("nextPageToken")
-            if next_page:
-                return contacts, {"pageToken": next_page}, False
-            return contacts, None, True
-
-        return [], None, True
+        return contacts, None, True
