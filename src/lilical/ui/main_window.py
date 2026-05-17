@@ -326,27 +326,6 @@ class MainWindow(QMainWindow):
             "QToolBar QLabel { padding: 0 4px; }"
         )
 
-        # Navigation buttons
-        prev_btn = QToolButton()
-        prev_btn.setText("‹")
-        prev_btn.setToolTip("Previous period  (←)")
-        prev_btn.clicked.connect(self._nav_prev)
-        tb.addWidget(prev_btn)
-
-        today_btn = QToolButton()
-        today_btn.setText("Today")
-        today_btn.setToolTip("Go to today  (T)")
-        today_btn.clicked.connect(self._nav_today)
-        tb.addWidget(today_btn)
-
-        next_btn = QToolButton()
-        next_btn.setText("›")
-        next_btn.setToolTip("Next period  (→)")
-        next_btn.clicked.connect(self._nav_next)
-        tb.addWidget(next_btn)
-
-        tb.addSeparator()
-
         # View switcher
         for name in _VIEW_NAMES:
             act = QAction(name, self)
@@ -387,6 +366,27 @@ class MainWindow(QMainWindow):
         self._day_count_value_label.setFixedWidth(22)
         self._day_count_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tb.addWidget(self._day_count_value_label)
+
+        tb.addSeparator()
+
+        # Navigation buttons
+        prev_btn = QToolButton()
+        prev_btn.setText("‹")
+        prev_btn.setToolTip("Previous period  (←)")
+        prev_btn.clicked.connect(self._nav_prev)
+        tb.addWidget(prev_btn)
+
+        today_btn = QToolButton()
+        today_btn.setText("Today")
+        today_btn.setToolTip("Go to today  (T)")
+        today_btn.clicked.connect(self._nav_today)
+        tb.addWidget(today_btn)
+
+        next_btn = QToolButton()
+        next_btn.setText("›")
+        next_btn.setToolTip("Next period  (→)")
+        next_btn.clicked.connect(self._nav_next)
+        tb.addWidget(next_btn)
 
         tb.addSeparator()
 
