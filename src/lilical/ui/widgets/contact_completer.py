@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -78,6 +79,9 @@ class _CompletionPopup(QListWidget):
         item = self.currentItem()
         if item is not None:
             self._on_item_clicked(item)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        QApplication.sendEvent(self._anchor, event)
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
         c: "Contact | None" = item.data(Qt.ItemDataRole.UserRole)
