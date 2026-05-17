@@ -4,5 +4,4 @@ requires-python = ">=3.12"
 
 [[package]]
 name = "lilical"
-version = "0.1.0"
 source = { editable = "." }

@@ -4,6 +4,8 @@ BUILD_DIR  := build-dir
 REPO_DIR   := repo
 ARCH       := x86_64
 RUNTIME    := org.kde.Platform//6.10
+# flatpak-pip-generator needs pip3, which lives in the Sdk not the Platform
+GENERATOR_RUNTIME := org.kde.Sdk//6.10
 
 GENERATOR  := tools/flatpak-pip-generator
 GENERATOR_DEPS := requirements-parser packaging PyYAML
@@ -18,10 +20,14 @@ python3-modules.yml: requirements.txt $(GENERATOR)
 	uv run --no-project $(addprefix --with ,$(GENERATOR_DEPS)) \
 		$(GENERATOR) \
 		--requirements-file=$< \
-		--runtime=$(RUNTIME) \
+		--runtime=$(GENERATOR_RUNTIME) \
+		--ignore-installed mako,packaging \
+		--prefer-wheels cffi,cryptography,dbus-fast,greenlet,lxml,markupsafe,pyyaml,qh3,regex \
 		--yaml \
 		--wheel-arches=$(ARCH) \
-		--output=$@
+		--output=$(basename $@)
+	python3 tools/collapse-modules.py $(basename $@).yaml $@
+	rm $(basename $@).yaml
 
 build:
 	flatpak-builder \
@@ -39,7 +45,9 @@ install: build
 		--arch=$(ARCH) \
 		$(BUILD_DIR) $(MANIFEST)
 
-run: install
+run:
+	@flatpak info $(APP_ID) >/dev/null 2>&1 || { \
+	  echo "Flatpak not installed — run 'make install' first"; exit 1; }
 	flatpak run $(APP_ID)
 
 bundle: build
