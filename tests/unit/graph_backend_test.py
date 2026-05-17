@@ -92,6 +92,7 @@ async def test_initial_sync_paginates_and_emits_delta_link() -> None:
         return httpx.Response(200, json=pages.pop(0))
 
     backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    backend._account_emails = frozenset()  # skip /me fetch in tests
     _attach_mock(backend, handler)
 
     collected = []
@@ -124,6 +125,7 @@ async def test_incremental_sync_uses_delta_link() -> None:
         )
 
     backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    backend._account_emails = frozenset()  # skip /me fetch in tests
     _attach_mock(backend, handler)
 
     cursor = GraphCursor(

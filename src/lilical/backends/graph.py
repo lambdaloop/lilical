@@ -863,13 +863,21 @@ def complete_graph_auth(
     return cache.serialize()
 
 
-def _is_self_organizer(ev_json: dict) -> bool:
-    """Return True if the signed-in user is the organizer of this event.
+def _is_self_organizer(ev_json: dict, account_emails: frozenset[str]) -> bool:
+    """True if the signed-in user organizes this event.
 
-    Graph sets organizer.self=true when the account that made the request is
-    the meeting organizer. This flag is not always present; treat absence as False.
+    Graph's `organizer.self` flag is unreliable when the login UPN differs
+    from the mailbox primary SMTP (common with UPN/SMTP alias mismatches,
+    delegate access, etc.). Fall back to comparing organizer.emailAddress.address
+    against the user's known mailbox addresses.
     """
-    return bool(cast("dict", ev_json.get("organizer") or {}).get("self"))
+    org = cast("dict", ev_json.get("organizer") or {})
+    if org.get("self"):
+        return True
+    addr = str(
+        cast("dict", org.get("emailAddress") or {}).get("address") or ""
+    ).strip().lower()
+    return bool(addr and addr in account_emails)
 
 
 class GraphBackend:
@@ -885,6 +893,7 @@ class GraphBackend:
         self._on_token_refreshed = on_token_refreshed
         self._include_contacts = include_contacts
         self._http = None  # httpx.AsyncClient, created lazily
+        self._account_emails: frozenset[str] | None = None  # cached lazily
 
     def _acquire_token(self) -> str:
         app, cache = _new_msal_app(self._cache_json)
@@ -902,6 +911,37 @@ class GraphBackend:
                 except Exception:
                     log.exception("on_token_refreshed callback raised")
         return str(result["access_token"])
+
+    async def _get_account_emails(self) -> frozenset[str]:
+        """Fetch and cache the signed-in user's mailbox addresses.
+
+        Graph's `organizer.self` flag is unreliable when the UPN differs from
+        the primary SMTP address. Fetching /me gives us all known addresses so
+        we can detect organizer-self by email comparison instead.
+        """
+        if self._account_emails is not None:
+            return self._account_emails
+        try:
+            resp = await self._request(
+                "GET", "/me?$select=mail,userPrincipalName,proxyAddresses"
+            )
+            data = resp.json()
+            addrs: set[str] = set()
+            for k in ("mail", "userPrincipalName"):
+                v = data.get(k)
+                if isinstance(v, str) and v:
+                    addrs.add(v.strip().lower())
+            for pa in data.get("proxyAddresses") or []:
+                if not isinstance(pa, str):
+                    continue
+                _, _, rest = pa.partition(":")
+                if rest:
+                    addrs.add(rest.strip().lower())
+            self._account_emails = frozenset(addrs)
+        except Exception:
+            log.exception("graph: failed to fetch /me account addresses; organizer-self detection will rely on organizer.self flag only")
+            self._account_emails = frozenset()
+        return self._account_emails
 
     def _get_http(self):
         if self._http is None:
@@ -1100,16 +1140,23 @@ class GraphBackend:
         rows via /instances. We fetch one upcoming instance per affected master
         and overwrite the master's attendees array in place.
         """
+        account_emails = await self._get_account_emails()
+
         now = datetime.now(timezone.utc)
         window_start = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         window_end = (now + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        n_masters = 0
+        n_self_org = 0
+        n_stale = 0
         candidates: list[tuple[int, str]] = []
         for i, ev in enumerate(events):
             if str(ev.get("type") or "").lower() != "seriesmaster":
                 continue
-            if not _is_self_organizer(ev):
+            n_masters += 1
+            if not _is_self_organizer(ev, account_emails):
                 continue
+            n_self_org += 1
             attendees = ev.get("attendees") or []
             if not attendees:
                 continue
@@ -1120,8 +1167,14 @@ class GraphBackend:
                 if isinstance(a, dict)
             ):
                 continue
+            n_stale += 1
             candidates.append((i, str(ev.get("id"))))
 
+        log.info(
+            "graph attendee refresh: scanned=%d masters=%d self_organized=%d "
+            "stale_attendees=%d candidates=%d",
+            len(events), n_masters, n_self_org, n_stale, len(candidates),
+        )
         if not candidates:
             return
 
@@ -1136,16 +1189,29 @@ class GraphBackend:
         }
         responses = await self._graph_batch_get_urls(urls)
 
+        masters_updated = 0
+        attendees_replaced = 0
         for idx, master_id in candidates:
             body = responses.get(master_id)
             if not body:
+                log.debug("graph attendee refresh: no response for master %s", master_id[-20:])
                 continue
             instances = body.get("value") or []
             if not instances:
+                log.debug("graph attendee refresh: /instances returned empty for master %s (window %s – %s)", master_id[-20:], window_start[:10], window_end[:10])
                 continue
             fresh_attendees = instances[0].get("attendees")
             if fresh_attendees:
                 events[idx]["attendees"] = fresh_attendees
+                masters_updated += 1
+                attendees_replaced += len(fresh_attendees)
+                log.debug("graph attendee refresh: updated master %s with %d attendees from instance %s", master_id[-20:], len(fresh_attendees), (instances[0].get("start") or {}).get("dateTime", "?")[:10])
+
+        log.info(
+            "graph attendee refresh: candidates=%d instances_fetched=%d "
+            "masters_updated=%d attendees_replaced=%d",
+            len(candidates), len(responses), masters_updated, attendees_replaced,
+        )
 
     async def _hydrate_and_synthesize_masters(
         self,

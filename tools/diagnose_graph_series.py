@@ -317,6 +317,91 @@ async def check_delta_exceptions(master_ids_of_interest: set[str]) -> None:
         )
 
 
+async def check_my_addresses() -> None:
+    """Dump /me account addresses so we know what email to compare against."""
+    db_path = _default_db_path()
+    engine = open_engine(db_path)
+    with Session(engine) as s:
+        account = s.query(Account).filter_by(kind="graph").first()
+    print("\n=== Step 6: /me account addresses ===")
+    if account is None:
+        print("  No Graph account found.")
+        return
+    secrets = SecretsStore()
+    backend = build_backend_factory(secrets)(account)
+    resp = await backend._request(
+        "GET", "/me?$select=mail,userPrincipalName,proxyAddresses"
+    )
+    data = resp.json()
+    print(f"  userPrincipalName = {data.get('userPrincipalName')!r}")
+    print(f"  mail              = {data.get('mail')!r}")
+    print(f"  proxyAddresses    = {data.get('proxyAddresses')}")
+
+
+async def check_instances_attendees(term: str) -> None:
+    """Fetch /instances for each seriesMaster matching term and dump attendee
+    response values. Goal: verify /instances returns real responses (not 'none')
+    for organizer-owned recurring meetings."""
+    import datetime
+
+    from lilical.models.event import EventRow
+
+    db_path = _default_db_path()
+    engine = open_engine(db_path)
+    with Session(engine) as s:
+        account = s.query(Account).filter_by(kind="graph").first()
+        print(f"\n=== Step 7: /instances attendee responses for {term!r} ===")
+        if account is None:
+            print("  No Graph account found.")
+            return
+        cal_ids = [c.id for c in s.query(Calendar).filter_by(account_id=account.id).all()]
+        rows = (
+            s.query(EventRow)
+            .filter(
+                EventRow.calendar_id.in_(cal_ids),
+                EventRow.summary.like(f"%{term}%"),
+                EventRow.rrule.isnot(None),
+                EventRow.provider_event_id.isnot(None),
+            )
+            .all()
+        )
+        masters = [(r.provider_event_id, r.summary) for r in rows]
+
+    print(f"  {len(masters)} seriesMaster(s) found in DB")
+    if not masters:
+        print(f"  No seriesMasters matching {term!r} — check DB or try a different term.")
+        return
+
+    secrets = SecretsStore()
+    backend = build_backend_factory(secrets)(account)
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = (now + datetime.timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for mid, subj in masters:
+        url = (
+            f"/me/events/{mid}/instances"
+            f"?startDateTime={start}&endDateTime={end}"
+            f"&$top=3&$select=id,start,attendees"
+        )
+        try:
+            r = await backend._request("GET", url)
+            body = r.json()
+        except Exception as exc:
+            print(f"  {_short(mid)!r} FETCH FAILED: {exc!r}")
+            continue
+        instances = body.get("value") or []
+        print(f"  {_short(mid)} ({subj!r}): {len(instances)} instance(s)")
+        for inst in instances:
+            start_dt = (inst.get("start") or {}).get("dateTime", "?")
+            print(f"    start={start_dt[:19]}")
+            for a in inst.get("attendees") or []:
+                ea = (a.get("emailAddress") or {}).get("address", "?")
+                resp_val = (a.get("status") or {}).get("response", "?")
+                print(f"      {ea:<45} response={resp_val}")
+
+
 if __name__ == "__main__":
     term = sys.argv[1] if len(sys.argv) > 1 else "Katie"
     asyncio.run(main(term))
@@ -329,3 +414,5 @@ if __name__ == "__main__":
         "ZLnURYb5iyfXpfjPAACXrwyMAAA=",  # Fri 2026-01-09
     }
     asyncio.run(check_delta_exceptions(broken_masters))
+    asyncio.run(check_my_addresses())
+    asyncio.run(check_instances_attendees(term))
