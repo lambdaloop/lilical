@@ -18,6 +18,14 @@ PY_SOURCES := $(shell find $(ROOT)/src -name '*.py' \
 MIGRATIONS := $(shell find $(ROOT)/migrations -type f \
                 -not -path '*/__pycache__/*' 2>/dev/null)
 STYLES     := $(shell find $(ROOT)/src/lilical/ui/styles -type f 2>/dev/null)
+PIXI_FONTS := $(ROOT)/.pixi/envs/appimage/fonts
+FONT_FILES := $(PIXI_FONTS)/Ubuntu-R.ttf \
+              $(PIXI_FONTS)/Ubuntu-B.ttf \
+              $(PIXI_FONTS)/Ubuntu-RI.ttf \
+              $(PIXI_FONTS)/Ubuntu-BI.ttf \
+              $(PIXI_FONTS)/UbuntuMono-R.ttf \
+              $(PIXI_FONTS)/UbuntuMono-B.ttf \
+              $(PIXI_FONTS)/DejaVuSans.ttf
 
 .PHONY: all tools embed-oauth pyinstaller appdir build run clean
 
@@ -54,13 +62,15 @@ dist/lilical/lilical: lilical.spec $(OAUTH_FILE) \
 	rm -rf dist/lilical/_internal/migrations/versions/__pycache__
 
 # ── AppDir assembly ─────────────────────────────────────────────────────────
-$(APPDIR)/AppRun: dist/lilical/lilical AppRun.sh $(DATA_FILES)
+$(APPDIR)/AppRun: dist/lilical/lilical AppRun.sh fonts.conf $(DATA_FILES) $(FONT_FILES)
 	rm -rf $(APPDIR)
 	mkdir -p $(APPDIR)/opt \
 	         $(APPDIR)/usr/bin \
 	         $(APPDIR)/usr/share/applications \
 	         $(APPDIR)/usr/share/icons/hicolor/scalable/apps \
-	         $(APPDIR)/usr/share/metainfo
+	         $(APPDIR)/usr/share/metainfo \
+	         $(APPDIR)/usr/share/fonts/lilical \
+	         $(APPDIR)/etc/fonts
 	cp -r dist/lilical $(APPDIR)/opt/lilical
 	ln -sf ../../opt/lilical/lilical $(APPDIR)/usr/bin/lilical
 	install -m 755 AppRun.sh $(APPDIR)/AppRun
@@ -73,6 +83,8 @@ $(APPDIR)/AppRun: dist/lilical/lilical AppRun.sh $(DATA_FILES)
 	cp $(ROOT)/data/io.github.lilical.Lilical.desktop $(APPDIR)/io.github.lilical.Lilical.desktop
 	cp $(ROOT)/data/io.github.lilical.Lilical.svg $(APPDIR)/io.github.lilical.Lilical.svg
 	ln -sf io.github.lilical.Lilical.svg $(APPDIR)/.DirIcon
+	cp $(FONT_FILES) $(APPDIR)/usr/share/fonts/lilical/
+	cp fonts.conf $(APPDIR)/etc/fonts/fonts.conf
 	touch $(APPDIR)/AppRun
 
 # ── AppImage packaging ──────────────────────────────────────────────────────
@@ -94,7 +106,10 @@ run:
 	    squashfs-root/opt/lilical/_internal/libOpenGL.so.0 \
 	    squashfs-root/opt/lilical/_internal/libEGL.so.1 \
 	    squashfs-root/opt/lilical/_internal/libGL.so.1 \
-	    squashfs-root/opt/lilical/_internal/tzdata/zoneinfo/UTC; do \
+	    squashfs-root/opt/lilical/_internal/tzdata/zoneinfo/UTC \
+	    squashfs-root/usr/share/fonts/lilical/Ubuntu-R.ttf \
+	    squashfs-root/usr/share/fonts/lilical/DejaVuSans.ttf \
+	    squashfs-root/etc/fonts/fonts.conf; do \
 	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
 	done
 	@echo "Bundle assets OK"
