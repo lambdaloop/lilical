@@ -177,13 +177,17 @@ class EventDetailsDialog(QDialog):
 
         # ── Attendees ─────────────────────────────────────────────────────────
         if event.attendees:
-            groups = _group_attendees(event.attendees)
-            for group_label, group_items in groups:
-                if group_items:
-                    _add_row(
-                        f"{group_label}:",
-                        "\n".join(_format_attendee_line(a) for a in group_items),
-                    )
+            summary, att_lines = _build_attendee_html(event.attendees)
+            html = (
+                f"<div style='color:#888888'>{escape(summary)}</div>"
+                + "".join(att_lines)
+            )
+            att_lbl = QLabel(html)
+            att_lbl.setTextFormat(Qt.TextFormat.RichText)
+            att_lbl.setWordWrap(True)
+            att_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            att_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            form.addRow("Attendees:", att_lbl)
 
         # ── Categories ────────────────────────────────────────────────────────
         if event.categories:
@@ -380,6 +384,18 @@ _RESPONSE_LABEL = {
     "DECLINED": "Declined",
     "NEEDS-ACTION": "No response",
 }
+_STATUS_GLYPH: dict[str, tuple[str, str]] = {
+    "ACCEPTED":     ("✓", "#16a34a"),
+    "TENTATIVE":    ("?",      "#d97706"),
+    "DECLINED":     ("✗", "#dc2626"),
+    "NEEDS-ACTION": ("○", "#888888"),
+}
+_SUMMARY_LABEL = {
+    "ACCEPTED": "yes",
+    "TENTATIVE": "maybe",
+    "DECLINED": "no",
+    "NEEDS-ACTION": "no response",
+}
 
 
 def _group_attendees(
@@ -397,6 +413,43 @@ def _group_attendees(
             # Legacy string shape — put in no-response bucket.
             groups["NEEDS-ACTION"].append(a)
     return [(_RESPONSE_LABEL[k], groups[k]) for k in _RESPONSE_ORDER]
+
+
+def _build_attendee_html(attendees: object) -> tuple[str, list[str]]:
+    from lilical.models.event import Attendee
+
+    attendees_seq = list(attendees) if not isinstance(attendees, list) else attendees
+    typed = [a for a in attendees_seq if isinstance(a, Attendee)]
+    legacy = [a for a in attendees_seq if not isinstance(a, Attendee)]
+
+    total = len(typed) + len(legacy)
+    summary_parts = [f"{total} invited"]
+    for key in _RESPONSE_ORDER:
+        count = sum(1 for a in typed if (a.response or "NEEDS-ACTION").upper() == key)
+        if count:
+            summary_parts.append(f"{count} {_SUMMARY_LABEL[key]}")
+    summary = " · ".join(summary_parts)
+
+    lines: list[str] = []
+    for key in _RESPONSE_ORDER:
+        glyph, color = _STATUS_GLYPH[key]
+        for a in typed:
+            if (a.response or "NEEDS-ACTION").upper() != key:
+                continue
+            name = format_display_name(a.display_name) or ""
+            label = escape(f"{name} <{a.email}>" if name else a.email)
+            suffix = ""
+            if a.is_organizer:
+                suffix += " <span style='color:#888888'>(organizer)</span>"
+            if a.is_self:
+                suffix += " <span style='color:#888888'>(you)</span>"
+            lines.append(
+                f"<div><span style='color:{color}; font-weight:bold'>{glyph}</span>"
+                f" {label}{suffix}</div>"
+            )
+    for a in legacy:
+        lines.append(f"<div>{escape(_format_attendee_legacy(str(a)))}</div>")
+    return summary, lines
 
 
 def _format_attendee_line(a: object) -> str:

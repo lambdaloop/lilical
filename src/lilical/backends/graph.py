@@ -532,16 +532,17 @@ def _graph_event_to_change(
         email = str(ea.get("address") or "")
         if not email:
             continue
-        # Graph has no per-attendee response — all use the top-level responseStatus.
-        # For the self attendee, use that; otherwise NEEDS-ACTION.
         is_self = bool(a.get("self"))
-        resp = self_response if is_self else "NEEDS-ACTION"
+        status_obj = cast("dict[str, object]", a.get("status") or {})
+        response_raw = str(status_obj.get("response") or "").lower()
+        resp = _GRAPH_RESPONSE_MAP.get(response_raw, "NEEDS-ACTION")
+        is_organizer = response_raw == "organizer"
         attendees.append(
             Attendee(
                 email=email,
                 display_name=str(ea.get("name") or "") or None,
-                response=resp or "NEEDS-ACTION",
-                is_organizer=False,
+                response=resp,
+                is_organizer=is_organizer,
                 is_self=is_self,
             )
         )

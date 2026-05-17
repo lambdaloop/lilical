@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -125,6 +125,11 @@ class InviteeChipEdit(QWidget):
         self._contact_store = contact_store
         self._account_ids = account_ids or []
         self._chips: list[_InviteeChip] = []
+        self._pending_query = ""
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self._run_search)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -176,8 +181,19 @@ class InviteeChipEdit(QWidget):
     def _on_text_changed(self, text: str) -> None:
         if self._model is None:
             return
-        self._model.refresh(text)
-        if self._model.rowCount() > 0:
+        self._pending_query = text
+        if not text.strip():
+            self._search_timer.stop()
+            self._model.refresh("")
+            self._completer.popup().hide()
+            return
+        self._search_timer.start()
+
+    def _run_search(self) -> None:
+        if self._model is None:
+            return
+        self._model.refresh(self._pending_query)
+        if self._model.rowCount() > 0 and self._edit.hasFocus():
             self._completer.complete()
         else:
             self._completer.popup().hide()
