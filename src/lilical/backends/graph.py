@@ -32,8 +32,6 @@ log = logging.getLogger(__name__)
 # not. Trade-off: the user-facing consent screen reads "Evolution / GNOME".
 GRAPH_CLIENT_ID = "20460e5d-ce91-49af-a3a5-70b6be7486d1"
 GRAPH_AUTHORITY = "https://login.microsoftonline.com/common"
-# The Evolution app registration only lists this redirect URI, not http://localhost.
-GRAPH_REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
 GRAPH_BASE_SCOPES = ["Calendars.ReadWrite", "User.Read"]
 GRAPH_CONTACT_SCOPES = ["People.Read", "Contacts.Read", "User.ReadBasic.All"]
 # Keep for backward compat with tests that import the name directly.
@@ -801,73 +799,28 @@ def _new_msal_app(cache_json: str | None):
     return app, cache
 
 
-def _parse_pasted_redirect(text: str) -> tuple[str, str | None, str | None]:
-    """Parse a pasted redirect URL or bare code.
-
-    Returns (code, state, error). When text looks like a URL its query params
-    are parsed; otherwise the whole string is treated as a bare code (state
-    validation is then skipped by the caller).
-    """
-    import urllib.parse
-
-    text = text.strip()
-    if "?" in text or "nativeclient" in text:
-        try:
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(text).query)
-            err = (qs.get("error") or [None])[0]
-            err_desc = (qs.get("error_description") or [None])[0]
-            code = (qs.get("code") or [None])[0]
-            state = (qs.get("state") or [None])[0]
-            return (code or ""), state, err_desc or err
-        except Exception:
-            pass
-    return text, None, None
-
-
-def begin_graph_auth(
+def initiate_graph_device_flow(
     include_contacts: bool = False,
-) -> tuple[Any, Any, str, str]:
-    """Build the auth URL for an interactive auth-code sign-in.
+) -> tuple[Any, Any, dict[str, object]]:
+    """Start a device-code flow. Returns (msal_app, cache, flow_dict).
 
-    Returns (app, cache, auth_url, state). The caller opens auth_url in a
-    browser; when the user pastes back the redirect URL, pass everything to
-    complete_graph_auth.
+    The flow_dict has 'user_code', 'verification_uri', 'message', 'expires_in'.
+    Pass the same app/cache/flow to complete_graph_device_flow to block until done.
     """
-    import secrets as _secrets
-
     app, cache = _new_msal_app(None)
-    state = _secrets.token_urlsafe(16)
-    auth_url = app.get_authorization_request_url(
-        scopes=_scopes_for_graph(include_contacts),
-        redirect_uri=GRAPH_REDIRECT_URI,
-        state=state,
-        prompt="select_account",
-    )
-    return app, cache, auth_url, state
+    flow = app.initiate_device_flow(scopes=_scopes_for_graph(include_contacts))
+    if "user_code" not in flow:
+        err = flow.get("error_description") or flow.get("error") or "init failed"
+        raise RuntimeError(str(err))
+    return app, cache, flow
 
 
-def complete_graph_auth(
-    app: Any,
-    cache: Any,
-    include_contacts: bool,
-    pasted: str,
-    expected_state: str,
-) -> str:
-    """Exchange the pasted redirect URL for a token; return serialized cache JSON."""
-    code, returned_state, err = _parse_pasted_redirect(pasted)
-    if err:
-        raise RuntimeError(f"Microsoft returned an error: {err}")
-    if not code:
-        raise RuntimeError("No authorization code found in the pasted URL.")
-    if returned_state is not None and returned_state != expected_state:
-        raise RuntimeError("OAuth state mismatch — please try again.")
-    result = app.acquire_token_by_authorization_code(
-        code=code,
-        scopes=_scopes_for_graph(include_contacts),
-        redirect_uri=GRAPH_REDIRECT_URI,
-    )
-    if "error" in result:
-        raise RuntimeError(result.get("error_description") or result["error"])
+def complete_graph_device_flow(app: Any, cache: Any, flow: dict[str, object]) -> str:
+    """Block until the user signs in via the device code; return serialized cache."""
+    result = app.acquire_token_by_device_flow(flow)
+    if "access_token" not in result:
+        err = result.get("error_description") or result.get("error") or "auth failed"
+        raise RuntimeError(str(err))
     return cache.serialize()
 
 

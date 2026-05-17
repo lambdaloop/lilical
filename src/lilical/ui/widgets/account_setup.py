@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import webbrowser
 from typing import Any
 
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -193,7 +195,7 @@ class AccountSetupDialog(QDialog):
                 return
             secret_data["token"] = token
         elif kind == "graph":
-            cache_json = self._run_graph_webview_flow(include_contacts=include_contacts)
+            cache_json = self._run_graph_device_flow(include_contacts=include_contacts)
             if cache_json is None:
                 return
             secret_data["msal_cache"] = cache_json
@@ -207,58 +209,7 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
 
-    def _run_embedded_oauth(
-        self,
-        *,
-        title: str,
-        auth_url: str,
-        redirect_uri_prefix: str,
-    ) -> str | None:
-        """Open an in-app browser dialog for OAuth; return the captured redirect URL."""
-        try:
-            from PySide6.QtCore import QUrl
-            from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
-            from PySide6.QtWebEngineWidgets import QWebEngineView
-        except ImportError:
-            QMessageBox.critical(
-                self,
-                "Authentication failed",
-                "Sign-in requires QtWebEngine. Run 'pixi install' to update.",
-            )
-            return None
-
-        captured: list[str] = []
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.resize(900, 750)
-        dlg_layout = QVBoxLayout(dialog)
-        dlg_layout.setContentsMargins(0, 0, 0, 0)
-
-        profile = QWebEngineProfile(dialog)
-        profile.setHttpUserAgent(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-
-        class _InterceptPage(QWebEnginePage):
-            def acceptNavigationRequest(self, url, nav_type, is_main_frame):
-                if is_main_frame and url.toString().startswith(redirect_uri_prefix):
-                    captured.append(url.toString())
-                    dialog.accept()
-                    return False
-                return super().acceptNavigationRequest(url, nav_type, is_main_frame)
-
-        page = _InterceptPage(profile, dialog)
-        view = QWebEngineView(dialog)
-        view.setPage(page)
-        dlg_layout.addWidget(view)
-
-        view.load(QUrl(auth_url))
-        dialog.exec()
-        return captured[0] if captured else None
-
-    def _run_graph_webview_flow(self, *, include_contacts: bool = False) -> str | None:
+    def _run_graph_device_flow(self, *, include_contacts: bool = False) -> str | None:
         import importlib.util as _util
 
         if _util.find_spec("msal") is None:
@@ -271,43 +222,91 @@ class AccountSetupDialog(QDialog):
             return None
 
         from lilical.backends.graph import (
-            GRAPH_REDIRECT_URI,
-            begin_graph_auth,
-            complete_graph_auth,
+            complete_graph_device_flow,
+            initiate_graph_device_flow,
         )
 
         try:
-            app, cache, auth_url, state = begin_graph_auth(include_contacts)
+            app, cache, flow = initiate_graph_device_flow(
+                include_contacts=include_contacts
+            )
         except Exception as e:
             QMessageBox.critical(self, "Authentication failed", str(e))
             return None
 
-        captured = self._run_embedded_oauth(
-            title="Sign in to Microsoft 365",
-            auth_url=auth_url,
-            redirect_uri_prefix=GRAPH_REDIRECT_URI,
+        user_code: str = str(flow.get("user_code", ""))
+        verification_uri = flow.get(
+            "verification_uri", "https://microsoft.com/devicelogin"
         )
-        if captured is None:
-            return None
+        with contextlib.suppress(Exception):
+            webbrowser.open(str(verification_uri))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Sign in to Microsoft 365")
+        dialog.setMinimumWidth(460)
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(
+            QLabel(
+                "A browser tab is opening Microsoft's sign-in page.\n"
+                "Enter this code when prompted:"
+            )
+        )
+        code_label = QLabel(user_code)
+        code_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        code_label.setStyleSheet(
+            "font-size: 28pt; font-weight: bold; letter-spacing: 6px; "
+            "padding: 16px; background: palette(base); border-radius: 6px;"
+        )
+        code_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(code_label)
+
+        url_label = QLabel(
+            f'<a href="{verification_uri}">{verification_uri}</a> '
+            "(if the browser did not open automatically)"
+        )
+        url_label.setOpenExternalLinks(True)
+        layout.addWidget(url_label)
+
+        status_label = QLabel("Waiting for sign-in...")
+        layout.addWidget(status_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
 
         self._cancel_active_oauth()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._active_oauth_pool = pool
+        future = pool.submit(complete_graph_device_flow, app, cache, flow)
+
+        result: dict[str, Any] = {"token": None, "error": None}
+
+        def _check_done() -> None:
+            if future.done():
+                try:
+                    result["token"] = future.result()
+                except Exception as exc:
+                    result["error"] = exc
+                dialog.accept()
+
+        timer = QTimer(dialog)
+        timer.timeout.connect(_check_done)
+        timer.start(500)
+
         try:
-            future = pool.submit(
-                complete_graph_auth, app, cache, include_contacts, captured, state
-            )
-            while not future.done():
-                QApplication.processEvents()
-                with contextlib.suppress(concurrent.futures.TimeoutError):
-                    future.result(timeout=0.2)
-            return future.result()
-        except Exception as e:
-            QMessageBox.critical(self, "Authentication failed", str(e))
-            return None
+            outcome = dialog.exec()
         finally:
+            timer.stop()
             pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
+
+        if outcome != QDialog.DialogCode.Accepted:
+            return None
+        if result["error"] is not None:
+            QMessageBox.critical(self, "Authentication failed", str(result["error"]))
+            return None
+        return result["token"]
 
     def _run_google_browser_flow(self) -> str | None:
         import importlib.util as _util
