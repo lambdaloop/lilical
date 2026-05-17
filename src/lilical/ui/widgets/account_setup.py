@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-import webbrowser
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -16,9 +14,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
-    QProgressDialog,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -189,12 +184,12 @@ class AccountSetupDialog(QDialog):
         include_contacts = self._contacts_checkbox.isChecked() and kind == "graph"
 
         if kind == "google":
-            token = self._run_oauth_flow("google")
+            token = self._run_google_webview_flow()
             if token is None:
                 return
             secret_data["token"] = token
         elif kind == "graph":
-            cache_json = self._run_graph_paste_flow(include_contacts=include_contacts)
+            cache_json = self._run_graph_webview_flow(include_contacts=include_contacts)
             if cache_json is None:
                 return
             secret_data["msal_cache"] = cache_json
@@ -208,44 +203,58 @@ class AccountSetupDialog(QDialog):
             self._active_oauth_pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
 
-    def _run_oauth_flow(self, kind: str) -> str | None:
-        progress = QProgressDialog(
-            "Opening browser for authentication...\n"
-            "Complete the sign-in in your browser window, then return here.",
-            "Cancel",
-            0,
-            0,
-            self,
-        )
-        progress.setWindowTitle("Authentication required")
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        self._cancel_active_oauth()
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._active_oauth_pool = pool
+    def _run_embedded_oauth(
+        self,
+        *,
+        title: str,
+        auth_url: str,
+        redirect_uri_prefix: str,
+    ) -> str | None:
+        """Open an in-app browser dialog for OAuth; return the captured redirect URL."""
         try:
-            if kind == "google":
-                future = pool.submit(_run_google_oauth_sync)
-            else:
-                raise RuntimeError(f"unexpected oauth kind: {kind}")
-            while not future.done():
-                QApplication.processEvents()
-                if progress.wasCanceled():
-                    return None
-                with contextlib.suppress(concurrent.futures.TimeoutError):
-                    future.result(timeout=0.2)
-            try:
-                return future.result()
-            except Exception as e:
-                QMessageBox.critical(self, "Authentication failed", str(e))
-                return None
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-            self._active_oauth_pool = None
-            progress.close()
+            from PySide6.QtCore import QUrl
+            from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            QMessageBox.critical(
+                self,
+                "Authentication failed",
+                "Sign-in requires QtWebEngine. Run 'pixi install' to update.",
+            )
+            return None
 
-    def _run_graph_paste_flow(self, *, include_contacts: bool = False) -> str | None:
+        captured: list[str] = []
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(900, 750)
+        dlg_layout = QVBoxLayout(dialog)
+        dlg_layout.setContentsMargins(0, 0, 0, 0)
+
+        profile = QWebEngineProfile(dialog)
+        profile.setHttpUserAgent(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+
+        class _InterceptPage(QWebEnginePage):
+            def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+                if is_main_frame and url.toString().startswith(redirect_uri_prefix):
+                    captured.append(url.toString())
+                    dialog.accept()
+                    return False
+                return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+        page = _InterceptPage(profile, dialog)
+        view = QWebEngineView(dialog)
+        view.setPage(page)
+        dlg_layout.addWidget(view)
+
+        view.load(QUrl(auth_url))
+        dialog.exec()
+        return captured[0] if captured else None
+
+    def _run_graph_webview_flow(self, *, include_contacts: bool = False) -> str | None:
         import importlib.util as _util
 
         if _util.find_spec("msal") is None:
@@ -257,7 +266,11 @@ class AccountSetupDialog(QDialog):
             )
             return None
 
-        from lilical.backends.graph import begin_graph_auth, complete_graph_auth
+        from lilical.backends.graph import (
+            GRAPH_REDIRECT_URI,
+            begin_graph_auth,
+            complete_graph_auth,
+        )
 
         try:
             app, cache, auth_url, state = begin_graph_auth(include_contacts)
@@ -265,70 +278,81 @@ class AccountSetupDialog(QDialog):
             QMessageBox.critical(self, "Authentication failed", str(e))
             return None
 
-        with contextlib.suppress(Exception):
-            webbrowser.open(auth_url)
+        captured = self._run_embedded_oauth(
+            title="Sign in to Microsoft 365",
+            auth_url=auth_url,
+            redirect_uri_prefix=GRAPH_REDIRECT_URI,
+        )
+        if captured is None:
+            return None
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Sign in to Microsoft 365")
-        dialog.setMinimumWidth(500)
-        dlg_layout = QVBoxLayout(dialog)
-
-        dlg_layout.addWidget(
-            QLabel(
-                "A browser tab opened to Microsoft's sign-in page.\n"
-                "After you sign in, you'll land on a page that says \"You are now signed in\".\n"
-                "Copy the URL from your browser's address bar and paste it below."
+        self._cancel_active_oauth()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._active_oauth_pool = pool
+        try:
+            future = pool.submit(
+                complete_graph_auth, app, cache, include_contacts, captured, state
             )
+            while not future.done():
+                QApplication.processEvents()
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    future.result(timeout=0.2)
+            return future.result()
+        except Exception as e:
+            QMessageBox.critical(self, "Authentication failed", str(e))
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+            self._active_oauth_pool = None
+
+    def _run_google_webview_flow(self) -> str | None:
+        import importlib.util as _util
+
+        if _util.find_spec("google_auth_oauthlib") is None:
+            QMessageBox.critical(
+                self,
+                "Authentication failed",
+                "Google Calendar support requires 'google-auth-oauthlib'. "
+                "Install it with: pixi install",
+            )
+            return None
+
+        from lilical.backends.google import (
+            GOOGLE_REDIRECT_URI,
+            begin_google_auth,
+            complete_google_auth,
         )
 
-        open_again = QLabel(f'<a href="{auth_url}">Open the browser tab again</a>')
-        open_again.setOpenExternalLinks(True)
-        dlg_layout.addWidget(open_again)
+        try:
+            flow, auth_url, state = begin_google_auth()
+        except Exception as e:
+            QMessageBox.critical(self, "Authentication failed", str(e))
+            return None
 
-        paste_edit = QPlainTextEdit()
-        paste_edit.setPlaceholderText("Paste the full URL from your browser's address bar here…")
-        paste_edit.setFixedHeight(80)
-        dlg_layout.addWidget(paste_edit)
-
-        signin_btn = QPushButton("Sign in")
-        signin_btn.setEnabled(False)
-        paste_edit.textChanged.connect(
-            lambda: signin_btn.setEnabled(bool(paste_edit.toPlainText().strip()))
+        captured = self._run_embedded_oauth(
+            title="Sign in to Google",
+            auth_url=auth_url,
+            redirect_uri_prefix=GOOGLE_REDIRECT_URI,
         )
+        if captured is None:
+            return None
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        signin_btn.clicked.connect(dialog.accept)
-
-        btn_row_layout = QVBoxLayout()
-        btn_row_layout.addWidget(signin_btn)
-        btn_row_layout.addWidget(cancel_btn)
-        dlg_layout.addLayout(btn_row_layout)
-
-        while True:
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return None
-            pasted = paste_edit.toPlainText().strip()
-            if not pasted:
-                continue
-            self._cancel_active_oauth()
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            self._active_oauth_pool = pool
-            try:
-                future = pool.submit(
-                    complete_graph_auth, app, cache, include_contacts, pasted, state
-                )
-                while not future.done():
-                    QApplication.processEvents()
-                    with contextlib.suppress(concurrent.futures.TimeoutError):
-                        future.result(timeout=0.2)
-                return future.result()
-            except Exception as e:
-                QMessageBox.critical(self, "Authentication failed", str(e))
-                # Let the user try again — re-enter the while loop.
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
-                self._active_oauth_pool = None
+        self._cancel_active_oauth()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._active_oauth_pool = pool
+        try:
+            future = pool.submit(complete_google_auth, flow, captured, state)
+            while not future.done():
+                QApplication.processEvents()
+                with contextlib.suppress(concurrent.futures.TimeoutError):
+                    future.result(timeout=0.2)
+            return future.result()
+        except Exception as e:
+            QMessageBox.critical(self, "Authentication failed", str(e))
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+            self._active_oauth_pool = None
 
     def result_data(
         self,
@@ -349,26 +373,3 @@ class AccountSetupDialog(QDialog):
             return None
 
         return (kind, display_name, identity, server_url, dict(self._secret_data), self._chosen_include_contacts)
-
-
-def _run_google_oauth_sync() -> str:
-    try:
-        from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
-            InstalledAppFlow,
-        )
-    except ImportError as err:
-        raise RuntimeError(
-            "Google Calendar support requires 'google-auth-oauthlib'. "
-            "Install it with: pixi install"
-        ) from err
-
-    from lilical.backends.google import (
-        CLIENT_CONFIG,
-        SCOPES,
-        _validate_client_config,  # type: ignore[reportPrivateUsage]
-    )
-
-    _validate_client_config()  # type: ignore[reportPrivateUsage]
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
-    creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
-    return creds.to_json()

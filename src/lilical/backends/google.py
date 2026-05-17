@@ -477,17 +477,39 @@ def _google_event_to_change(
     return EventChange(kind="upsert", event=event, uid=uid)
 
 
-async def run_google_oauth_flow() -> str:
-    from google_auth_oauthlib.flow import (  # type: ignore[reportMissingTypeStubs]
-        InstalledAppFlow,
-    )
+GOOGLE_REDIRECT_URI = "http://127.0.0.1/lilical-google-callback"
+
+
+def begin_google_auth() -> tuple[Any, str, str]:
+    """Build (flow, auth_url, state) for an interactive auth-code sign-in.
+
+    Returns (flow, auth_url, state). Pass auth_url to an embedded browser; on
+    redirect to GOOGLE_REDIRECT_URI pass the captured URL and state to
+    complete_google_auth.
+    """
+    from google_auth_oauthlib.flow import Flow  # type: ignore[reportMissingTypeStubs]
 
     _validate_client_config()
-    flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
-    creds = await asyncio.to_thread(
-        lambda: flow.run_local_server(open_browser=True, timeout_seconds=300)
+    flow = Flow.from_client_config(CLIENT_CONFIG, SCOPES, redirect_uri=GOOGLE_REDIRECT_URI)
+    auth_url, state = flow.authorization_url(
+        access_type="offline", prompt="select_account", include_granted_scopes="true"
     )
-    return creds.to_json()
+    return flow, auth_url, state
+
+
+def complete_google_auth(flow: Any, captured_url: str, expected_state: str) -> str:
+    """Exchange the captured redirect URL for credentials; return creds JSON."""
+    import urllib.parse as _up
+
+    qs = _up.parse_qs(_up.urlparse(captured_url).query)
+    err = ((qs.get("error_description") or qs.get("error")) or [None])[0]
+    if err:
+        raise RuntimeError(f"Google returned an error: {err}")
+    returned_state = (qs.get("state") or [None])[0]
+    if returned_state is not None and returned_state != expected_state:
+        raise RuntimeError("OAuth state mismatch — please try again.")
+    flow.fetch_token(authorization_response=captured_url)
+    return flow.credentials.to_json()
 
 
 def _validate_client_config() -> None:
