@@ -863,6 +863,15 @@ def complete_graph_auth(
     return cache.serialize()
 
 
+def _is_self_organizer(ev_json: dict) -> bool:
+    """Return True if the signed-in user is the organizer of this event.
+
+    Graph sets organizer.self=true when the account that made the request is
+    the meeting organizer. This flag is not always present; treat absence as False.
+    """
+    return bool(cast("dict", ev_json.get("organizer") or {}).get("self"))
+
+
 class GraphBackend:
     def __init__(
         self,
@@ -1017,6 +1026,7 @@ class GraphBackend:
             data = resp.json()
             events = data.get("value", [])
             await self._hydrate_and_synthesize_masters(events, masters_cache)
+            await self._refresh_organizer_attendee_responses(events)
             batch = [
                 c
                 for c in (_graph_event_to_change(ev, calendar_id) for ev in events)
@@ -1049,6 +1059,93 @@ class GraphBackend:
             except Exception:
                 log.exception("$batch fetch failed for %d masters", len(chunk))
         return result
+
+    async def _graph_batch_get_urls(
+        self, urls: dict[str, str]
+    ) -> dict[str, dict[str, object]]:
+        """Fetch arbitrary Graph URLs via $batch (≤20 per POST).
+
+        `urls` maps a caller-defined key to a relative Graph URL.
+        Returns a dict of the same keys → response body (only 200 responses).
+        """
+        result: dict[str, dict[str, object]] = {}
+        items = list(urls.items())
+        for i in range(0, len(items), 20):
+            chunk = items[i : i + 20]
+            body = {
+                "requests": [
+                    {"id": key, "method": "GET", "url": url}
+                    for key, url in chunk
+                ]
+            }
+            try:
+                resp = await self._request(
+                    "POST", "/$batch", json_body=cast("dict[str, object]", body)
+                )
+                for item in resp.json().get("responses", []):
+                    if item.get("status") == 200:
+                        result[item["id"]] = item["body"]
+            except Exception:
+                log.exception("$batch fetch failed for %d urls", len(chunk))
+        return result
+
+    async def _refresh_organizer_attendee_responses(
+        self, events: list[dict[str, object]]
+    ) -> None:
+        """Overwrite stale 'none' attendee responses on organizer-owned seriesMasters.
+
+        Graph's calendarView/delta returns attendees[].status.response='none' for
+        recurring series that the signed-in user organizes — even after invitees
+        have responded. Real responses are only available on expanded occurrence
+        rows via /instances. We fetch one upcoming instance per affected master
+        and overwrite the master's attendees array in place.
+        """
+        now = datetime.now(timezone.utc)
+        window_start = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        window_end = (now + timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        candidates: list[tuple[int, str]] = []
+        for i, ev in enumerate(events):
+            if str(ev.get("type") or "").lower() != "seriesmaster":
+                continue
+            if not _is_self_organizer(ev):
+                continue
+            attendees = ev.get("attendees") or []
+            if not attendees:
+                continue
+            if not any(
+                str(((a.get("status") or {}).get("response") or "")).lower()
+                in {"", "none", "notresponded"}
+                for a in attendees
+                if isinstance(a, dict)
+            ):
+                continue
+            candidates.append((i, str(ev.get("id"))))
+
+        if not candidates:
+            return
+
+        urls = {
+            master_id: (
+                f"/me/events/{master_id}/instances"
+                f"?startDateTime={window_start}"
+                f"&endDateTime={window_end}"
+                f"&$top=1&$select=attendees,start"
+            )
+            for _, master_id in candidates
+        }
+        responses = await self._graph_batch_get_urls(urls)
+
+        for idx, master_id in candidates:
+            body = responses.get(master_id)
+            if not body:
+                continue
+            instances = body.get("value") or []
+            if not instances:
+                continue
+            fresh_attendees = instances[0].get("attendees")
+            if fresh_attendees:
+                events[idx]["attendees"] = fresh_attendees
 
     async def _hydrate_and_synthesize_masters(
         self,

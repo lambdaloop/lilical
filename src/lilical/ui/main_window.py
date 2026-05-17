@@ -521,6 +521,7 @@ class MainWindow(QMainWindow):
 
         # Sync
         sc("Ctrl+R", self._refresh_all)
+        sc("Ctrl+Shift+R", self._deep_refresh_all)
 
         # Preferences
         sc("Ctrl+,", self._open_preferences)
@@ -701,6 +702,11 @@ class MainWindow(QMainWindow):
             self._sync.force_refresh(acc.id)
         self._sync_status.set_syncing("all accounts")
 
+    def _deep_refresh_all(self) -> None:
+        for acc in self._store.list_accounts():
+            self._sync.force_full_resync(acc.id)
+        self._sync_status.set_syncing("all accounts (full resync)")
+
     # ── Preferences ────────────────────────────────────────────────────────
 
     def _open_preferences(self) -> None:
@@ -826,6 +832,7 @@ class MainWindow(QMainWindow):
             "Ctrl+N        New event\n"
             "Ctrl+Shift+A  Quick add\n"
             "Ctrl+R        Refresh now\n"
+            "Ctrl+Shift+R  Force full resync (clears sync state)\n"
             "Ctrl+,        Preferences\n"
             "Ctrl++ / Ctrl+-  Vertical zoom (Week/Day)\n"
             "Ctrl+0        Reset zoom\n"

@@ -62,6 +62,14 @@ class _ContactModel(QAbstractListModel):
             return c
         return None
 
+    def contact_for_display(self, text: str) -> "Contact | None":
+        for c in self._results:
+            display = format_display_name(c.display_name)
+            full = f"{display} <{c.email}>" if display else c.email
+            if full == text:
+                return c
+        return None
+
 
 class _InviteeChip(QFrame):
     removed = Signal(object)  # emits the Attendee
@@ -165,7 +173,7 @@ class InviteeChipEdit(QWidget):
             self._completer.setCompletionMode(
                 QCompleter.CompletionMode.UnfilteredPopupCompletion
             )
-            self._completer.activated[QModelIndex].connect(self._on_completion_selected)
+            self._completer.activated[str].connect(self._on_completion_text)
             self._edit.setCompleter(self._completer)
         else:
             self._model = None
@@ -198,12 +206,12 @@ class InviteeChipEdit(QWidget):
         else:
             self._completer.popup().hide()
 
-    def _on_completion_selected(self, index: QModelIndex) -> None:
-        contact = self._model.data(index, Qt.ItemDataRole.UserRole) if self._model else None
+    def _on_completion_text(self, text: str) -> None:
+        if self._model is None:
+            return
+        contact = self._model.contact_for_display(text)
         if contact is not None:
             self._add_contact_chip(contact)
-        else:
-            self._commit_current()
 
     def _add_contact_chip(self, contact: "Contact") -> None:
         from lilical.models.event import Attendee
@@ -224,12 +232,17 @@ class InviteeChipEdit(QWidget):
         text = self._edit.text().strip().rstrip(",").strip()
         if not text:
             return
-        email = text.lower()
+        if "<" in text and text.endswith(">"):
+            email = text[text.rindex("<") + 1 : -1].strip().lower()
+        else:
+            email = text.lower()
+        if "@" not in email:
+            self._edit.clear()
+            return
         if not self._email_already_added(email):
             from lilical.models.event import Attendee
 
-            attendee = Attendee(email=email, response="NEEDS-ACTION")
-            self._add_chip(attendee)
+            self._add_chip(Attendee(email=email, response="NEEDS-ACTION"))
         self._edit.clear()
 
     def _email_already_added(self, email: str) -> bool:

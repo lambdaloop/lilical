@@ -265,6 +265,15 @@ def _vevent_to_event(
     )
     rdates = _safe(lambda: _prop_dt_tuple(ve.get("RDATE")), field="RDATE", default=())
 
+    # Pre-extract organizer address so attendees can be marked correctly.
+    _org_prop_pre = ve.get("ORGANIZER")
+    _org_addr_pre: str | None = None
+    if _org_prop_pre is not None:
+        _oa = str(_org_prop_pre).strip().lower()
+        if _oa.startswith("mailto:"):
+            _oa = _oa[7:]
+        _org_addr_pre = _oa or None
+
     attendees_raw = ve.get("ATTENDEE")
     self_response: str | None = None
     user_email_norm = (user_email or "").strip().lower()
@@ -290,7 +299,7 @@ def _vevent_to_event(
                 email=raw_addr,
                 display_name=cn,
                 response=partstat,
-                is_organizer=False,
+                is_organizer=(_org_addr_pre is not None and raw_addr == _org_addr_pre),
                 is_self=is_self,
             ))
         attendees = tuple(built)

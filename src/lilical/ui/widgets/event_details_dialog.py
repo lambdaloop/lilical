@@ -177,17 +177,18 @@ class EventDetailsDialog(QDialog):
 
         # ── Attendees ─────────────────────────────────────────────────────────
         if event.attendees:
-            summary, att_lines = _build_attendee_html(event.attendees)
-            html = (
-                f"<div style='color:#888888'>{escape(summary)}</div>"
-                + "".join(att_lines)
-            )
-            att_lbl = QLabel(html)
-            att_lbl.setTextFormat(Qt.TextFormat.RichText)
-            att_lbl.setWordWrap(True)
-            att_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            att_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            form.addRow("Attendees:", att_lbl)
+            summary, att_lines = _build_attendee_html(event.attendees, event.organizer)
+            if summary or att_lines:
+                html = (
+                    f"<div style='color:#888888'>{escape(summary)}</div>"
+                    + "".join(att_lines)
+                )
+                att_lbl = QLabel(html)
+                att_lbl.setTextFormat(Qt.TextFormat.RichText)
+                att_lbl.setWordWrap(True)
+                att_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                att_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                form.addRow("Attendees:", att_lbl)
 
         # ── Categories ────────────────────────────────────────────────────────
         if event.categories:
@@ -415,12 +416,24 @@ def _group_attendees(
     return [(_RESPONSE_LABEL[k], groups[k]) for k in _RESPONSE_ORDER]
 
 
-def _build_attendee_html(attendees: object) -> tuple[str, list[str]]:
-    from lilical.models.event import Attendee
+def _build_attendee_html(attendees: object, organizer: object = None) -> tuple[str, list[str]]:
+    from lilical.models.event import Attendee, Organizer
+
+    org_email: str | None = None
+    if isinstance(organizer, Organizer) and organizer.email:
+        org_email = organizer.email.strip().lower() or None
+
+    def _is_organizer_attendee(a: Attendee) -> bool:
+        if a.is_organizer:
+            return True
+        return org_email is not None and (a.email or "").lower() == org_email
 
     attendees_seq = list(attendees) if not isinstance(attendees, list) else attendees
-    typed = [a for a in attendees_seq if isinstance(a, Attendee)]
+    typed = [a for a in attendees_seq if isinstance(a, Attendee) and not _is_organizer_attendee(a)]
     legacy = [a for a in attendees_seq if not isinstance(a, Attendee)]
+
+    if not typed and not legacy:
+        return "", []
 
     total = len(typed) + len(legacy)
     summary_parts = [f"{total} invited"]
@@ -438,11 +451,7 @@ def _build_attendee_html(attendees: object) -> tuple[str, list[str]]:
                 continue
             name = format_display_name(a.display_name) or ""
             label = escape(f"{name} <{a.email}>" if name else a.email)
-            suffix = ""
-            if a.is_organizer:
-                suffix += " <span style='color:#888888'>(organizer)</span>"
-            if a.is_self:
-                suffix += " <span style='color:#888888'>(you)</span>"
+            suffix = " <span style='color:#888888'>(you)</span>" if a.is_self else ""
             lines.append(
                 f"<div><span style='color:{color}; font-weight:bold'>{glyph}</span>"
                 f" {label}{suffix}</div>"

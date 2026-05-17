@@ -917,6 +917,15 @@ class EventStore(QObject):
                 synchronize_session=False
             )
 
+    def reset_sync_cursors(self, account_id: str) -> None:
+        """Clear sync_cursor on all calendars for an account so the next sync does a full resync."""
+        from lilical.models.calendar import Calendar
+
+        with self._write_session() as s:
+            s.query(Calendar).filter(Calendar.account_id == account_id).update(
+                {"sync_cursor": None}
+            )
+
     def set_calendar_visibility(self, calendar_id: str, is_visible: bool) -> None:
         from lilical.models.calendar import Calendar
 

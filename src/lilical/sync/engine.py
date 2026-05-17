@@ -77,6 +77,11 @@ class SyncEngine(QObject):
         self._tasks.pop(account_id, None)
         self._wake_events.pop(account_id, None)
 
+    def force_full_resync(self, account_id: str) -> None:
+        """Clear sync cursors for this account and wake the loop for a full resync."""
+        self._store.reset_sync_cursors(account_id)
+        self.force_refresh(account_id)
+
     def force_refresh(self, account_id: str) -> None:
         ev = self._wake_events.get(account_id)
         if ev is not None:
