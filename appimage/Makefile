@@ -7,9 +7,27 @@ OUTPUT        := lilical-$(VERSION)-x86_64.AppImage
 APPDIR        := AppDir
 PIXI          := pixi
 
+OAUTH_FILE := $(ROOT)/src/lilical/_oauth_embedded.py
+DATA_FILES := $(ROOT)/data/io.github.lilical.Lilical.desktop \
+              $(ROOT)/data/io.github.lilical.Lilical.svg \
+              $(ROOT)/data/io.github.lilical.Lilical.metainfo.xml
+PY_SOURCES := $(shell find $(ROOT)/src -name '*.py' \
+                -not -path '*/__pycache__/*' \
+                -not -name '_oauth_embedded.py' \
+                -not -name '_version.py' 2>/dev/null)
+MIGRATIONS := $(shell find $(ROOT)/migrations -type f \
+                -not -path '*/__pycache__/*' 2>/dev/null)
+STYLES     := $(shell find $(ROOT)/src/lilical/ui/styles -type f 2>/dev/null)
+
 .PHONY: all tools embed-oauth pyinstaller appdir build run clean
 
 all: build
+
+# ── Phony aliases → file targets ───────────────────────────────────────────
+embed-oauth: $(OAUTH_FILE)
+pyinstaller: dist/lilical/lilical
+appdir:      $(APPDIR)/AppRun
+build:       $(OUTPUT)
 
 # ── tools ──────────────────────────────────────────────────────────────────
 tools: $(APPIMAGETOOL)
@@ -20,11 +38,14 @@ $(APPIMAGETOOL):
 	chmod +x $@
 
 # ── OAuth credentials ───────────────────────────────────────────────────────
-embed-oauth:
+$(OAUTH_FILE): $(ROOT)/tools/generate_oauth_embedded.py \
+               $(wildcard $(ROOT)/oauth_credentials.json)
 	$(PIXI) run -e appimage python $(ROOT)/tools/generate_oauth_embedded.py
 
 # ── PyInstaller bundle ──────────────────────────────────────────────────────
-pyinstaller: embed-oauth
+dist/lilical/lilical: lilical.spec $(OAUTH_FILE) \
+                      $(PY_SOURCES) $(MIGRATIONS) $(STYLES) \
+                      $(ROOT)/alembic.ini
 	$(PIXI) run -e appimage python -m PyInstaller \
 		--distpath dist \
 		--workpath build \
@@ -33,49 +54,49 @@ pyinstaller: embed-oauth
 	rm -rf dist/lilical/_internal/migrations/versions/__pycache__
 
 # ── AppDir assembly ─────────────────────────────────────────────────────────
-appdir: pyinstaller
+$(APPDIR)/AppRun: dist/lilical/lilical AppRun.sh $(DATA_FILES)
 	rm -rf $(APPDIR)
 	mkdir -p $(APPDIR)/opt \
 	         $(APPDIR)/usr/bin \
 	         $(APPDIR)/usr/share/applications \
 	         $(APPDIR)/usr/share/icons/hicolor/scalable/apps \
 	         $(APPDIR)/usr/share/metainfo
-	# PyInstaller onedir output
 	cp -r dist/lilical $(APPDIR)/opt/lilical
-	# usr/bin symlink → opt bundle
 	ln -sf ../../opt/lilical/lilical $(APPDIR)/usr/bin/lilical
-	# AppRun launcher
 	install -m 755 AppRun.sh $(APPDIR)/AppRun
-	# Desktop metadata
 	cp $(ROOT)/data/io.github.lilical.Lilical.desktop \
 	   $(APPDIR)/usr/share/applications/io.github.lilical.Lilical.desktop
 	cp $(ROOT)/data/io.github.lilical.Lilical.svg \
 	   $(APPDIR)/usr/share/icons/hicolor/scalable/apps/io.github.lilical.Lilical.svg
 	cp $(ROOT)/data/io.github.lilical.Lilical.metainfo.xml \
 	   $(APPDIR)/usr/share/metainfo/io.github.lilical.Lilical.metainfo.xml
-	# appimagetool requires a .desktop and icon at the AppDir root
 	cp $(ROOT)/data/io.github.lilical.Lilical.desktop $(APPDIR)/io.github.lilical.Lilical.desktop
 	cp $(ROOT)/data/io.github.lilical.Lilical.svg $(APPDIR)/io.github.lilical.Lilical.svg
 	ln -sf io.github.lilical.Lilical.svg $(APPDIR)/.DirIcon
+	touch $(APPDIR)/AppRun
 
 # ── AppImage packaging ──────────────────────────────────────────────────────
-build: appdir $(APPIMAGETOOL)
+$(OUTPUT): $(APPDIR)/AppRun $(APPIMAGETOOL)
 	ARCH=x86_64 $(APPIMAGETOOL) $(APPDIR) $(OUTPUT)
 
 # ── Smoke test ──────────────────────────────────────────────────────────────
-run: build
+run:
+	@test -f $(OUTPUT) || { echo "AppImage missing — run 'make build' first"; exit 1; }
 	@echo "Extracting AppImage for headless smoke test..."
 	rm -rf squashfs-root
 	./$(OUTPUT) --appimage-extract > /dev/null
-	@echo "Checking WebEngine assets..."
+	@echo "Checking WebEngine + GL assets..."
 	@for f in \
 	    squashfs-root/opt/lilical/_internal/PySide6/Qt/libexec/QtWebEngineProcess \
 	    squashfs-root/opt/lilical/_internal/PySide6/Qt/resources/icudtl.dat \
 	    squashfs-root/opt/lilical/_internal/PySide6/Qt/resources/qtwebengine_resources.pak \
-	    squashfs-root/opt/lilical/_internal/PySide6/Qt/translations/qtwebengine_locales/en-US.pak; do \
+	    squashfs-root/opt/lilical/_internal/PySide6/Qt/translations/qtwebengine_locales/en-US.pak \
+	    squashfs-root/opt/lilical/_internal/libOpenGL.so.0 \
+	    squashfs-root/opt/lilical/_internal/libEGL.so.1 \
+	    squashfs-root/opt/lilical/_internal/libGL.so.1; do \
 	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
 	done
-	@echo "WebEngine assets OK"
+	@echo "Bundle assets OK"
 	@echo "Running with offscreen Qt platform (5-second timeout)..."
 	QT_QPA_PLATFORM=offscreen timeout 5 ./squashfs-root/AppRun 2>&1 | tee /tmp/lilical-smoke.log; \
 	  code=$$?; \
@@ -87,4 +108,4 @@ run: build
 
 clean:
 	rm -rf $(APPDIR) build dist __pycache__ $(OUTPUT) squashfs-root
-	rm -f $(ROOT)/src/lilical/_oauth_embedded.py
+	rm -f $(OAUTH_FILE)

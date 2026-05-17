@@ -3,11 +3,21 @@ import sys
 from pathlib import Path
 
 root = Path(SPECPATH).parent  # appimage/ -> project root
+_pixi_lib = Path(sys.executable).resolve().parent.parent / "lib"
 
 a = Analysis(
     [str(root / "src" / "lilical" / "__main__.py")],
     pathex=[str(root / "src")],
-    binaries=[],
+    binaries=[
+        # libglvnd dispatch layer — PyInstaller excludes these as "system libs"
+        # but minimal installs (CI runners, containers) don't have them.
+        # Safe to bundle: these sit above the GPU driver, not below it.
+        (str(_pixi_lib / "libOpenGL.so.0"), "."),
+        (str(_pixi_lib / "libEGL.so.1"), "."),
+        (str(_pixi_lib / "libGL.so.1"), "."),
+        (str(_pixi_lib / "libGLX.so.0"), "."),
+        (str(_pixi_lib / "libGLdispatch.so.0"), "."),
+    ],
     datas=[
         (str(root / "alembic.ini"), "."),
         (str(root / "migrations"), "migrations"),
