@@ -42,6 +42,10 @@ pytest-cov = "*"
 [feature.dev.pypi-dependencies]
 pytest-recording = "*"
 
+[feature.appimage.dependencies]
+font-ttf-noto       = "*"
+font-ttf-noto-emoji = "*"
+
 [feature.appimage.pypi-dependencies]
 pyinstaller = ">=6.0"
 

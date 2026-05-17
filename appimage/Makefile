@@ -19,13 +19,22 @@ MIGRATIONS := $(shell find $(ROOT)/migrations -type f \
                 -not -path '*/__pycache__/*' 2>/dev/null)
 STYLES     := $(shell find $(ROOT)/src/lilical/ui/styles -type f 2>/dev/null)
 PIXI_FONTS := $(ROOT)/.pixi/envs/appimage/fonts
-FONT_FILES := $(PIXI_FONTS)/Ubuntu-R.ttf \
+# All NotoSans*-VF.ttf script variants except Display/Mono (~61 files, ~14.5 MB).
+# Requires `pixi install -e appimage` before make runs (wildcard resolves at parse time).
+NOTO_SANS_FILES := $(filter-out \
+    $(PIXI_FONTS)/NotoSansDisplay-VF.ttf \
+    $(PIXI_FONTS)/NotoSansDisplay-Italic-VF.ttf \
+    $(PIXI_FONTS)/NotoSansMono-VF.ttf, \
+    $(wildcard $(PIXI_FONTS)/NotoSans*-VF.ttf))
+FONT_FILES := $(NOTO_SANS_FILES) \
+              $(PIXI_FONTS)/Ubuntu-R.ttf \
               $(PIXI_FONTS)/Ubuntu-B.ttf \
               $(PIXI_FONTS)/Ubuntu-RI.ttf \
               $(PIXI_FONTS)/Ubuntu-BI.ttf \
               $(PIXI_FONTS)/UbuntuMono-R.ttf \
               $(PIXI_FONTS)/UbuntuMono-B.ttf \
-              $(PIXI_FONTS)/DejaVuSans.ttf
+              $(PIXI_FONTS)/DejaVuSans.ttf \
+              $(PIXI_FONTS)/NotoColorEmoji.ttf
 
 .PHONY: all tools embed-oauth pyinstaller appdir build run clean
 
@@ -109,6 +118,8 @@ run:
 	    squashfs-root/opt/lilical/_internal/tzdata/zoneinfo/UTC \
 	    squashfs-root/usr/share/fonts/lilical/Ubuntu-R.ttf \
 	    squashfs-root/usr/share/fonts/lilical/DejaVuSans.ttf \
+	    squashfs-root/usr/share/fonts/lilical/NotoSans-VF.ttf \
+	    squashfs-root/usr/share/fonts/lilical/NotoColorEmoji.ttf \
 	    squashfs-root/etc/fonts/fonts.conf; do \
 	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
 	done

@@ -37,6 +37,8 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/double-conversion-3.4.0-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-dejavu-sans-mono-2.37-hab24e00_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-inconsolata-3.000-h77eed37_0.tar.bz2
+      - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-noto-20201206-h77eed37_0.tar.bz2
+      - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-noto-emoji-2.034-h77eed37_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-source-code-pro-2.038-h77eed37_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-ubuntu-0.83-h77eed37_3.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/fontconfig-2.17.1-h27c8c51_0.conda
@@ -1212,6 +1214,22 @@ packages:
   purls: []
   size: 96530
   timestamp: 1620479909603
+- conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-noto-20201206-h77eed37_0.tar.bz2
+  sha256: 83883c2cdd941fbe2efe961e9723596a8380f6bb57dc942064b07e597d6df958
+  md5: 70955509b62f1727911fde41139d7748
+  license: OFL-1.1
+  license_family: OTHER
+  purls: []
+  size: 22418060
+  timestamp: 1647882261886
+- conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-noto-emoji-2.034-h77eed37_0.tar.bz2
+  sha256: 5efafa1a655a71c08bd68a02690faa2e072a542a9e505728546aacef5a9476ac
+  md5: 0104a9fc7e58c350a26a048e011bcbb4
+  license: OFL-1.1
+  license_family: OTHER
+  purls: []
+  size: 18700010
+  timestamp: 1647882510283
 - conda: https://conda.anaconda.org/conda-forge/noarch/font-ttf-source-code-pro-2.038-h77eed37_0.tar.bz2
   sha256: 00925c8c055a2275614b4d983e1df637245e19058d79fc7dd1a93b8d9fb4b139
   md5: 4d59c254e01d9cde7957100457e2d5fb
@@ -2398,8 +2416,8 @@ packages:
   timestamp: 1774072609062
 - pypi: ./
   name: lilical
-  version: 0.0.1.dev74+unknown.g380894202.d20260517
-  sha256: b96df3060606484d1160305d3cca19e7c3dcbf602ec6b583d74b29f6fecbb204
+  version: 0.1.7.dev0+g65801bb2b.d20260517
+  sha256: 5193459de1b36498260e42875d6814cce3fded7993e955c0a648f3ecbcbca4bd
   requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/lxml-6.1.0-py312h63ddcf0_0.conda
   sha256: cb02acf7254cc5d2dff65fb93c52103d4858da391a13cf4f24b49360ac74da64
