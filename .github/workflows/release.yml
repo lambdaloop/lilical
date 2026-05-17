@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without v prefix (e.g. 0.1.0). Used for the artifact name; no GitHub Release is created.'
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: prefix-dev/setup-pixi@v0.8.0
+        with:
+          environments: appimage
+          cache: true
+
+      - name: Install FUSE (required by appimagetool)
+        run: sudo apt-get update -q && sudo apt-get install -y libfuse2
+
+      - name: Write OAuth credentials
+        run: echo '${{ secrets.OAUTH_CREDENTIALS_JSON }}' > oauth_credentials.json
+
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+          fi
+
+      - name: Build AppImage
+        run: make -C appimage build VERSION=${{ env.VERSION }}
+
+      - name: Smoke test
+        run: make -C appimage run VERSION=${{ env.VERSION }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: lilical ${{ env.VERSION }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: appimage/lilical-${{ env.VERSION }}-x86_64.AppImage
+
+      - name: Upload artifact (non-tag runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: lilical-${{ env.VERSION }}-x86_64.AppImage
+          path: appimage/lilical-${{ env.VERSION }}-x86_64.AppImage

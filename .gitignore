@@ -52,6 +52,7 @@ migrations/versions/*.pyc
 *.enc
 oauth_credentials.json
 src/lilical/_oauth_embedded.py
+src/lilical/_version.py
 
 # Logs
 *.log

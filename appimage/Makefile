@@ -2,7 +2,8 @@ ROOT          := ..
 TOOLS_DIR     := tools
 APPIMAGETOOL  := $(TOOLS_DIR)/appimagetool-x86_64.AppImage
 APPIMAGETOOL_URL := https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-OUTPUT        := lilical-x86_64.AppImage
+VERSION       ?= $(shell git -C $(ROOT) describe --tags --always 2>/dev/null | sed 's/^v//' || echo dev)
+OUTPUT        := lilical-$(VERSION)-x86_64.AppImage
 APPDIR        := AppDir
 PIXI          := pixi
 
