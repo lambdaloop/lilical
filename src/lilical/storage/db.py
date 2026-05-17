@@ -41,8 +41,10 @@ def open_engine(db_path: str) -> Engine:
 
 
 def ensure_schema(engine: Engine) -> None:
+    import sys
     from alembic import command
     from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
 
     root = _project_root()
     ini_path = root / "alembic.ini"
@@ -51,6 +53,19 @@ def ensure_schema(engine: Engine) -> None:
     # Resolve the migrations directory to an absolute path so alembic doesn't
     # fall back to CWD resolution (matters inside a PyInstaller bundle).
     cfg.set_main_option("script_location", str(root / "migrations"))
+
+    if hasattr(sys, "_MEIPASS"):
+        versions_dir = root / "migrations" / "versions"
+        py_files = list(versions_dir.glob("*.py")) if versions_dir.exists() else []
+        sd = ScriptDirectory.from_config(cfg)
+        known = [r.revision for r in sd.walk_revisions()]
+        log.info(
+            "PyInstaller bundle: _MEIPASS=%s versions_dir_exists=%s py_count=%d alembic_revisions=%s",
+            sys._MEIPASS,  # type: ignore[reportAttributeAccessIssue]
+            versions_dir.exists(),
+            len(py_files),
+            known,
+        )
 
     inspector = inspect(engine)
     if "settings" not in inspector.get_table_names():
