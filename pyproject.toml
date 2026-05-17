@@ -30,6 +30,21 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "ASYNC", "B", "SIM"]
 
+[tool.ruff.lint.pep8-naming]
+extend-ignore-names = [
+    "acceptNavigationRequest",
+    "addItem",
+    "expandingDirections",
+    "hasHeightForWidth",
+    "heightForWidth",
+    "itemAt",
+    "keyPressEvent",
+    "minimumSize",
+    "setGeometry",
+    "sizeHint",
+    "takeAt",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

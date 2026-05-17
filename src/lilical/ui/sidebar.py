@@ -56,9 +56,11 @@ class _CalendarChip(QToolButton):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
-        if self._drag_start_pos is not None and (
-            event.pos() - self._drag_start_pos
-        ).manhattanLength() >= QApplication.startDragDistance():
+        if (
+            self._drag_start_pos is not None
+            and (event.pos() - self._drag_start_pos).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
             self._drag_start_pos = None
             self._start_drag(event)
             return
@@ -141,9 +143,11 @@ class _AccountHeader(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
-        if self._drag_start_pos is not None and (
-            event.pos() - self._drag_start_pos
-        ).manhattanLength() >= QApplication.startDragDistance():
+        if (
+            self._drag_start_pos is not None
+            and (event.pos() - self._drag_start_pos).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
             self._drag_start_pos = None
             self._start_drag(event)
             return

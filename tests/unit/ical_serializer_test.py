@@ -1,4 +1,5 @@
 """Tests for _ical_serializer.event_to_vcalendar and helpers."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -44,7 +45,6 @@ def test_exdate_and_rdate_serialized():
     )
     cal = event_to_vcalendar(event)
     ve = cal.subcomponents[0]
-    exdate_props = ve.subcomponents if hasattr(ve, "subcomponents") else []
     exdates = ve.get("exdate")
     rdates = ve.get("rdate")
     assert exdates is not None
@@ -69,8 +69,10 @@ def test_recurrence_id_serialized():
 
 def test_add_dt_with_tzid_invalid_tz_falls_back_to_utc():
     """_add_dt_with_tzid falls back to UTC when the timezone is invalid."""
+    from datetime import timedelta
+    from datetime import timezone as dt_tz
+
     import icalendar
-    from datetime import timedelta, timezone as dt_tz
 
     ve = icalendar.Event()
     # Use a non-UTC timezone so we actually hit the try/except block

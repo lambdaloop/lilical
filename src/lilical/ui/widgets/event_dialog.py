@@ -398,7 +398,7 @@ class EventDialog(QDialog):
 
         src = self._event
         invitees = tuple(self._invitees_edit.invitees()) if self._invitees_edit else ()
-        # Re-attach the self attendee from the original event so our own entry is preserved.
+        # Re-attach the self attendee from the original event so our entry is preserved.
         if src and src.attendees:
             self_att = next((a for a in src.attendees if a.is_self), None)
             if self_att and not any(a.email == self_att.email for a in invitees):

@@ -29,7 +29,9 @@ class EventRow(Base):
     __tablename__ = "events"
     __table_args__ = (
         UniqueConstraint(
-            "calendar_id", "provider_event_id", "recurrence_id",
+            "calendar_id",
+            "provider_event_id",
+            "recurrence_id",
             name="uq_events_provider",
         ),
         Index("idx_events_calendar", "calendar_id"),

@@ -1134,7 +1134,9 @@ async def test_start_all_spawns_tasks_for_all_accounts() -> None:
 @pytest.mark.asyncio
 async def test_start_all_skips_existing_tasks() -> None:
     engine = SyncEngine(
-        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+        store=MagicMock(),
+        secrets=None,
+        factory=lambda account: MagicMock(),
     )
     engine._tasks["acc-a"] = asyncio.create_task(asyncio.sleep(999))
     engine._store.list_accounts = MagicMock(
@@ -1161,8 +1163,11 @@ async def test_start_all_skips_existing_tasks() -> None:
 @pytest.mark.asyncio
 async def test_stop_all_cancels_all_tasks() -> None:
     engine = SyncEngine(
-        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+        store=MagicMock(),
+        secrets=None,
+        factory=lambda account: MagicMock(),
     )
+
     async def hang(name: str) -> None:
         await asyncio.sleep(999)
 
@@ -1178,7 +1183,9 @@ async def test_stop_all_cancels_all_tasks() -> None:
 @pytest.mark.asyncio
 async def test_start_account_nonexistent_is_noop() -> None:
     engine = SyncEngine(
-        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+        store=MagicMock(),
+        secrets=None,
+        factory=lambda account: MagicMock(),
     )
     engine._store.get_account = MagicMock(return_value=None)
 
@@ -1190,7 +1197,9 @@ async def test_start_account_nonexistent_is_noop() -> None:
 @pytest.mark.asyncio
 async def test_force_refresh_mid_teardown_is_noop() -> None:
     engine = SyncEngine(
-        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+        store=MagicMock(),
+        secrets=None,
+        factory=lambda account: MagicMock(),
     )
     engine._tasks["acc-1"] = asyncio.create_task(asyncio.sleep(999))
     engine.force_refresh("acc-1")
@@ -1201,7 +1210,9 @@ async def test_force_refresh_mid_teardown_is_noop() -> None:
 @pytest.mark.asyncio
 async def test_resurrect_account_deleted_from_db_is_noop() -> None:
     engine = SyncEngine(
-        store=MagicMock(), secrets=None, factory=lambda account: MagicMock(),
+        store=MagicMock(),
+        secrets=None,
+        factory=lambda account: MagicMock(),
     )
     engine._store.get_account = MagicMock(return_value=None)
 
@@ -1217,6 +1228,7 @@ async def test_tick_bare_exception_emits_sync_failed() -> None:
     class _CrashBackend:
         async def list_calendars(self) -> list:
             raise RuntimeError("unexpected crash")
+
         async def initial_sync(self, _):
             yield
 
@@ -1248,9 +1260,11 @@ class _IncrementalBackend:
 
     async def incremental_sync(self, calendar_id: str, cursor):
         self.incremental_sync_called = True
+
         class _Cur:
             def to_json(self) -> dict:
                 return {"type": "fake", "token": "next"}
+
         return [], _Cur()
 
 
@@ -1264,7 +1278,8 @@ class _IncrementalStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return [
             SimpleNamespace(
-                id="cal-inc", provider_id="provider-cal-inc",
+                id="cal-inc",
+                provider_id="provider-cal-inc",
                 sync_cursor='{"_type": "google", "sync_token": "old"}',
                 display_name="Incremental Cal",
             )
@@ -1319,10 +1334,15 @@ class _FailingCalStore:
     def __init__(self) -> None:
         self.applied: list = []
         self.calendars = [
-            SimpleNamespace(id="cal-ok", provider_id="cal-ok",
-                            sync_cursor=None, display_name="OK"),
-            SimpleNamespace(id="cal-fail", provider_id="cal-fail",
-                            sync_cursor=None, display_name="Fail"),
+            SimpleNamespace(
+                id="cal-ok", provider_id="cal-ok", sync_cursor=None, display_name="OK"
+            ),
+            SimpleNamespace(
+                id="cal-fail",
+                provider_id="cal-fail",
+                sync_cursor=None,
+                display_name="Fail",
+            ),
         ]
 
     def list_pending_ops(self, account_id: str) -> list:
@@ -1372,12 +1392,17 @@ async def test_tick_re_raises_exception_from_parallel_sync() -> None:
 
 def test_event_from_payload_invalid_iso_datetime() -> None:
     import json
+
     from lilical.sync.engine import _event_from_payload
 
-    payload = json.dumps({
-        "uid": "u-bad-dt", "calendar_id": "cal-1",
-        "dtstart": "not-a-date", "dtend": "also-not-a-date",
-    })
+    payload = json.dumps(
+        {
+            "uid": "u-bad-dt",
+            "calendar_id": "cal-1",
+            "dtstart": "not-a-date",
+            "dtend": "also-not-a-date",
+        }
+    )
     event = _event_from_payload(payload)
     assert event.dtstart is None
     assert event.dtend is None
@@ -1385,15 +1410,20 @@ def test_event_from_payload_invalid_iso_datetime() -> None:
 
 def test_event_from_payload_list_to_tuple_conversion() -> None:
     import json
+
     from lilical.sync.engine import _event_from_payload
 
-    payload = json.dumps({
-        "uid": "u-list", "calendar_id": "cal-1",
-        "categories": ["work", "personal"],
-        "attendees": ["a@b.com"],
-    })
+    payload = json.dumps(
+        {
+            "uid": "u-list",
+            "calendar_id": "cal-1",
+            "categories": ["work", "personal"],
+            "attendees": ["a@b.com"],
+        }
+    )
     event = _event_from_payload(payload)
     from lilical.models.event import Attendee
+
     assert event.categories == ("work", "personal")
     assert len(event.attendees) == 1
     assert event.attendees[0].email == "a@b.com"

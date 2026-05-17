@@ -42,6 +42,8 @@ GRAPH_SCOPES = GRAPH_BASE_SCOPES
 
 def _scopes_for_graph(include_contacts: bool) -> list[str]:
     return GRAPH_BASE_SCOPES + (GRAPH_CONTACT_SCOPES if include_contacts else [])
+
+
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # calendarView/delta requires an explicit window. We default to ±2 years; events
@@ -517,12 +519,18 @@ def _graph_event_to_change(
         str(response_obj.get("response") or "").lower()
     )
     organizer_obj = cast("dict[str, object]", ev_json.get("organizer") or {})
-    organizer_email_obj = cast("dict[str, object]", organizer_obj.get("emailAddress") or {})
+    organizer_email_obj = cast(
+        "dict[str, object]", organizer_obj.get("emailAddress") or {}
+    )
     organizer: Organizer | None = None
     if organizer_email_obj.get("address"):
         organizer = Organizer(
             email=str(organizer_email_obj["address"]),
-            display_name=str(organizer_email_obj["name"]) if organizer_email_obj.get("name") else None,
+            display_name=(
+                str(organizer_email_obj["name"])
+                if organizer_email_obj.get("name")
+                else None
+            ),
             is_self=bool(organizer_obj.get("self")),
         )
     for a in attendees_raw:
@@ -874,9 +882,11 @@ def _is_self_organizer(ev_json: dict, account_emails: frozenset[str]) -> bool:
     org = cast("dict", ev_json.get("organizer") or {})
     if org.get("self"):
         return True
-    addr = str(
-        cast("dict", org.get("emailAddress") or {}).get("address") or ""
-    ).strip().lower()
+    addr = (
+        str(cast("dict", org.get("emailAddress") or {}).get("address") or "")
+        .strip()
+        .lower()
+    )
     return bool(addr and addr in account_emails)
 
 
@@ -900,7 +910,9 @@ class GraphBackend:
         accounts = app.get_accounts()
         if not accounts:
             raise AuthExpired("no cached account; re-authenticate required")
-        result = app.acquire_token_silent(_scopes_for_graph(self._include_contacts), account=accounts[0])
+        result = app.acquire_token_silent(
+            _scopes_for_graph(self._include_contacts), account=accounts[0]
+        )
         if not result or "access_token" not in result:
             raise AuthExpired("silent token acquisition failed")
         if cache.has_state_changed:
@@ -939,7 +951,10 @@ class GraphBackend:
                     addrs.add(rest.strip().lower())
             self._account_emails = frozenset(addrs)
         except Exception:
-            log.exception("graph: failed to fetch /me account addresses; organizer-self detection will rely on organizer.self flag only")
+            log.exception(
+                "graph: failed to fetch /me account addresses; "
+                "organizer-self detection will rely on organizer.self flag only"
+            )
             self._account_emails = frozenset()
         return self._account_emails
 
@@ -1114,8 +1129,7 @@ class GraphBackend:
             chunk = items[i : i + 20]
             body = {
                 "requests": [
-                    {"id": key, "method": "GET", "url": url}
-                    for key, url in chunk
+                    {"id": key, "method": "GET", "url": url} for key, url in chunk
                 ]
             }
             try:
@@ -1173,7 +1187,11 @@ class GraphBackend:
         log.info(
             "graph attendee refresh: scanned=%d masters=%d self_organized=%d "
             "stale_attendees=%d candidates=%d",
-            len(events), n_masters, n_self_org, n_stale, len(candidates),
+            len(events),
+            n_masters,
+            n_self_org,
+            n_stale,
+            len(candidates),
         )
         if not candidates:
             return
@@ -1194,23 +1212,43 @@ class GraphBackend:
         for idx, master_id in candidates:
             body = responses.get(master_id)
             if not body:
-                log.debug("graph attendee refresh: no response for master %s", master_id[-20:])
+                log.debug(
+                    "graph attendee refresh: no response for master %s", master_id[-20:]
+                )
                 continue
             instances = body.get("value") or []
             if not instances:
-                log.debug("graph attendee refresh: /instances returned empty for master %s (window %s – %s)", master_id[-20:], window_start[:10], window_end[:10])
+                log.debug(
+                    "graph attendee refresh: /instances returned empty for master %s"
+                    " (window %s – %s)",
+                    master_id[-20:],
+                    window_start[:10],
+                    window_end[:10],
+                )
                 continue
             fresh_attendees = instances[0].get("attendees")
             if fresh_attendees:
                 events[idx]["attendees"] = fresh_attendees
                 masters_updated += 1
                 attendees_replaced += len(fresh_attendees)
-                log.debug("graph attendee refresh: updated master %s with %d attendees from instance %s", master_id[-20:], len(fresh_attendees), (instances[0].get("start") or {}).get("dateTime", "?")[:10])
+                instance_start = (instances[0].get("start") or {}).get("dateTime", "?")[
+                    :10
+                ]
+                log.debug(
+                    "graph attendee refresh: updated master %s with %d attendees"
+                    " from instance %s",
+                    master_id[-20:],
+                    len(fresh_attendees),
+                    instance_start,
+                )
 
         log.info(
             "graph attendee refresh: candidates=%d instances_fetched=%d "
             "masters_updated=%d attendees_replaced=%d",
-            len(candidates), len(responses), masters_updated, attendees_replaced,
+            len(candidates),
+            len(responses),
+            masters_updated,
+            attendees_replaced,
         )
 
     async def _hydrate_and_synthesize_masters(
@@ -1504,16 +1542,22 @@ class GraphBackend:
                 if not isinstance(p, dict):
                     continue
                 name = str(p.get("displayName") or "").strip() or None
-                for ea in (p.get("scoredEmailAddresses") or []):
-                    addr = str(ea.get("address") or "").strip().lower() if isinstance(ea, dict) else ""
+                for ea in p.get("scoredEmailAddresses") or []:
+                    addr = (
+                        str(ea.get("address") or "").strip().lower()
+                        if isinstance(ea, dict)
+                        else ""
+                    )
                     if addr and "@" in addr:
-                        contacts.append(Contact(
-                            email=addr,
-                            display_name=name,
-                            source="other",
-                            account_id=self.account_id,
-                            source_id=str(p.get("id") or "") or None,
-                        ))
+                        contacts.append(
+                            Contact(
+                                email=addr,
+                                display_name=name,
+                                source="other",
+                                account_id=self.account_id,
+                                source_id=str(p.get("id") or "") or None,
+                            )
+                        )
             next_link = data.get("@odata.nextLink")
             if next_link:
                 return contacts, {"skip": skip + len(people)}, False
@@ -1526,23 +1570,30 @@ class GraphBackend:
                 url += f"&$skiptoken={skip_token}"
             resp = await self._request("GET", url)
             data = resp.json()
-            for c in (data.get("value") or []):
+            for c in data.get("value") or []:
                 if not isinstance(c, dict):
                     continue
                 name = str(c.get("displayName") or "").strip() or None
-                for ea in (c.get("emailAddresses") or []):
-                    addr = str(ea.get("address") or "").strip().lower() if isinstance(ea, dict) else ""
+                for ea in c.get("emailAddresses") or []:
+                    addr = (
+                        str(ea.get("address") or "").strip().lower()
+                        if isinstance(ea, dict)
+                        else ""
+                    )
                     if addr and "@" in addr:
-                        contacts.append(Contact(
-                            email=addr,
-                            display_name=name,
-                            source="personal",
-                            account_id=self.account_id,
-                            source_id=str(c.get("id") or "") or None,
-                        ))
+                        contacts.append(
+                            Contact(
+                                email=addr,
+                                display_name=name,
+                                source="personal",
+                                account_id=self.account_id,
+                                source_id=str(c.get("id") or "") or None,
+                            )
+                        )
             next_link = data.get("@odata.nextLink")
             if next_link:
                 import urllib.parse as _up
+
                 parsed = _up.urlparse(next_link)
                 qs = dict(_up.parse_qsl(parsed.query))
                 return contacts, {"skipToken": qs.get("$skiptoken", "")}, False
@@ -1555,24 +1606,27 @@ class GraphBackend:
                 url += f"&$skiptoken={skip_token}"
             resp = await self._request("GET", url)
             data = resp.json()
-            for u in (data.get("value") or []):
+            for u in data.get("value") or []:
                 if not isinstance(u, dict):
                     continue
                 name = str(u.get("displayName") or "").strip() or None
                 for field in ("mail", "userPrincipalName"):
                     addr = str(u.get(field) or "").strip().lower()
                     if addr and "@" in addr:
-                        contacts.append(Contact(
-                            email=addr,
-                            display_name=name,
-                            source="directory",
-                            account_id=self.account_id,
-                            source_id=str(u.get("id") or "") or None,
-                        ))
+                        contacts.append(
+                            Contact(
+                                email=addr,
+                                display_name=name,
+                                source="directory",
+                                account_id=self.account_id,
+                                source_id=str(u.get("id") or "") or None,
+                            )
+                        )
                         break
             next_link = data.get("@odata.nextLink")
             if next_link:
                 import urllib.parse as _up
+
                 parsed = _up.urlparse(next_link)
                 qs = dict(_up.parse_qsl(parsed.query))
                 return contacts, {"skipToken": qs.get("$skiptoken", "")}, False

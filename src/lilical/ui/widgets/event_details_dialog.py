@@ -5,8 +5,6 @@ from datetime import timedelta
 from html import escape
 from typing import TYPE_CHECKING
 
-from lilical.utils.names import format_display_name
-
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
@@ -23,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui.widgets.event_chip import _readable_text_color, _resolve_color
+from lilical.utils.names import format_display_name
 
 _URL_RE = re.compile(r"(https?://[^\s<>\"{}|\\^`\[\]]+)", re.IGNORECASE)
 # Conservative HTML detection: look for common block/inline tags used by calendar systems.  # noqa: E501
@@ -87,7 +86,8 @@ class EventDetailsDialog(QDialog):
         title_font = QFont()
         title_font.setPointSize(14)
         title_font.setBold(True)
-        if event.status == "CANCELLED" or (event.self_response or "").upper() == "DECLINED":
+        declined = (event.self_response or "").upper() == "DECLINED"
+        if event.status == "CANCELLED" or declined:
             title_font.setStrikeOut(True)
         title_label.setFont(title_font)
         title_label.setWordWrap(True)
@@ -95,7 +95,9 @@ class EventDetailsDialog(QDialog):
         fg_pal.setColor(QPalette.ColorRole.WindowText, fg)
         title_label.setPalette(fg_pal)
         title_label.setForegroundRole(QPalette.ColorRole.WindowText)
-        title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        title_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         header_layout.addWidget(title_label)
         outer.addWidget(header)
 
@@ -170,7 +172,6 @@ class EventDetailsDialog(QDialog):
         if event.transparency == "TRANSPARENT":
             _add_row("Show as:", "Free")
 
-
         # ── Organizer ────────────────────────────────────────────────────────
         if event.organizer:
             _add_row("Organizer:", _format_organizer(event.organizer))
@@ -179,15 +180,18 @@ class EventDetailsDialog(QDialog):
         if event.attendees:
             summary, att_lines = _build_attendee_html(event.attendees, event.organizer)
             if summary or att_lines:
-                html = (
-                    f"<div style='color:#888888'>{escape(summary)}</div>"
-                    + "".join(att_lines)
+                html = f"<div style='color:#888888'>{escape(summary)}</div>" + "".join(
+                    att_lines
                 )
                 att_lbl = QLabel(html)
                 att_lbl.setTextFormat(Qt.TextFormat.RichText)
                 att_lbl.setWordWrap(True)
-                att_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                att_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+                att_lbl.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                att_lbl.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+                )
                 form.addRow("Attendees:", att_lbl)
 
         # ── Categories ────────────────────────────────────────────────────────
@@ -223,9 +227,7 @@ class EventDetailsDialog(QDialog):
                     btn.setChecked(True)
                     btn.setEnabled(False)
                 else:
-                    btn.clicked.connect(
-                        lambda _checked, v=value: self._on_respond(v)
-                    )
+                    btn.clicked.connect(lambda _checked, v=value: self._on_respond(v))
                 btn_bar_layout.addWidget(btn)
 
             sep = QFrame()
@@ -386,9 +388,9 @@ _RESPONSE_LABEL = {
     "NEEDS-ACTION": "No response",
 }
 _STATUS_GLYPH: dict[str, tuple[str, str]] = {
-    "ACCEPTED":     ("✓", "#16a34a"),
-    "TENTATIVE":    ("?",      "#d97706"),
-    "DECLINED":     ("✗", "#dc2626"),
+    "ACCEPTED": ("✓", "#16a34a"),
+    "TENTATIVE": ("?", "#d97706"),
+    "DECLINED": ("✗", "#dc2626"),
     "NEEDS-ACTION": ("○", "#888888"),
 }
 _SUMMARY_LABEL = {
@@ -416,7 +418,9 @@ def _group_attendees(
     return [(_RESPONSE_LABEL[k], groups[k]) for k in _RESPONSE_ORDER]
 
 
-def _build_attendee_html(attendees: object, organizer: object = None) -> tuple[str, list[str]]:
+def _build_attendee_html(
+    attendees: object, organizer: object = None
+) -> tuple[str, list[str]]:
     from lilical.models.event import Attendee, Organizer
 
     org_email: str | None = None
@@ -429,7 +433,11 @@ def _build_attendee_html(attendees: object, organizer: object = None) -> tuple[s
         return org_email is not None and (a.email or "").lower() == org_email
 
     attendees_seq = list(attendees) if not isinstance(attendees, list) else attendees
-    typed = [a for a in attendees_seq if isinstance(a, Attendee) and not _is_organizer_attendee(a)]
+    typed = [
+        a
+        for a in attendees_seq
+        if isinstance(a, Attendee) and not _is_organizer_attendee(a)
+    ]
     legacy = [a for a in attendees_seq if not isinstance(a, Attendee)]
 
     if not typed and not legacy:

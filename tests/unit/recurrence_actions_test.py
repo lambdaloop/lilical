@@ -167,6 +167,7 @@ def test_dispatch_delete_following_calls_truncate(qapp):
 
 def test_dispatch_edit_occurrence_with_recurrence_id(qapp):
     from PySide6.QtWidgets import QWidget
+
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     store = _FakeStore()
@@ -185,6 +186,7 @@ def test_dispatch_edit_occurrence_with_recurrence_id(qapp):
 
 def test_dispatch_edit_following_with_recurrence_id(qapp):
     from PySide6.QtWidgets import QWidget
+
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     store = _FakeStore()
@@ -201,6 +203,7 @@ def test_dispatch_edit_following_with_recurrence_id(qapp):
 
 def test_dispatch_edit_series_with_recurrence_id_looks_up_master(qapp):
     from PySide6.QtWidgets import QWidget
+
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
     class _MasterLookupStore(_FakeStore):
@@ -221,6 +224,7 @@ def test_dispatch_edit_series_with_recurrence_id_looks_up_master(qapp):
 
 def test_dispatch_delete_occurrence_with_recurrence_id(qapp):
     from PySide6.QtWidgets import QWidget
+
     from lilical.ui.views._recurrence_actions import _dispatch_delete
 
     store = _FakeStore()
@@ -236,6 +240,7 @@ def test_dispatch_delete_occurrence_with_recurrence_id(qapp):
 
 def test_dispatch_delete_following_with_recurrence_id(qapp):
     from PySide6.QtWidgets import QWidget
+
     from lilical.ui.views._recurrence_actions import _dispatch_delete
 
     class _MasterLookupStore(_FakeStore):

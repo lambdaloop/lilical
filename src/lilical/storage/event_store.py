@@ -159,7 +159,9 @@ def _event_to_row(event: Event) -> EventRow:
         exdates=_dt_tuple_to_json(event.exdates),
         rdates=_dt_tuple_to_json(event.rdates),
         attendees=_json_dumps([dataclasses.asdict(a) for a in event.attendees]) or "",
-        organizer=_json_dumps(dataclasses.asdict(event.organizer) if event.organizer else None),
+        organizer=_json_dumps(
+            dataclasses.asdict(event.organizer) if event.organizer else None
+        ),
         categories=_json_dumps(list(event.categories)) or "",
         color=event.color,
         status=event.status,
@@ -918,7 +920,7 @@ class EventStore(QObject):
             )
 
     def reset_sync_cursors(self, account_id: str) -> None:
-        """Clear sync_cursor on all calendars for an account so the next sync does a full resync."""
+        """Clear sync_cursor on all calendars so the next sync does a full resync."""
         from lilical.models.calendar import Calendar
 
         with self._write_session() as s:

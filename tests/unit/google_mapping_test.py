@@ -176,7 +176,10 @@ def test_attendees_extracted() -> None:
     change = _google_event_to_change(data, "cal-1")
     assert change is not None
     assert change.event is not None
-    assert {a.email for a in change.event.attendees} == {"alice@example.com", "bob@example.com"}
+    assert {a.email for a in change.event.attendees} == {
+        "alice@example.com",
+        "bob@example.com",
+    }
 
 
 # -- end-to-end: parser → EventStore → event_instances expansion --------------

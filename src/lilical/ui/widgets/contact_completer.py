@@ -128,7 +128,9 @@ class _ChipLineEdit(QLineEdit):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         parent = self.parent()
-        popup: "_CompletionPopup | None" = getattr(parent, "_popup", None) if parent is not None else None
+        popup: "_CompletionPopup | None" = (
+            getattr(parent, "_popup", None) if parent is not None else None
+        )
         if popup is not None and popup.isVisible():
             key = event.key()
             if key == Qt.Key.Key_Down:
@@ -151,6 +153,7 @@ class _ChipLineEdit(QLineEdit):
             self.backspace_at_start.emit()
             return
         super().keyPressEvent(event)
+
 
 class InviteeChipEdit(QWidget):
     """Chip-style multi-invitee input with contact autocomplete popup."""
@@ -190,11 +193,15 @@ class InviteeChipEdit(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setMaximumHeight(120)
-        self._scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self._scroll.setVisible(False)
 
         self._chip_container = QWidget()
-        self._chip_layout = FlowLayout(self._chip_container, margin=2, h_spacing=4, v_spacing=4)
+        self._chip_layout = FlowLayout(
+            self._chip_container, margin=2, h_spacing=4, v_spacing=4
+        )
         self._scroll.setWidget(self._chip_container)
         outer.addWidget(self._scroll)
 

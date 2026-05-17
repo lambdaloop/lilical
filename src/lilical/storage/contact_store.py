@@ -7,7 +7,12 @@ from typing import Any
 from PySide6.QtCore import QObject, Signal
 from sqlalchemy.orm import Session
 
-from lilical.models.contact import SOURCE_PRIORITY, Contact, ContactRow, ContactsSyncStateRow
+from lilical.models.contact import (
+    SOURCE_PRIORITY,
+    Contact,
+    ContactRow,
+    ContactsSyncStateRow,
+)
 
 
 def _utc_now() -> str:
@@ -32,7 +37,9 @@ class ContactStore(QObject):
             for c in contacts:
                 row = (
                     s.query(ContactRow)
-                    .filter_by(account_id=account_id, source=source, email=c.email.lower())
+                    .filter_by(
+                        account_id=account_id, source=source, email=c.email.lower()
+                    )
                     .first()
                 )
                 if row is None:
@@ -81,7 +88,11 @@ class ContactStore(QObject):
                 if existing:
                     for row in existing:
                         row.last_seen_at = now
-                        if row.source == "harvested" and display_name and not row.display_name:
+                        if (
+                            row.source == "harvested"
+                            and display_name
+                            and not row.display_name
+                        ):
                             row.display_name = display_name
                 else:
                     s.add(
@@ -144,7 +155,9 @@ class ContactStore(QObject):
                 break
         return out
 
-    def get_sync_state(self, account_id: str, source: str) -> ContactsSyncStateRow | None:
+    def get_sync_state(
+        self, account_id: str, source: str
+    ) -> ContactsSyncStateRow | None:
         with Session(self._engine) as s:
             return (
                 s.query(ContactsSyncStateRow)
@@ -152,9 +165,7 @@ class ContactStore(QObject):
                 .first()
             )
 
-    def needs_refresh(
-        self, account_id: str, source: str, *, hours: float = 24
-    ) -> bool:
+    def needs_refresh(self, account_id: str, source: str, *, hours: float = 24) -> bool:
         state = self.get_sync_state(account_id, source)
         if state is None or not state.last_full_refresh_at:
             return True
@@ -167,7 +178,12 @@ class ContactStore(QObject):
             return True
 
     def set_sync_state(
-        self, account_id: str, source: str, cursor: str | None, *, mark_refreshed: bool = False
+        self,
+        account_id: str,
+        source: str,
+        cursor: str | None,
+        *,
+        mark_refreshed: bool = False,
     ) -> None:
         now = _utc_now()
         with threading.RLock(), Session(self._engine) as s, s.begin():

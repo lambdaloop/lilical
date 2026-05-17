@@ -91,10 +91,10 @@ def test_placed_into_existing_column() -> None:
     """Items can be placed into an existing column (not the first brand-new
     column) when the column's last item ends before the new item starts."""
     items = [
-        (0, 60, "a"),      # col 0 (first in cluster)
-        (30, 90, "b"),     # col 1 (overlaps a, new column)
-        (40, 100, "c"),    # col 2 (overlaps both)
-        (70, 120, "d"),    # col 0 (a ended at 60, d starts at 70 → fits)
+        (0, 60, "a"),  # col 0 (first in cluster)
+        (30, 90, "b"),  # col 1 (overlaps a, new column)
+        (40, 100, "c"),  # col 2 (overlaps both)
+        (70, 120, "d"),  # col 0 (a ended at 60, d starts at 70 → fits)
     ]
     result = pack_overlapping(items)
     by_payload = {p: col for col, _cols, _xspan, p in result}

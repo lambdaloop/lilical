@@ -74,7 +74,10 @@ def event_to_google_body(event: "Event") -> dict[str, Any]:
 
     if event.attendees:
         body["attendees"] = [
-            {"email": att.email, **({"displayName": att.display_name} if att.display_name else {})}
+            {
+                "email": att.email,
+                **({"displayName": att.display_name} if att.display_name else {}),
+            }
             for att in event.attendees
         ]
 

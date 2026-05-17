@@ -1,7 +1,8 @@
 """Tests for utils.timezone fallback chain."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import timedelta, tzinfo
 from unittest.mock import MagicMock, patch
 
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -9,10 +10,13 @@ from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 class _FixedOffset(tzinfo):
     """A fixed-offset timezone with no .key attribute (simulates a plain tzinfo)."""
+
     def utcoffset(self, dt):
         return timedelta(hours=0)
+
     def tzname(self, dt):
         return "UTC"
+
     def dst(self, dt):
         return timedelta(0)
 
@@ -49,9 +53,7 @@ def test_local_iana_tz_falls_back_to_etc_localtime(
 @patch("lilical.utils.timezone.datetime")
 @patch("lilical.utils.timezone.open")
 @patch("lilical.utils.timezone.os.readlink")
-def test_local_iana_tz_falls_back_to_utc(
-    mock_readlink, mock_open, mock_dt
-) -> None:
+def test_local_iana_tz_falls_back_to_utc(mock_readlink, mock_open, mock_dt) -> None:
     """When all detection methods fail, return 'UTC'."""
     fake_now = MagicMock()
     fake_now.tzinfo = _FixedOffset()

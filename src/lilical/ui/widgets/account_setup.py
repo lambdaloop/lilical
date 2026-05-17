@@ -106,11 +106,14 @@ class AccountSetupDialog(QDialog):
                 self._server_edit.setText(existing_account.server_url)
 
         self._contacts_checkbox = QCheckBox(
-            "Include contacts from this account — may require admin approval on some tenants"
+            "Include contacts from this account"
+            " — may require admin approval on some tenants"
         )
         self._contacts_checkbox.setToolTip(
-            "Off (recommended): calendar only. On: imports your address book and organization\n"
-            "directory for invite autocomplete. lilical always autocompletes from people you've\n"
+            "Off (recommended): calendar only."
+            " On: imports your address book and organization\n"
+            "directory for invite autocomplete."
+            " lilical always autocompletes from people you've\n"
             "previously emailed, regardless of this setting."
         )
         layout.addWidget(self._contacts_checkbox)
@@ -370,4 +373,11 @@ class AccountSetupDialog(QDialog):
         if not identity:
             return None
 
-        return (kind, display_name, identity, server_url, dict(self._secret_data), self._chosen_include_contacts)
+        return (
+            kind,
+            display_name,
+            identity,
+            server_url,
+            dict(self._secret_data),
+            self._chosen_include_contacts,
+        )

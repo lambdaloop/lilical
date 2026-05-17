@@ -1414,6 +1414,7 @@ def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
 def test_ensure_aware_dt_with_date(engine) -> None:
     """_ensure_aware_dt wraps a date into a UTC-midnight datetime."""
     from datetime import date as _date_cls
+
     d = _date_cls(2026, 7, 4)
     result = EventStore._ensure_aware_dt(d)
     assert isinstance(result, datetime)
@@ -1448,6 +1449,7 @@ def test_ensure_aware_dt_non_datetime_passthrough(engine) -> None:
 def test_json_dumps_none(engine) -> None:
     """_json_dumps(None) returns None."""
     from lilical.storage.event_store import _json_dumps
+
     assert _json_dumps(None) is None
     assert _json_dumps(["a"]) == '["a"]'
 
@@ -1457,7 +1459,6 @@ def test_json_dumps_none(engine) -> None:
 
 def test_queue_move_between_calendars(engine) -> None:
     """Move an event from cal-1 to a new cal-2."""
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
     store = EventStore(engine)
@@ -1477,21 +1478,15 @@ def test_queue_move_between_calendars(engine) -> None:
         )
 
     new_uid = store.queue_move(
-        "event-1", "cal-1", "cal-2",
+        "event-1",
+        "cal-1",
+        "cal-2",
         _event(summary="Moved to cal-2", rrule=None),
     )
 
     with Session(engine) as s:
-        old_rows = (
-            s.query(EventRow)
-            .filter_by(uid="event-1", calendar_id="cal-1")
-            .all()
-        )
-        new_rows = (
-            s.query(EventRow)
-            .filter_by(uid=new_uid, calendar_id="cal-2")
-            .all()
-        )
+        old_rows = s.query(EventRow).filter_by(uid="event-1", calendar_id="cal-1").all()
+        new_rows = s.query(EventRow).filter_by(uid=new_uid, calendar_id="cal-2").all()
         ops = s.query(PendingOpRow).all()
 
     assert len(old_rows) == 1
@@ -1505,9 +1500,6 @@ def test_queue_move_between_calendars(engine) -> None:
     op_types = {(op.op, op.calendar_id) for op in ops}
     assert ("delete", "cal-1") in op_types
     assert ("create", "cal-2") in op_types
-
-
-
 
 
 def test_queue_move_nonexistent_old_event(engine) -> None:
@@ -1808,7 +1800,8 @@ def test_queue_delete_instance_marks_existing_override(engine) -> None:
         s.query(EventRow)
         .filter_by(uid="series-del-ov", calendar_id="cal-1", recurrence_id="")
         .first()
-        .exdates or "[]"
+        .exdates
+        or "[]"
     )
     assert rid_iso in master_exdates
 
@@ -1851,7 +1844,6 @@ def test_get_event_falls_back_to_override_row(engine) -> None:
 def test_rebuild_instances_for_no_dtstart(engine) -> None:
     """_rebuild_instances_for returns early when dtstart is None."""
     from lilical.models.event import Event as _Event
-    from lilical.storage.event_store import EventStore as _ES
 
     store = EventStore(engine)
     event = _Event(uid="no-dt", calendar_id="cal-1")
@@ -1887,11 +1879,7 @@ def test_recurring_all_day_event_calls_anchor(engine) -> None:
     )
 
     with Session(engine) as s:
-        instances = (
-            s.query(EventInstanceRow)
-            .filter_by(uid="rec-allday")
-            .all()
-        )
+        instances = s.query(EventInstanceRow).filter_by(uid="rec-allday").all()
     assert len(instances) == 3
     for inst in instances:
         assert inst.all_day == 1

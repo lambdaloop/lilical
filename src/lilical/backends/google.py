@@ -419,7 +419,11 @@ def _google_event_to_change(
     if isinstance(organizer_obj, dict) and organizer_obj.get("email"):
         organizer = Organizer(
             email=str(organizer_obj["email"]),
-            display_name=str(organizer_obj["displayName"]) if organizer_obj.get("displayName") else None,
+            display_name=(
+                str(organizer_obj["displayName"])
+                if organizer_obj.get("displayName")
+                else None
+            ),
             is_self=bool(organizer_obj.get("self")),
         )
     for a in attendees_raw:
@@ -484,7 +488,9 @@ def run_google_oauth_sync() -> str:
     browser. InstalledAppFlow.run_local_server handles the loopback HTTP
     server, token exchange, and "you may close this tab" page automatically.
     """
-    from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[reportMissingTypeStubs]
+    from google_auth_oauthlib.flow import (
+        InstalledAppFlow,  # type: ignore[reportMissingTypeStubs]
+    )
 
     _validate_client_config()
     flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
@@ -802,7 +808,11 @@ class GoogleBackend:
     ) -> Event | None:
         import dataclasses as _dc
 
-        _to_google = {"ACCEPTED": "accepted", "TENTATIVE": "tentative", "DECLINED": "declined"}
+        _to_google = {
+            "ACCEPTED": "accepted",
+            "TENTATIVE": "tentative",
+            "DECLINED": "declined",
+        }
         g_status = _to_google.get(response.upper())
         if not g_status or not event.provider_event_id:
             return None
@@ -816,11 +826,15 @@ class GoogleBackend:
             params={"fields": "attendees"},
         )
         attendees_raw: list[dict[str, object]] = get_resp.json().get("attendees") or []
-        found_self = any(isinstance(a, dict) and a.get("self") is True for a in attendees_raw)
+        found_self = any(
+            isinstance(a, dict) and a.get("self") is True for a in attendees_raw
+        )
         if not found_self:
             return None
         patched_attendees = [
-            dict(a, responseStatus=g_status) if (isinstance(a, dict) and a.get("self") is True) else a
+            dict(a, responseStatus=g_status)
+            if (isinstance(a, dict) and a.get("self") is True)
+            else a
             for a in attendees_raw
         ]
         resp = await self._request(
@@ -882,7 +896,9 @@ class GoogleBackend:
         try:
             return await self._list_carddav_contacts()
         except Exception as exc:
-            log.warning("Google CardDAV contact listing failed: %s — falling back to empty", exc)
+            log.warning(
+                "Google CardDAV contact listing failed: %s — falling back to empty", exc
+            )
             return [], None, True
 
     async def _list_carddav_contacts(self) -> tuple[list[Contact], dict | None, bool]:
@@ -891,14 +907,17 @@ class GoogleBackend:
         try:
             import vobject  # type: ignore[reportMissingModuleSource]
         except ImportError:
-            log.warning("vobject not installed — Google CardDAV contact parsing skipped")
+            log.warning(
+                "vobject not installed — Google CardDAV contact parsing skipped"
+            )
             return [], None, True
 
         identity = urllib.parse.quote(self._identity, safe="@")
         ab_url = f"https://www.googleapis.com/carddav/v1/principals/{identity}/lists/default/"
         body = (
             "<?xml version='1.0' encoding='utf-8'?>"
-            "<C:addressbook-query xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            "<C:addressbook-query "
+            "xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
             "<D:prop><D:getetag/><C:address-data/></D:prop>"
             "</C:addressbook-query>"
         )
@@ -937,12 +956,14 @@ class GoogleBackend:
                 for ep in emails_prop:
                     addr = str(ep.value).strip().lower()
                     if addr and "@" in addr:
-                        contacts.append(Contact(
-                            email=addr,
-                            display_name=name,
-                            source="personal",
-                            account_id=self.account_id,
-                        ))
+                        contacts.append(
+                            Contact(
+                                email=addr,
+                                display_name=name,
+                                source="personal",
+                                account_id=self.account_id,
+                            )
+                        )
             except Exception as exc:
                 log.debug("Google CardDAV vcard parse error: %s", exc)
 

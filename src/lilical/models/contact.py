@@ -30,7 +30,9 @@ SOURCE_PRIORITY: dict[str, int] = {
 class ContactRow(Base):
     __tablename__ = "contacts"
     __table_args__ = (
-        UniqueConstraint("account_id", "source", "email", name="uq_contacts_account_source_email"),
+        UniqueConstraint(
+            "account_id", "source", "email", name="uq_contacts_account_source_email"
+        ),
         Index("idx_contacts_account_email", "account_id", "email"),
         Index("idx_contacts_account_name", "account_id", "display_name"),
     )

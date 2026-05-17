@@ -1,4 +1,5 @@
 """Tests for ui.theme palette switching."""
+
 from __future__ import annotations
 
 import lilical.ui.theme as theme
@@ -16,8 +17,8 @@ def test_apply_light_switches_color_tokens() -> None:
     assert theme.ACCENT == "#2563eb"
 
     theme.apply("dark")
-    assert theme.BG_BASE == dark_bg
-    assert theme.TEXT_PRIMARY == dark_text
+    assert dark_bg == theme.BG_BASE
+    assert dark_text == theme.TEXT_PRIMARY
 
 
 def test_apply_unknown_name_uses_dark() -> None:

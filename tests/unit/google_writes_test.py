@@ -121,12 +121,14 @@ def test_serializer_recurring_event_id():
 def test_serializer_dt_to_google_none():
     """_dt_to_google(None) returns an empty dict."""
     from lilical.backends._google_serializer import _dt_to_google
+
     assert _dt_to_google(None, "UTC", False) == {}
 
 
 def test_serializer_exdate_non_utc_tz():
     """EXDATE with non-UTC timezone includes TZID parameter."""
     from lilical.backends._google_serializer import _format_exdate
+
     dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
     result = _format_exdate(dt, "America/New_York")
     assert "TZID=America/New_York" in result
@@ -139,6 +141,7 @@ def test_serializer_exdate_non_utc_tz():
 def test_serializer_exdate_none_tz():
     """EXDATE with tz_name=None falls back to UTC format."""
     from lilical.backends._google_serializer import _format_exdate
+
     dt = datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)
     result = _format_exdate(dt, None)
     assert "TZID" not in result

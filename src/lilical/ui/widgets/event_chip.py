@@ -245,8 +245,9 @@ class EventChip(QGraphicsObject):
         return sr == "DECLINED"
 
     def _is_needs_action(self) -> bool:
-        """True when the user hasn't committed to this invitation (no response or tentative)."""
-        return (self._event.self_response or "").upper() in ("NEEDS-ACTION", "TENTATIVE")
+        """True when the user hasn't committed (no response or tentative)."""
+        sr = (self._event.self_response or "").upper()
+        return sr in ("NEEDS-ACTION", "TENTATIVE")
 
     def _dim_reason(self) -> str | None:
         status = (self._event.status or "").upper()

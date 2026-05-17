@@ -295,13 +295,17 @@ def _vevent_to_event(
             is_self = bool(raw_addr and raw_addr == user_email_norm)
             if is_self and partstat != "NEEDS-ACTION":
                 self_response = partstat
-            built.append(Attendee(
-                email=raw_addr,
-                display_name=cn,
-                response=partstat,
-                is_organizer=(_org_addr_pre is not None and raw_addr == _org_addr_pre),
-                is_self=is_self,
-            ))
+            built.append(
+                Attendee(
+                    email=raw_addr,
+                    display_name=cn,
+                    response=partstat,
+                    is_organizer=(
+                        _org_addr_pre is not None and raw_addr == _org_addr_pre
+                    ),
+                    is_self=is_self,
+                )
+            )
         attendees = tuple(built)
 
     # Parse ORGANIZER property.
@@ -885,13 +889,19 @@ class CalDavBackend:
 
         if not event.provider_event_id:
             return None
-        _partstat = {"ACCEPTED": "ACCEPTED", "TENTATIVE": "TENTATIVE", "DECLINED": "DECLINED"}
+        _partstat = {
+            "ACCEPTED": "ACCEPTED",
+            "TENTATIVE": "TENTATIVE",
+            "DECLINED": "DECLINED",
+        }
         partstat = _partstat.get(response.upper())
         if not partstat:
             return None
         user_mailto = f"mailto:{self._username.lower()}"
         client = await self._get_client()
-        event_obj = caldav.CalendarObjectResource(client=client, url=event.provider_event_id)  # type: ignore[reportGeneralTypeIssues]
+        event_obj = caldav.CalendarObjectResource(  # type: ignore[reportGeneralTypeIssues]
+            client=client, url=event.provider_event_id
+        )
         raw = await self._run(event_obj.get_data)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
@@ -901,7 +911,10 @@ class CalDavBackend:
             if comp.name != "VEVENT" or comp.get("RECURRENCE-ID") is not None:
                 continue
             attendee_prop = comp.get("ATTENDEE")
-            attendees = attendee_prop if isinstance(attendee_prop, list) else ([attendee_prop] if attendee_prop else [])
+            if isinstance(attendee_prop, list):
+                attendees = attendee_prop
+            else:
+                attendees = [attendee_prop] if attendee_prop else []
             for att in attendees:
                 if str(att).lower() == user_mailto:
                     att.params["PARTSTAT"] = partstat
@@ -931,13 +944,14 @@ class CalDavBackend:
         try:
             return await self._list_carddav_contacts(cursor)
         except Exception as e:
-            log.warning("CardDAV contact discovery failed: %s — falling back to harvested", e)
+            log.warning(
+                "CardDAV contact discovery failed: %s — falling back to harvested", e
+            )
             return [], None, True
 
     async def _list_carddav_contacts(
         self, cursor: dict | None
     ) -> tuple[list[Contact], dict | None, bool]:
-        import xml.etree.ElementTree as ET
 
         client = await self._get_client()
         base_url = str(client.url)
@@ -990,20 +1004,20 @@ class CalDavBackend:
                     for ep in emails_prop:
                         addr = str(ep.value).strip().lower()
                         if addr and "@" in addr:
-                            contacts.append(Contact(
-                                email=addr,
-                                display_name=name,
-                                source="personal",
-                                account_id=self.account_id,
-                            ))
+                            contacts.append(
+                                Contact(
+                                    email=addr,
+                                    display_name=name,
+                                    source="personal",
+                                    account_id=self.account_id,
+                                )
+                            )
                 except Exception as e:
                     log.debug("vcard parse error: %s", e)
 
         return contacts, None, True
 
-    async def _carddav_propfind(
-        self, url: str, prop_xml: str, client
-    ) -> str | None:
+    async def _carddav_propfind(self, url: str, prop_xml: str, client) -> str | None:
         import xml.etree.ElementTree as ET
 
         body = (
@@ -1023,11 +1037,11 @@ class CalDavBackend:
             )
             raw = resp.raw if hasattr(resp, "raw") else str(resp)
             root = ET.fromstring(raw if isinstance(raw, (str, bytes)) else "")
-            ns = {"D": "DAV:", "C": "urn:ietf:params:xml:ns:carddav"}
             for href_el in root.iter("{DAV:}href"):
                 val = (href_el.text or "").strip()
                 if val and val != url.rstrip("/"):
                     from urllib.parse import urljoin
+
                     return urljoin(url, val)
         except Exception as e:
             log.debug("PROPFIND %s failed: %s", url, e)
@@ -1056,10 +1070,12 @@ class CalDavBackend:
             root = ET.fromstring(raw if isinstance(raw, (str, bytes)) else "")
             for response in root.iter("{DAV:}response"):
                 rt = response.find(".//{DAV:}resourcetype")
-                if rt is not None and rt.find("{urn:ietf:params:xml:ns:carddav}addressbook") is not None:
+                ab_ns = "{urn:ietf:params:xml:ns:carddav}addressbook"
+                if rt is not None and rt.find(ab_ns) is not None:
                     href_el = response.find("{DAV:}href")
                     if href_el is not None and href_el.text:
                         from urllib.parse import urljoin
+
                         urls.append(urljoin(home_url, href_el.text.strip()))
         except Exception as e:
             log.debug("addressbook listing failed for %s: %s", home_url, e)
@@ -1068,7 +1084,8 @@ class CalDavBackend:
     async def _carddav_fetch_vcards(self, ab_url: str, client) -> list[str]:
         body = (
             "<?xml version='1.0' encoding='utf-8'?>"
-            "<C:addressbook-query xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
+            "<C:addressbook-query "
+            "xmlns:D='DAV:' xmlns:C='urn:ietf:params:xml:ns:carddav'>"
             "<D:prop><D:getetag/><C:address-data/></D:prop>"
             "</C:addressbook-query>"
         )

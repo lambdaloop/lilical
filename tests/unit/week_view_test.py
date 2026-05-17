@@ -1,9 +1,10 @@
 """Tests for extractable logic in WeekView (no full rendering)."""
+
 from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 
 import pytest
 
@@ -13,13 +14,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 @pytest.fixture(scope="module")
 def qapp():
     from PySide6.QtWidgets import QApplication
+
     app = QApplication.instance() or QApplication(sys.argv)
     return app
 
 
 def _make_week_view(qapp):
     from unittest.mock import MagicMock
+
     from lilical.ui.views.week import WeekView
+
     return WeekView(store=MagicMock())
 
 

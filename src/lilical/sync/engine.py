@@ -37,7 +37,7 @@ class SyncEngine(QObject):
     sync_failed = Signal(str, str)
     auth_expired = Signal(str, str)  # account_id, error message
     conflict_detected = Signal(str)
-    contacts_sync_started = Signal(str)   # account_id
+    contacts_sync_started = Signal(str)  # account_id
     contacts_sync_finished = Signal(str, int)  # account_id, count
 
     def __init__(self, store: EventStore, secrets: SecretsStore, factory) -> None:
@@ -371,26 +371,34 @@ class SyncEngine(QObject):
 
         self.sync_finished.emit(account.id, n_changes)
 
-    async def _sync_contacts(self, account, backend, source: str, contact_store) -> None:
+    async def _sync_contacts(
+        self, account, backend, source: str, contact_store
+    ) -> None:
         self.contacts_sync_started.emit(account.id)
         count = 0
         cursor = None
-        state = await asyncio.to_thread(contact_store.get_sync_state, account.id, source)
+        state = await asyncio.to_thread(
+            contact_store.get_sync_state, account.id, source
+        )
         if state is not None:
             import json as _json
+
             try:
                 cursor = _json.loads(state.cursor) if state.cursor else None
             except Exception:
                 cursor = None
         try:
             while True:
-                contacts, next_cursor, is_done = await backend.list_contacts(source, cursor)
+                contacts, next_cursor, is_done = await backend.list_contacts(
+                    source, cursor
+                )
                 if contacts:
                     await asyncio.to_thread(
                         contact_store.upsert_many, account.id, source, contacts
                     )
                     count += len(contacts)
                 import json as _json
+
                 await asyncio.to_thread(
                     contact_store.set_sync_state,
                     account.id,
@@ -406,23 +414,24 @@ class SyncEngine(QObject):
         self.contacts_sync_finished.emit(account.id, count)
 
     async def _harvest_contacts(self, account_id: str, contact_store) -> None:
-        from lilical.models.event import Attendee, Organizer
 
         cals = await asyncio.to_thread(self._store.list_calendars, account_id, False)
         pairs: list[tuple[str, str | None]] = []
         for cal in cals:
-            from lilical.models.event import EventRow
             from sqlalchemy.orm import Session
+
+            from lilical.models.event import EventRow
 
             with Session(self._store._engine) as s:
                 rows = (
                     s.query(EventRow)
-                    .filter(EventRow.calendar_id == cal.id, EventRow.attendees != None)
+                    .filter(EventRow.calendar_id == cal.id, EventRow.attendees != None)  # noqa: E711
                     .all()
                 )
             for row in rows:
                 if row.attendees:
                     import json as _j
+
                     try:
                         for a in _j.loads(row.attendees):
                             if isinstance(a, dict) and a.get("email"):
@@ -431,6 +440,7 @@ class SyncEngine(QObject):
                         pass
                 if row.organizer:
                     import json as _j
+
                     try:
                         o = _j.loads(row.organizer)
                         if isinstance(o, dict) and o.get("email"):
@@ -491,13 +501,15 @@ def _event_from_payload(payload: str | None):
         rebuilt: list[Attendee] = []
         for a in raw_attendees:
             if isinstance(a, dict):
-                rebuilt.append(Attendee(
-                    email=str(a.get("email", "")),
-                    display_name=a.get("display_name") or None,
-                    response=str(a.get("response", "NEEDS-ACTION")),
-                    is_organizer=bool(a.get("is_organizer", False)),
-                    is_self=bool(a.get("is_self", False)),
-                ))
+                rebuilt.append(
+                    Attendee(
+                        email=str(a.get("email", "")),
+                        display_name=a.get("display_name") or None,
+                        response=str(a.get("response", "NEEDS-ACTION")),
+                        is_organizer=bool(a.get("is_organizer", False)),
+                        is_self=bool(a.get("is_self", False)),
+                    )
+                )
             elif isinstance(a, str):
                 # legacy string shape
                 email = a.rsplit(":", 1)[-1] if ":" in a else a

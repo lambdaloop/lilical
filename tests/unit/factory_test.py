@@ -112,9 +112,12 @@ def test_save_google_token_persists_to_secrets() -> None:
     factory = build_backend_factory(secrets)
     backend = factory(_account("google"))
     from lilical.backends.google import GoogleBackend
+
     assert isinstance(backend, GoogleBackend)
     backend._on_token_refreshed('{"access_token": "new-tok"}')
-    secrets.set.assert_called_once_with("acc-test", {"token": '{"access_token": "new-tok"}'})
+    secrets.set.assert_called_once_with(
+        "acc-test", {"token": '{"access_token": "new-tok"}'}
+    )
 
 
 def test_save_graph_cache_persists_to_secrets() -> None:
@@ -124,6 +127,7 @@ def test_save_graph_cache_persists_to_secrets() -> None:
     factory = build_backend_factory(secrets)
     backend = factory(_account("graph"))
     from lilical.backends.graph import GraphBackend
+
     assert isinstance(backend, GraphBackend)
     backend._on_token_refreshed('{"AccessToken": {}}')
     expected_cache = secrets.set.call_args[0][1]["msal_cache"]
@@ -137,6 +141,7 @@ def test_save_graph_cache_creates_secrets_when_missing() -> None:
     factory = build_backend_factory(secrets)
     backend = factory(_account("graph"))
     from lilical.backends.graph import GraphBackend
+
     assert isinstance(backend, GraphBackend)
     backend._on_token_refreshed('{"AccessToken": {}}')
     secrets.set.assert_called_once()

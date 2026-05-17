@@ -42,6 +42,7 @@ def open_engine(db_path: str) -> Engine:
 
 def ensure_schema(engine: Engine) -> None:
     import sys
+
     from alembic import command
     from alembic.config import Config as AlembicConfig
     from alembic.script import ScriptDirectory
@@ -60,7 +61,8 @@ def ensure_schema(engine: Engine) -> None:
         sd = ScriptDirectory.from_config(cfg)
         known = [r.revision for r in sd.walk_revisions()]
         log.info(
-            "PyInstaller bundle: _MEIPASS=%s versions_dir_exists=%s py_count=%d alembic_revisions=%s",
+            "PyInstaller bundle: _MEIPASS=%s versions_dir_exists=%s"
+            " py_count=%d alembic_revisions=%s",
             sys._MEIPASS,  # type: ignore[reportAttributeAccessIssue]
             versions_dir.exists(),
             len(py_files),

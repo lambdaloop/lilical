@@ -348,7 +348,10 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
     change = _graph_event_to_change(data, "cal-1")
     assert change.event is not None
     assert set(change.event.categories) == {"Work", "Important"}
-    assert {a.email for a in change.event.attendees} == {"alice@example.com", "bob@example.com"}
+    assert {a.email for a in change.event.attendees} == {
+        "alice@example.com",
+        "bob@example.com",
+    }
 
 
 def test_event_to_change_occurrences_return_none() -> None:
@@ -1304,9 +1307,8 @@ def test_event_to_graph_json_includes_attendees_as_email_address_objects() -> No
     """Attendees stored as dicts (email/name) must appear in the Graph body
     under the emailAddress sub-object format."""
     from lilical.backends.graph import _event_to_graph_json
-    from lilical.models.event import Event as _Event
-
     from lilical.models.event import Attendee as _Attendee
+    from lilical.models.event import Event as _Event
 
     event = _Event(
         uid="u@o.c",
