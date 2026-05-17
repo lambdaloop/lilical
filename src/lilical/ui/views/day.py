@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import override
 
@@ -527,11 +528,12 @@ class _DayCanvas(QGraphicsView):
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
         self._drag_kind: str | None = None
-        self._drag_start_min: int | None = None
-        self._drag_current_min: int | None = None
+        self._drag_start_min: float | None = None
+        self._drag_current_min: float | None = None
         self._drag_chip_event = None
         self._drag_chip_mode: str | None = None
         self._drag_chip_origin: tuple[int, int, int] | None = None
+        self._drag_chip_grab_offset_min: float | None = None
         self._drag_preview: DragPreview | None = None
         self._press_scene_pos: QPointF | None = None
         self._scene = QGraphicsScene(self)
@@ -796,6 +798,14 @@ class _DayCanvas(QGraphicsView):
         snap = self._snap_minutes
         return max(0, min(1440, round(m / snap) * snap))
 
+    def _snap_minutes_floor(self, m: float) -> int:
+        snap = self._snap_minutes
+        return max(0, min(1440, math.floor(m / snap) * snap))
+
+    def _snap_minutes_ceil(self, m: float) -> int:
+        snap = self._snap_minutes
+        return max(0, min(1440, math.ceil(m / snap) * snap))
+
     def _scene_y_to_minutes(self, scene_y: float) -> float:
         body_top = self._grid.hour_top()
         return (scene_y - body_top) * 60 / max(1, self._px_per_hour)
@@ -851,10 +861,10 @@ class _DayCanvas(QGraphicsView):
             self._drag_kind = "create_allday"
             self._press_scene_pos = scene_pos
         else:
-            start_min = self._snap_minutes_to(self._scene_y_to_minutes(scene_pos.y()))
+            press_min = self._scene_y_to_minutes(scene_pos.y())
             self._drag_kind = "create_body"
-            self._drag_start_min = start_min
-            self._drag_current_min = start_min
+            self._drag_start_min = press_min
+            self._drag_current_min = press_min
             self._press_scene_pos = scene_pos
         event.accept()
 
@@ -867,10 +877,12 @@ class _DayCanvas(QGraphicsView):
         scene_pos = self.mapToScene(event.pos())
 
         if self._drag_kind == "create_body":
-            current_min = self._snap_minutes_to(self._scene_y_to_minutes(scene_pos.y()))
+            current_min = self._scene_y_to_minutes(scene_pos.y())
             self._drag_current_min = current_min
-            start_min = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
-            end_min = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            lo = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            hi = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            start_min = self._snap_minutes_floor(lo)
+            end_min = self._snap_minutes_ceil(hi)
             if end_min <= start_min:
                 end_min = start_min + self._snap_minutes
             rect = self._compute_timed_chip_rect(start_min, end_min)
@@ -906,11 +918,17 @@ class _DayCanvas(QGraphicsView):
         scene_pos = self.mapToScene(event.pos())
 
         if self._drag_kind == "create_body":
-            current_min = self._snap_minutes_to(self._scene_y_to_minutes(scene_pos.y()))
-            start_min = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
-            end_min = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
-            if end_min - start_min < self._snap_minutes:
+            current_min = self._scene_y_to_minutes(scene_pos.y())
+            lo = min(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            hi = max(self._drag_start_min, current_min)  # type: ignore[reportArgumentType]
+            if hi - lo < self._snap_minutes / 2:  # treat as click
+                start_min = self._snap_minutes_floor(self._drag_start_min)  # type: ignore[reportArgumentType]
                 end_min = start_min + 60
+            else:
+                start_min = self._snap_minutes_floor(lo)
+                end_min = self._snap_minutes_ceil(hi)
+                if end_min <= start_min:
+                    end_min = start_min + self._snap_minutes
             tz = local_zoneinfo()
             start_dt = datetime(
                 self._day.year,
@@ -978,6 +996,11 @@ class _DayCanvas(QGraphicsView):
                     origin_start = int((r.top() - body_top) * 60 / pph)
                     origin_end = int((r.bottom() - body_top) * 60 / pph)
                     self._drag_chip_origin = (0, origin_start, origin_end)
+                    if self._press_scene_pos is not None:
+                        self._drag_chip_grab_offset_min = (
+                            self._scene_y_to_minutes(self._press_scene_pos.y())
+                            - origin_start
+                        )
                     break
             else:
                 return
@@ -989,7 +1012,8 @@ class _DayCanvas(QGraphicsView):
 
         if mode == "move":
             cursor_min = self._scene_y_to_minutes(scene_pos.y())
-            new_start = self._snap_minutes_to(cursor_min)
+            grab = self._drag_chip_grab_offset_min or 0.0
+            new_start = self._snap_minutes_to(cursor_min - grab)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
         elif mode == "resize_top":
@@ -1043,7 +1067,8 @@ class _DayCanvas(QGraphicsView):
 
         if mode == "move":
             cursor_min = self._scene_y_to_minutes(scene_pos.y())
-            new_start = self._snap_minutes_to(cursor_min)
+            grab = self._drag_chip_grab_offset_min or 0.0
+            new_start = self._snap_minutes_to(cursor_min - grab)
             new_start = max(0, min(1440 - duration, new_start))
             new_end = new_start + duration
         elif mode == "resize_top":
@@ -1082,6 +1107,7 @@ class _DayCanvas(QGraphicsView):
         self._drag_chip_event = None
         self._drag_chip_mode = None
         self._drag_chip_origin = None
+        self._drag_chip_grab_offset_min = None
         self._press_scene_pos = None
 
     def _on_chip_drag_cancelled(self, event) -> None:
@@ -1089,6 +1115,7 @@ class _DayCanvas(QGraphicsView):
         self._drag_chip_event = None
         self._drag_chip_mode = None
         self._drag_chip_origin = None
+        self._drag_chip_grab_offset_min = None
         self._press_scene_pos = None
 
     def _teardown_preview(self) -> None:
