@@ -36,7 +36,7 @@ FONT_FILES := $(NOTO_SANS_FILES) \
               $(PIXI_FONTS)/DejaVuSans.ttf \
               $(PIXI_FONTS)/NotoColorEmoji.ttf
 
-.PHONY: all tools embed-oauth pyinstaller appdir build run clean
+.PHONY: all tools embed-oauth pyinstaller appdir build onefile run clean
 
 all: build
 
@@ -59,7 +59,19 @@ $(OAUTH_FILE): $(ROOT)/tools/generate_oauth_embedded.py \
                $(wildcard $(ROOT)/oauth_credentials.json)
 	$(PIXI) run -e appimage python $(ROOT)/tools/generate_oauth_embedded.py
 
-# ── PyInstaller bundle ──────────────────────────────────────────────────────
+# ── PyInstaller onefile bundle ──────────────────────────────────────────────
+onefile: dist-onefile/lilical
+
+dist-onefile/lilical: lilical-onefile.spec $(OAUTH_FILE) \
+                      $(PY_SOURCES) $(MIGRATIONS) $(STYLES) \
+                      $(ROOT)/alembic.ini
+	$(PIXI) run -e appimage python -m PyInstaller \
+		--distpath dist-onefile \
+		--workpath build-onefile \
+		--noconfirm \
+		lilical-onefile.spec
+
+# ── PyInstaller onedir bundle (AppImage stage 1) ─────────────────────────────
 dist/lilical/lilical: lilical.spec $(OAUTH_FILE) \
                       $(PY_SOURCES) $(MIGRATIONS) $(STYLES) \
                       $(ROOT)/alembic.ini
@@ -120,6 +132,19 @@ run:
 	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
 	done
 	@echo "Bundle assets OK"
+	@echo "Checking bundled OpenSSL version (must be >= 3.3.0)..."
+	@v=$$(strings squashfs-root/opt/lilical/_internal/libcrypto.so.3 \
+	        | grep -oE 'OpenSSL [0-9]+\.[0-9]+\.[0-9]+' | head -1); \
+	  echo "Bundled $$v"; \
+	  case "$$v" in \
+	    "OpenSSL 3."[3456789]*|"OpenSSL "[4-9]*) echo "OpenSSL version OK" ;; \
+	    *) echo "FAIL: bundled libcrypto is '$$v' — need >= 3.3.0"; exit 1 ;; \
+	  esac
+	@if ldd squashfs-root/opt/lilical/_internal/python3.12/lib-dynload/_ssl.cpython-312-x86_64-linux-gnu.so 2>&1 \
+	        | grep -q "not found"; then \
+	    echo "FAIL: _ssl has unresolved dynamic dependencies (symbol version mismatch?)"; exit 1; \
+	fi; \
+	echo "_ssl deps OK"
 	@echo "Running --version (no Qt) to validate Python bootstrap..."
 	@out=$$(./squashfs-root/AppRun --version 2>&1); code=$$?; \
 	  echo "$$out"; \
@@ -140,5 +165,5 @@ run:
 	  fi
 
 clean:
-	rm -rf $(APPDIR) build dist __pycache__ $(OUTPUT) squashfs-root
+	rm -rf $(APPDIR) build dist build-onefile dist-onefile __pycache__ $(OUTPUT) squashfs-root
 	rm -f $(OAUTH_FILE)

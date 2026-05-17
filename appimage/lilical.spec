@@ -17,6 +17,12 @@ a = Analysis(
         (str(_pixi_lib / "libGL.so.1"), "."),
         (str(_pixi_lib / "libGLX.so.0"), "."),
         (str(_pixi_lib / "libGLdispatch.so.0"), "."),
+        # OpenSSL — on Ubuntu 22.04 CI runners, PyInstaller's ldd resolves
+        # libcrypto/libssl to the system OpenSSL 3.0.2 instead of conda's
+        # 3.6.x. Python 3.12's _ssl extension needs OPENSSL_3.3.0 symbols,
+        # so bundling the system version breaks `import ssl` at runtime.
+        (str(_pixi_lib / "libssl.so.3"), "."),
+        (str(_pixi_lib / "libcrypto.so.3"), "."),
     ],
     datas=[
         (str(root / "alembic.ini"), "."),
