@@ -2,3 +2,4 @@ build-dir/
 repo/
 .flatpak-builder/
 *.flatpak
+.build-stamp
