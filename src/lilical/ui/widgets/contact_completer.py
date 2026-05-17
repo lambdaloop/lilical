@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCompleter,
     QFrame,
     QHBoxLayout,
@@ -60,14 +59,6 @@ class _ContactModel(QAbstractListModel):
             return c.email
         if role == Qt.ItemDataRole.UserRole:
             return c
-        return None
-
-    def contact_for_display(self, text: str) -> "Contact | None":
-        for c in self._results:
-            display = format_display_name(c.display_name)
-            full = f"{display} <{c.email}>" if display else c.email
-            if full == text:
-                return c
         return None
 
 
@@ -173,7 +164,7 @@ class InviteeChipEdit(QWidget):
             self._completer.setCompletionMode(
                 QCompleter.CompletionMode.UnfilteredPopupCompletion
             )
-            self._completer.activated[str].connect(self._on_completion_text)
+            self._completer.activated[QModelIndex].connect(self._on_completion_index)
             self._edit.setCompleter(self._completer)
         else:
             self._model = None
@@ -201,15 +192,21 @@ class InviteeChipEdit(QWidget):
         if self._model is None:
             return
         self._model.refresh(self._pending_query)
-        if self._model.rowCount() > 0 and self._edit.hasFocus():
+        if self._model.rowCount() > 0:
             self._completer.complete()
         else:
             self._completer.popup().hide()
 
-    def _on_completion_text(self, text: str) -> None:
-        if self._model is None:
+    def _on_completion_index(self, index: QModelIndex) -> None:
+        """Fires on popup click or Enter while popup is visible.
+
+        index is into QCompleter's internal proxy, not _ContactModel — mapToSource first.
+        """
+        if self._model is None or not index.isValid():
             return
-        contact = self._model.contact_for_display(text)
+        proxy = self._completer.completionModel()
+        source_idx = proxy.mapToSource(index) if proxy is not None else index
+        contact = self._model.data(source_idx, Qt.ItemDataRole.UserRole)
         if contact is not None:
             self._add_contact_chip(contact)
 
