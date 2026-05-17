@@ -19,6 +19,10 @@ a = Analysis(
         (str(_pixi_lib / "libGL.so.1"), "."),
         (str(_pixi_lib / "libGLX.so.0"), "."),
         (str(_pixi_lib / "libGLdispatch.so.0"), "."),
+        # Conda-forge libssl/libcrypto — without these, _ssl.so has unresolved
+        # symbol versions and `import ssl` aborts at runtime.
+        (str(_pixi_lib / "libssl.so.3"), "."),
+        (str(_pixi_lib / "libcrypto.so.3"), "."),
     ],
     datas=[
         (str(root / "alembic.ini"), "."),
@@ -54,7 +58,7 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["runtime_hooks/setup_env.py"],
     excludes=[
         "Qt3DAnimation", "Qt3DCore", "Qt3DExtras", "Qt3DInput", "Qt3DLogic", "Qt3DRender",
         "QtCharts", "QtDataVisualization",
