@@ -120,41 +120,6 @@ _GOOGLE_RESPONSE_MAP: dict[str, str] = {
 }
 
 
-def _people_to_contacts(
-    people: list[object], account_id: str, source: str
-) -> list[Contact]:
-    out: list[Contact] = []
-    for p in people:
-        if not isinstance(p, dict):
-            continue
-        name: str | None = None
-        names = p.get("names") or []
-        if isinstance(names, list) and names:
-            n = names[0]
-            if isinstance(n, dict):
-                name = str(n.get("displayName") or "").strip() or None
-        emails = p.get("emailAddresses") or []
-        if not isinstance(emails, list):
-            continue
-        resource_name = str(p.get("resourceName") or "")
-        for e in emails:
-            if not isinstance(e, dict):
-                continue
-            addr = str(e.get("value") or "").strip().lower()
-            if not addr or "@" not in addr:
-                continue
-            out.append(
-                Contact(
-                    email=addr,
-                    display_name=name,
-                    source=source,
-                    account_id=account_id,
-                    source_id=resource_name or None,
-                )
-            )
-    return out
-
-
 class GoogleCursor(SyncCursor):
     _TYPE = "google"
 

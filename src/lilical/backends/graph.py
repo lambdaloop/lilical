@@ -1216,7 +1216,7 @@ class GraphBackend:
                     "graph attendee refresh: no response for master %s", master_id[-20:]
                 )
                 continue
-            instances = body.get("value") or []
+            instances = cast("list[dict[str, object]]", body.get("value") or [])
             if not instances:
                 log.debug(
                     "graph attendee refresh: /instances returned empty for master %s"
@@ -1226,7 +1226,9 @@ class GraphBackend:
                     window_end[:10],
                 )
                 continue
-            fresh_attendees = instances[0].get("attendees")
+            fresh_attendees = cast(
+                "list[object]", instances[0].get("attendees") or []
+            )
             if fresh_attendees:
                 events[idx]["attendees"] = fresh_attendees
                 masters_updated += 1

@@ -401,25 +401,8 @@ _SUMMARY_LABEL = {
 }
 
 
-def _group_attendees(
-    attendees: tuple,
-) -> list[tuple[str, list]]:
-    from lilical.models.event import Attendee
-
-    groups: dict[str, list] = {k: [] for k in _RESPONSE_ORDER}
-    for a in attendees:
-        if isinstance(a, Attendee):
-            resp = (a.response or "NEEDS-ACTION").upper()
-            bucket = resp if resp in groups else "NEEDS-ACTION"
-            groups[bucket].append(a)
-        else:
-            # Legacy string shape — put in no-response bucket.
-            groups["NEEDS-ACTION"].append(a)
-    return [(_RESPONSE_LABEL[k], groups[k]) for k in _RESPONSE_ORDER]
-
-
 def _build_attendee_html(
-    attendees: object, organizer: object = None
+    attendees: tuple[object, ...], organizer: object = None
 ) -> tuple[str, list[str]]:
     from lilical.models.event import Attendee, Organizer
 
@@ -432,7 +415,7 @@ def _build_attendee_html(
             return True
         return org_email is not None and (a.email or "").lower() == org_email
 
-    attendees_seq = list(attendees) if not isinstance(attendees, list) else attendees
+    attendees_seq = list(attendees)
     typed = [
         a
         for a in attendees_seq
@@ -469,23 +452,6 @@ def _build_attendee_html(
     return summary, lines
 
 
-def _format_attendee_line(a: object) -> str:
-    from lilical.models.event import Attendee
-
-    if not isinstance(a, Attendee):
-        return _format_attendee_legacy(str(a))
-    parts = []
-    if a.display_name:
-        parts.append(f"{format_display_name(a.display_name)} <{a.email}>")
-    else:
-        parts.append(a.email)
-    if a.is_organizer:
-        parts.append("(organizer)")
-    if a.is_self:
-        parts.append("(you)")
-    return " ".join(parts)
-
-
 def _format_attendee_legacy(raw: str) -> str:
     if ":" in raw:
         raw = raw.rsplit(":", 1)[-1]
@@ -494,9 +460,4 @@ def _format_attendee_legacy(raw: str) -> str:
     return raw
 
 
-def _format_attendee(raw: object) -> str:
-    from lilical.models.event import Attendee
 
-    if isinstance(raw, Attendee):
-        return _format_attendee_line(raw)
-    return _format_attendee_legacy(str(raw))
