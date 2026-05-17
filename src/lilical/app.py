@@ -42,7 +42,7 @@ def main() -> int:
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("lilical")
     qt_app.setOrganizationName("lilical")
-    qt_app.setDesktopFileName("io.github.lilical.Lilical")
+    qt_app.setDesktopFileName("org.lilical.Lilical")
 
     loop = qasync.QEventLoop(qt_app)
     asyncio.set_event_loop(loop)

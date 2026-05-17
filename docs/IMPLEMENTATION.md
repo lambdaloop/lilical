@@ -146,7 +146,7 @@ def main() -> int:
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("lilical")
     qt_app.setOrganizationName("lilical")
-    qt_app.setDesktopFileName("io.github.lilical.Lilical")
+    qt_app.setDesktopFileName("org.lilical.Lilical")
 
     loop = qasync.QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
@@ -1304,8 +1304,8 @@ table or — simpler — store the remote snapshot in
 ## 16. Flatpak manifest
 
 ```yaml
-# flatpak/io.github.lilical.Lilical.yml
-app-id: io.github.lilical.Lilical
+# flatpak/org.lilical.Lilical.yml
+app-id: org.lilical.Lilical
 runtime: org.kde.Platform
 runtime-version: '6.7'
 sdk: org.kde.Sdk
@@ -1329,10 +1329,10 @@ modules:
     buildsystem: simple
     build-commands:
       - pip3 install --prefix=${FLATPAK_DEST} .
-      - install -Dm644 data/io.github.lilical.Lilical.desktop
-            ${FLATPAK_DEST}/share/applications/io.github.lilical.Lilical.desktop
-      - install -Dm644 data/io.github.lilical.Lilical.metainfo.xml
-            ${FLATPAK_DEST}/share/metainfo/io.github.lilical.Lilical.metainfo.xml
+      - install -Dm644 data/org.lilical.Lilical.desktop
+            ${FLATPAK_DEST}/share/applications/org.lilical.Lilical.desktop
+      - install -Dm644 data/org.lilical.Lilical.metainfo.xml
+            ${FLATPAK_DEST}/share/metainfo/org.lilical.Lilical.metainfo.xml
     sources:
       - type: dir
         path: ..
@@ -1346,7 +1346,7 @@ Type=Application
 Name=lilical
 Comment=Calendar for Google, Outlook, and CalDAV
 Exec=lilical %f
-Icon=io.github.lilical.Lilical
+Icon=org.lilical.Lilical
 Terminal=false
 Categories=Office;Calendar;
 MimeType=text/calendar;
@@ -1507,7 +1507,7 @@ Implement in this order. Each step is independently testable.
 
 ### M7 — Packaging (3 d)
 
-- [ ] `flatpak/io.github.lilical.Lilical.yml` (§16)
+- [ ] `flatpak/org.lilical.Lilical.yml` (§16)
 - [ ] `data/*.metainfo.xml` AppStream metadata
 - [ ] App icons (scalable SVG + 256×256 PNG)
 - [ ] Flathub submission

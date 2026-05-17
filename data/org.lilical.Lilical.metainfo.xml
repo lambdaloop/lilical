@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.lilical.Lilical</id>
+  <id>org.lilical.Lilical</id>
   <name>lilical</name>
   <summary>Calendar for Google, Outlook, and CalDAV</summary>
   <metadata_license>CC0-1.0</metadata_license>
@@ -11,9 +11,9 @@
       Microsoft Outlook (via Microsoft Graph), and CalDAV servers.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.lilical.Lilical.desktop</launchable>
+  <launchable type="desktop-id">org.lilical.Lilical.desktop</launchable>
   <url type="homepage">https://github.com/lilical/lilical</url>
-  <developer id="io.github.lilical">
+  <developer id="org.lilical">
     <name>lilical contributors</name>
   </developer>
   <content_rating type="oars-1.1"/>

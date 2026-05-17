@@ -1,5 +1,5 @@
-APP_ID     := io.github.lilical.Lilical
-MANIFEST   := io.github.lilical.Lilical.yml
+APP_ID     := org.lilical.Lilical
+MANIFEST   := org.lilical.Lilical.yml
 BUILD_DIR  := build-dir
 REPO_DIR   := repo
 ARCH       := x86_64
@@ -54,7 +54,7 @@ bundle: build
 	flatpak build-bundle $(REPO_DIR) $(APP_ID).flatpak $(APP_ID)
 
 appstream-validate:
-	appstreamcli validate ../data/io.github.lilical.Lilical.metainfo.xml
+	appstreamcli validate ../data/org.lilical.Lilical.metainfo.xml
 
 clean:
 	rm -rf $(BUILD_DIR) $(REPO_DIR) .flatpak-builder *.flatpak

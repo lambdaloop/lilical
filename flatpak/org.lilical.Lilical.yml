@@ -1,4 +1,4 @@
-app-id: io.github.lilical.Lilical
+app-id: org.lilical.Lilical
 runtime: org.kde.Platform
 runtime-version: '6.10'
 sdk: org.kde.Sdk
@@ -27,9 +27,9 @@ modules:
       - pip3 install --no-deps --no-build-isolation --prefix=${FLATPAK_DEST} .
       - install -Dm644 alembic.ini ${FLATPAK_DEST}/share/lilical/alembic.ini
       - cp -r migrations ${FLATPAK_DEST}/share/lilical/migrations
-      - install -Dm644 data/io.github.lilical.Lilical.desktop ${FLATPAK_DEST}/share/applications/io.github.lilical.Lilical.desktop
-      - install -Dm644 data/io.github.lilical.Lilical.metainfo.xml ${FLATPAK_DEST}/share/metainfo/io.github.lilical.Lilical.metainfo.xml
-      - install -Dm644 data/io.github.lilical.Lilical.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.lilical.Lilical.svg
+      - install -Dm644 data/org.lilical.Lilical.desktop ${FLATPAK_DEST}/share/applications/org.lilical.Lilical.desktop
+      - install -Dm644 data/org.lilical.Lilical.metainfo.xml ${FLATPAK_DEST}/share/metainfo/org.lilical.Lilical.metainfo.xml
+      - install -Dm644 data/org.lilical.Lilical.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/org.lilical.Lilical.svg
     sources:
       - type: dir
         path: ..

@@ -145,7 +145,7 @@ typecheck  = "basedpyright src"
 migrate    = "alembic upgrade head"
 makemig    = { cmd = "alembic revision --autogenerate -m", depends-on = [] }
 radicale   = "docker run --rm -p 5232:5232 tomsquest/docker-radicale"
-flatpak-build = "flatpak-builder --user --install --force-clean build-dir flatpak/io.github.lilical.Lilical.yml"
+flatpak-build = "flatpak-builder --user --install --force-clean build-dir flatpak/org.lilical.Lilical.yml"
 ```
 
 ### Onboarding
@@ -408,13 +408,13 @@ lilical/
 ├── LICENSE                         # GPL-3.0
 ├── PLAN.md                         # this file
 ├── flatpak/
-│   └── io.github.lilical.Lilical.yml
+│   └── org.lilical.Lilical.yml
 ├── data/
-│   ├── io.github.lilical.Lilical.desktop
-│   ├── io.github.lilical.Lilical.metainfo.xml
+│   ├── org.lilical.Lilical.desktop
+│   ├── org.lilical.Lilical.metainfo.xml
 │   └── icons/
-│       ├── scalable/apps/io.github.lilical.Lilical.svg
-│       └── 256x256/apps/io.github.lilical.Lilical.png
+│       ├── scalable/apps/org.lilical.Lilical.svg
+│       └── 256x256/apps/org.lilical.Lilical.png
 ├── alembic.ini
 ├── migrations/
 │   ├── env.py

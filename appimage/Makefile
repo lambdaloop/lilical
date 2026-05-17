@@ -8,9 +8,9 @@ APPDIR        := AppDir
 PIXI          := pixi
 
 OAUTH_FILE := $(ROOT)/src/lilical/_oauth_embedded.py
-DATA_FILES := $(ROOT)/data/io.github.lilical.Lilical.desktop \
-              $(ROOT)/data/io.github.lilical.Lilical.svg \
-              $(ROOT)/data/io.github.lilical.Lilical.metainfo.xml
+DATA_FILES := $(ROOT)/data/org.lilical.Lilical.desktop \
+              $(ROOT)/data/org.lilical.Lilical.svg \
+              $(ROOT)/data/org.lilical.Lilical.metainfo.xml
 PY_SOURCES := $(shell find $(ROOT)/src -name '*.py' \
                 -not -path '*/__pycache__/*' \
                 -not -name '_oauth_embedded.py' \
@@ -96,15 +96,15 @@ $(APPDIR)/AppRun: dist/lilical/lilical AppRun.sh fonts.conf $(DATA_FILES) $(FONT
 	cp -r dist/lilical $(APPDIR)/opt/lilical
 	ln -sf ../../opt/lilical/lilical $(APPDIR)/usr/bin/lilical
 	install -m 755 AppRun.sh $(APPDIR)/AppRun
-	cp $(ROOT)/data/io.github.lilical.Lilical.desktop \
-	   $(APPDIR)/usr/share/applications/io.github.lilical.Lilical.desktop
-	cp $(ROOT)/data/io.github.lilical.Lilical.svg \
-	   $(APPDIR)/usr/share/icons/hicolor/scalable/apps/io.github.lilical.Lilical.svg
-	cp $(ROOT)/data/io.github.lilical.Lilical.metainfo.xml \
-	   $(APPDIR)/usr/share/metainfo/io.github.lilical.Lilical.metainfo.xml
-	cp $(ROOT)/data/io.github.lilical.Lilical.desktop $(APPDIR)/io.github.lilical.Lilical.desktop
-	cp $(ROOT)/data/io.github.lilical.Lilical.svg $(APPDIR)/io.github.lilical.Lilical.svg
-	ln -sf io.github.lilical.Lilical.svg $(APPDIR)/.DirIcon
+	cp $(ROOT)/data/org.lilical.Lilical.desktop \
+	   $(APPDIR)/usr/share/applications/org.lilical.Lilical.desktop
+	cp $(ROOT)/data/org.lilical.Lilical.svg \
+	   $(APPDIR)/usr/share/icons/hicolor/scalable/apps/org.lilical.Lilical.svg
+	cp $(ROOT)/data/org.lilical.Lilical.metainfo.xml \
+	   $(APPDIR)/usr/share/metainfo/org.lilical.Lilical.metainfo.xml
+	cp $(ROOT)/data/org.lilical.Lilical.desktop $(APPDIR)/org.lilical.Lilical.desktop
+	cp $(ROOT)/data/org.lilical.Lilical.svg $(APPDIR)/org.lilical.Lilical.svg
+	ln -sf org.lilical.Lilical.svg $(APPDIR)/.DirIcon
 	cp $(FONT_FILES) $(APPDIR)/usr/share/fonts/lilical/
 	cp fonts.conf $(APPDIR)/etc/fonts/fonts.conf
 	touch $(APPDIR)/AppRun
