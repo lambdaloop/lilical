@@ -1,17 +1,18 @@
-"""Chip-style invitee input with contact autocomplete."""
+"""Chip-style invitee input with contact autocomplete popup."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -28,38 +29,60 @@ if TYPE_CHECKING:
     from lilical.storage.contact_store import ContactStore
 
 
-class _ContactModel(QAbstractListModel):
-    def __init__(self, contact_store: "ContactStore", account_ids: list[str]) -> None:
+class _CompletionPopup(QListWidget):
+    """Autocomplete popup backed by QListWidget + Qt::Popup window flag.
+
+    Uses the same window machinery as QComboBox's dropdown (Qt::Popup +
+    WA_ShowWithoutActivating), bypassing QCompleter's fragile interaction
+    with beginResetModel/endResetModel that caused input events to never
+    reach the popup view.
+    """
+
+    contact_selected = Signal(object)  # Contact
+
+    def __init__(self, anchor: QLineEdit) -> None:
         super().__init__()
-        self._store = contact_store
-        self._account_ids = account_ids
-        self._results: list["Contact"] = []
+        self._anchor = anchor
+        self.setWindowFlags(Qt.WindowType.Popup)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setMouseTracking(True)
+        self.itemClicked.connect(self._on_item_clicked)
+        self.hide()
 
-    def refresh(self, prefix: str) -> None:
-        self.beginResetModel()
-        if prefix.strip():
-            self._results = self._store.search(
-                prefix, account_ids=self._account_ids or None, limit=20
-            )
-        else:
-            self._results = []
-        self.endResetModel()
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
-        return len(self._results)
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or index.row() >= len(self._results):
-            return None
-        c = self._results[index.row()]
-        if role == Qt.ItemDataRole.DisplayRole:
+    def show_results(self, results: "list[Contact]") -> None:
+        self.clear()
+        for c in results:
             display = format_display_name(c.display_name)
-            if display:
-                return f"{display} <{c.email}>"
-            return c.email
-        if role == Qt.ItemDataRole.UserRole:
-            return c
-        return None
+            label = f"{display} <{c.email}>" if display else c.email
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, c)
+            self.addItem(item)
+        if not self.count():
+            self.hide()
+            return
+        bl = self._anchor.mapToGlobal(self._anchor.rect().bottomLeft())
+        self.move(bl)
+        self.setFixedWidth(self._anchor.width())
+        row_h = max(24, self.sizeHintForRow(0))
+        self.setFixedHeight(min(8, self.count()) * row_h + 4)
+        self.setCurrentRow(0)
+        self.show()
+
+    def navigate(self, delta: int) -> None:
+        if self.count():
+            self.setCurrentRow(max(0, min(self.count() - 1, self.currentRow() + delta)))
+
+    def commit_current(self) -> None:
+        item = self.currentItem()
+        if item is not None:
+            self._on_item_clicked(item)
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        c: "Contact | None" = item.data(Qt.ItemDataRole.UserRole)
+        if c is not None:
+            self.contact_selected.emit(c)
+        self.hide()
 
 
 class _InviteeChip(QFrame):
@@ -94,11 +117,27 @@ class _InviteeChip(QFrame):
 
 
 class _ChipLineEdit(QLineEdit):
-    """QLineEdit that fires backspace_at_start when backspace is pressed at position 0."""
+    """QLineEdit that forwards popup navigation keys and fires backspace_at_start."""
 
     backspace_at_start = Signal()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        parent = self.parent()
+        popup: "_CompletionPopup | None" = getattr(parent, "_popup", None) if parent is not None else None
+        if popup is not None and popup.isVisible():
+            key = event.key()
+            if key == Qt.Key.Key_Down:
+                popup.navigate(+1)
+                return
+            if key == Qt.Key.Key_Up:
+                popup.navigate(-1)
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                popup.commit_current()
+                return
+            if key == Qt.Key.Key_Escape:
+                popup.hide()
+                return
         if (
             event.key() == Qt.Key.Key_Backspace
             and self.cursorPosition() == 0
@@ -107,6 +146,14 @@ class _ChipLineEdit(QLineEdit):
             self.backspace_at_start.emit()
             return
         super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        parent = self.parent()
+        popup: "_CompletionPopup | None" = getattr(parent, "_popup", None) if parent is not None else None
+        if popup is not None:
+            # Defer so a popup click still registers before the popup hides.
+            QTimer.singleShot(150, popup.hide)
 
 
 class InviteeChipEdit(QWidget):
@@ -155,60 +202,35 @@ class InviteeChipEdit(QWidget):
         self._scroll.setWidget(self._chip_container)
         outer.addWidget(self._scroll)
 
-        # Completer — UnfilteredPopupCompletion so our pre-filtered model drives
-        # the popup entirely; we call complete() manually after each refresh.
         if contact_store is not None:
-            self._model = _ContactModel(contact_store, self._account_ids)
-            self._completer = QCompleter(self._model)
-            self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            self._completer.setCompletionMode(
-                QCompleter.CompletionMode.UnfilteredPopupCompletion
-            )
-            self._completer.activated[QModelIndex].connect(self._on_completion_index)
-            self._edit.setCompleter(self._completer)
+            self._popup = _CompletionPopup(self._edit)
+            self._popup.contact_selected.connect(self._add_contact_chip)
         else:
-            self._model = None
-            self._completer = None
-
-        if contact_store is not None:
-            contact_store.contacts_changed.connect(lambda _: self._refresh_model())
-
-    def _refresh_model(self) -> None:
-        if self._model is not None:
-            self._model.refresh(self._edit.text())
+            self._popup = None
 
     def _on_text_changed(self, text: str) -> None:
-        if self._model is None:
+        if self._popup is None:
             return
         self._pending_query = text
         if not text.strip():
             self._search_timer.stop()
-            self._model.refresh("")
-            self._completer.popup().hide()
+            self._popup.hide()
             return
         self._search_timer.start()
 
     def _run_search(self) -> None:
-        if self._model is None:
+        if self._contact_store is None or self._popup is None:
             return
-        self._model.refresh(self._pending_query)
-        if self._model.rowCount() > 0:
-            self._completer.complete()
+        if not self._pending_query.strip():
+            self._popup.hide()
+            return
+        results = self._contact_store.search(
+            self._pending_query, account_ids=self._account_ids or None, limit=20
+        )
+        if results:
+            self._popup.show_results(results)
         else:
-            self._completer.popup().hide()
-
-    def _on_completion_index(self, index: QModelIndex) -> None:
-        """Fires on popup click or Enter while popup is visible.
-
-        index is into QCompleter's internal proxy, not _ContactModel — mapToSource first.
-        """
-        if self._model is None or not index.isValid():
-            return
-        proxy = self._completer.completionModel()
-        source_idx = proxy.mapToSource(index) if proxy is not None else index
-        contact = self._model.data(source_idx, Qt.ItemDataRole.UserRole)
-        if contact is not None:
-            self._add_contact_chip(contact)
+            self._popup.hide()
 
     def _add_contact_chip(self, contact: "Contact") -> None:
         from lilical.models.event import Attendee
