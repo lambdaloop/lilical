@@ -108,10 +108,6 @@ run:
 	./$(OUTPUT) --appimage-extract > /dev/null
 	@echo "Checking WebEngine + GL assets..."
 	@for f in \
-	    squashfs-root/opt/lilical/_internal/PySide6/Qt/libexec/QtWebEngineProcess \
-	    squashfs-root/opt/lilical/_internal/PySide6/Qt/resources/icudtl.dat \
-	    squashfs-root/opt/lilical/_internal/PySide6/Qt/resources/qtwebengine_resources.pak \
-	    squashfs-root/opt/lilical/_internal/PySide6/Qt/translations/qtwebengine_locales/en-US.pak \
 	    squashfs-root/opt/lilical/_internal/libOpenGL.so.0 \
 	    squashfs-root/opt/lilical/_internal/libEGL.so.1 \
 	    squashfs-root/opt/lilical/_internal/libGL.so.1 \

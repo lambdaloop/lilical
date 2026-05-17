@@ -50,10 +50,6 @@ a = Analysis(
         # zoneinfo falls back to tzdata when the conda TZPATH is absent;
         # icalendar constructs ZoneInfo("UTC") at import time
         "tzdata",
-        # WebEngine is imported lazily in account_setup._run_embedded_oauth
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
-        "PySide6.QtNetwork",
     ],
     hookspath=[],
     hooksconfig={},
@@ -64,6 +60,7 @@ a = Analysis(
         "QtCharts", "QtDataVisualization",
         "QtPdf", "QtPdfWidgets",
         "QtQuick", "QtQml", "QtQmlWorkerScript",
+        "QtWebEngineCore", "QtWebEngineWidgets", "QtWebEngineQuick", "QtWebChannel",
     ],
     noarchive=False,
     optimize=0,
