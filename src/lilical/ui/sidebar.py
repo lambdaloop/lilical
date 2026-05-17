@@ -175,7 +175,10 @@ class _DropIndicator(QWidget):
         self.hide()
 
     def place_at(self, y: int, indent: int = 0) -> None:
-        w = self.parent().width() - indent - 8
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        w = parent.width() - indent - 8
         self.setGeometry(indent, y, max(w, 0), 3)
         self.show()
 
@@ -655,11 +658,11 @@ class Sidebar(QWidget):
                 )
                 indicator_y = row_bot
             else:
-                header = (
-                    group.layout().itemAt(0).widget()
-                    if group.layout().count() > 0
-                    else None
-                )
+                layout = group.layout()
+                header = None
+                if layout is not None and layout.count() > 0:
+                    item = layout.itemAt(0)
+                    header = item.widget() if item is not None else None
                 indicator_y = group_top + (header.height() if header else 0)
             self._drop_indicator.place_at(y=indicator_y, indent=14)
 
@@ -691,7 +694,10 @@ class Sidebar(QWidget):
         if layout is None:
             return rows
         for i in range(layout.count()):
-            w = layout.itemAt(i).widget()
+            item = layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
             if w is not None and w.objectName() == "cal-row":
                 rows.append(w)
         return rows

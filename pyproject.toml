@@ -60,6 +60,7 @@ reportMissingParameterType = false
 reportUnknownLambdaType = false
 reportMissingImports = false
 reportMissingModuleSource = false
+reportMissingTypeStubs = false
 reportAny = false
 reportUntypedBaseClass = false
 reportPrivateUsage = false

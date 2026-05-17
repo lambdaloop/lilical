@@ -77,7 +77,7 @@ class _CompletionPopup(QListWidget):
 
     def commit_current(self) -> None:
         item = self.currentItem()
-        if item is not None:
+        if item is not None:  # pyright: ignore[reportUnnecessaryComparison]
             self._on_item_clicked(item)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

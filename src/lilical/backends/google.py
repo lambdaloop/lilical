@@ -453,9 +453,7 @@ def run_google_oauth_sync() -> str:
     browser. InstalledAppFlow.run_local_server handles the loopback HTTP
     server, token exchange, and "you may close this tab" page automatically.
     """
-    from google_auth_oauthlib.flow import (
-        InstalledAppFlow,  # type: ignore[reportMissingTypeStubs]
-    )
+    from google_auth_oauthlib.flow import InstalledAppFlow
 
     _validate_client_config()
     flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
@@ -790,7 +788,7 @@ class GoogleBackend:
             f"/calendars/{encoded_cal}/events/{encoded_ev}",
             params={"fields": "attendees"},
         )
-        attendees_raw: list[dict[str, object]] = get_resp.json().get("attendees") or []
+        attendees_raw: list[object] = get_resp.json().get("attendees") or []
         found_self = any(
             isinstance(a, dict) and a.get("self") is True for a in attendees_raw
         )

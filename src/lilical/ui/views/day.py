@@ -721,7 +721,7 @@ class _DayCanvas(QGraphicsView):
                 if is_sticky and chip.scene() is self._scene:
                     self._scene.removeItem(chip)
                     chip.setParentItem(self._sticky)
-                elif not is_sticky and chip.parentItem() is not None:
+                elif not is_sticky and chip.parentItem() is not None:  # pyright: ignore[reportUnnecessaryComparison]
                     chip.setParentItem(None)  # type: ignore[reportArgumentType]
                     self._scene.addItem(chip)
             else:
