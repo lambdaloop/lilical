@@ -47,6 +47,9 @@ a = Analysis(
         # alembic runtime migration needs explicit import
         "alembic.runtime.migration",
         "alembic.operations.ops",
+        # zoneinfo falls back to tzdata when the conda TZPATH is absent;
+        # icalendar constructs ZoneInfo("UTC") at import time
+        "tzdata",
         # WebEngine is imported lazily in account_setup._run_embedded_oauth
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",

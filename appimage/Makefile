@@ -93,10 +93,21 @@ run:
 	    squashfs-root/opt/lilical/_internal/PySide6/Qt/translations/qtwebengine_locales/en-US.pak \
 	    squashfs-root/opt/lilical/_internal/libOpenGL.so.0 \
 	    squashfs-root/opt/lilical/_internal/libEGL.so.1 \
-	    squashfs-root/opt/lilical/_internal/libGL.so.1; do \
+	    squashfs-root/opt/lilical/_internal/libGL.so.1 \
+	    squashfs-root/opt/lilical/_internal/tzdata/zoneinfo/UTC; do \
 	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
 	done
 	@echo "Bundle assets OK"
+	@echo "Running --version (no Qt) to validate Python bootstrap..."
+	@out=$$(./squashfs-root/AppRun --version 2>&1); code=$$?; \
+	  echo "$$out"; \
+	  if [ $$code -ne 0 ]; then \
+	    echo "VERSION CHECK FAILED — exit $$code"; exit 1; \
+	  fi; \
+	  if ! echo "$$out" | grep -qE '^lilical [0-9]+\.[0-9]+\.[0-9]+'; then \
+	    echo "VERSION CHECK FAILED — stdout did not match 'lilical X.Y.Z...'"; exit 1; \
+	  fi; \
+	  echo "Version check passed"
 	@echo "Running with offscreen Qt platform (5-second timeout)..."
 	QT_QPA_PLATFORM=offscreen timeout 5 ./squashfs-root/AppRun 2>&1 | tee /tmp/lilical-smoke.log; \
 	  code=$$?; \
