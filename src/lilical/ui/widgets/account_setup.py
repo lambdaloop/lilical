@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QVBoxLayout,
     QWidget,
 )
@@ -184,7 +185,7 @@ class AccountSetupDialog(QDialog):
         include_contacts = self._contacts_checkbox.isChecked() and kind == "graph"
 
         if kind == "google":
-            token = self._run_google_webview_flow()
+            token = self._run_google_browser_flow()
             if token is None:
                 return
             secret_data["token"] = token
@@ -305,7 +306,7 @@ class AccountSetupDialog(QDialog):
             pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
 
-    def _run_google_webview_flow(self) -> str | None:
+    def _run_google_browser_flow(self) -> str | None:
         import importlib.util as _util
 
         if _util.find_spec("google_auth_oauthlib") is None:
@@ -317,33 +318,29 @@ class AccountSetupDialog(QDialog):
             )
             return None
 
-        from lilical.backends.google import (
-            GOOGLE_REDIRECT_URI,
-            begin_google_auth,
-            complete_google_auth,
-        )
+        from lilical.backends.google import run_google_oauth_sync
 
-        try:
-            flow, auth_url, state = begin_google_auth()
-        except Exception as e:
-            QMessageBox.critical(self, "Authentication failed", str(e))
-            return None
-
-        captured = self._run_embedded_oauth(
-            title="Sign in to Google",
-            auth_url=auth_url,
-            redirect_uri_prefix=GOOGLE_REDIRECT_URI,
+        progress = QProgressDialog(
+            "Opening browser for Google sign-in…\n"
+            "Complete the sign-in in your browser, then return here.",
+            "Cancel",
+            0,
+            0,
+            self,
         )
-        if captured is None:
-            return None
+        progress.setWindowTitle("Sign in to Google")
+        progress.setMinimumDuration(0)
+        progress.show()
 
         self._cancel_active_oauth()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._active_oauth_pool = pool
         try:
-            future = pool.submit(complete_google_auth, flow, captured, state)
+            future = pool.submit(run_google_oauth_sync)
             while not future.done():
                 QApplication.processEvents()
+                if progress.wasCanceled():
+                    return None
                 with contextlib.suppress(concurrent.futures.TimeoutError):
                     future.result(timeout=0.2)
             return future.result()
@@ -353,6 +350,7 @@ class AccountSetupDialog(QDialog):
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
             self._active_oauth_pool = None
+            progress.close()
 
     def result_data(
         self,
