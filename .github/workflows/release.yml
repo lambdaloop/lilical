@@ -46,6 +46,24 @@ jobs:
       - name: Smoke test
         run: make -C appimage run VERSION=${{ env.VERSION }}
 
+      - name: Build onefile binary
+        run: |
+          make -C appimage onefile
+          mv appimage/dist-onefile/lilical \
+             appimage/dist-onefile/lilical-${{ env.VERSION }}-x86_64
+
+      - name: Smoke test onefile binary
+        run: |
+          BIN=appimage/dist-onefile/lilical-${{ env.VERSION }}-x86_64
+          out=$("$BIN" --version 2>&1) || { echo "$out"; echo "--version failed"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -qE '^lilical [0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "version output mismatch"; exit 1; }
+          QT_QPA_PLATFORM=offscreen timeout 5 "$BIN" 2>&1 | tee /tmp/onefile-smoke.log || true
+          if grep -qiE "importerror|modulenotfounderror|cannot open shared object|qt platform plugin" /tmp/onefile-smoke.log; then
+            echo "ONEFILE SMOKE FAILED"; exit 1
+          fi
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -53,11 +71,20 @@ jobs:
           name: lilical ${{ env.VERSION }}
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: appimage/lilical-${{ env.VERSION }}-x86_64.AppImage
+          files: |
+            appimage/lilical-${{ env.VERSION }}-x86_64.AppImage
+            appimage/dist-onefile/lilical-${{ env.VERSION }}-x86_64
 
-      - name: Upload artifact (non-tag runs)
+      - name: Upload AppImage artifact (non-tag runs)
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
           name: lilical-${{ env.VERSION }}-x86_64.AppImage
           path: appimage/lilical-${{ env.VERSION }}-x86_64.AppImage
+
+      - name: Upload onefile artifact (non-tag runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: lilical-${{ env.VERSION }}-x86_64
+          path: appimage/dist-onefile/lilical-${{ env.VERSION }}-x86_64
