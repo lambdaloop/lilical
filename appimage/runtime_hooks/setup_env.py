@@ -1,7 +1,11 @@
 import os
+import sys
 
-# PyInstaller bundles a conda-forge libfontconfig.so.1 whose compiled-in
-# default config prefix points inside the conda env (which doesn't exist
-# at _MEIPASS extraction time). Redirect it to the host's standard
-# config tree so the bundled lib finds /etc/fonts/fonts.conf.
-os.environ.setdefault("FONTCONFIG_PATH", "/etc/fonts")
+# Point bundled libfontconfig at the bundled fonts.conf so Qt resolves
+# "sans-serif" to Noto Sans (matching the AppImage and pixi dev env).
+# fonts.conf <include>s /etc/fonts/conf.d and the user's xdg config so
+# hinting/antialiasing/subpixel preferences from the host still apply.
+meipass = getattr(sys, "_MEIPASS", None)
+if meipass:
+    os.environ.setdefault("FONTCONFIG_FILE", os.path.join(meipass, "etc", "fonts", "fonts.conf"))
+    os.environ.setdefault("FONTCONFIG_PATH", os.path.join(meipass, "etc", "fonts"))

@@ -1,12 +1,22 @@
 # PyInstaller spec for lilical standalone onefile binary.
 # Produces a single self-extracting executable; no AppImage wrapper needed.
-# Relies on the host system's fontconfig — does not bundle fonts.
+# Bundles Noto Sans + Ubuntu + DejaVu + Noto Color Emoji (same set as the AppImage)
+# so "sans-serif" resolves consistently across hosts.
 # Trade-off: ~1-2s extraction overhead on cold start vs. the onedir AppImage build.
 import sys
 from pathlib import Path
 
 root = Path(SPECPATH).parent  # appimage/ -> project root
 _pixi_lib = Path(sys.executable).resolve().parent.parent / "lib"
+_pixi_fonts = _pixi_lib.parent / "fonts"
+_noto_excluded = {"NotoSansDisplay-VF.ttf", "NotoSansDisplay-Italic-VF.ttf", "NotoSansMono-VF.ttf"}
+_noto_sans = sorted(f for f in _pixi_fonts.glob("NotoSans*-VF.ttf") if f.name not in _noto_excluded)
+_extra_fonts = [_pixi_fonts / n for n in (
+    "Ubuntu-R.ttf", "Ubuntu-B.ttf", "Ubuntu-RI.ttf", "Ubuntu-BI.ttf",
+    "UbuntuMono-R.ttf", "UbuntuMono-B.ttf",
+    "DejaVuSans.ttf", "NotoColorEmoji.ttf",
+)]
+_font_files = _noto_sans + _extra_fonts
 
 a = Analysis(
     [str(root / "src" / "lilical" / "__main__.py")],
@@ -28,6 +38,8 @@ a = Analysis(
         (str(root / "alembic.ini"), "."),
         (str(root / "migrations"), "migrations"),
         (str(root / "src" / "lilical" / "ui" / "styles"), "lilical/ui/styles"),
+        (str(root / "appimage" / "fonts.conf"), "etc/fonts"),
+        *[(str(f), "usr/share/fonts/lilical") for f in _font_files],
     ],
     hiddenimports=[
         # All backends are imported dynamically via factory.py

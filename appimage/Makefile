@@ -64,7 +64,7 @@ onefile: dist-onefile/lilical
 
 dist-onefile/lilical: lilical-onefile.spec $(OAUTH_FILE) \
                       $(PY_SOURCES) $(MIGRATIONS) $(STYLES) \
-                      $(ROOT)/alembic.ini \
+                      $(ROOT)/alembic.ini fonts.conf $(FONT_FILES) \
                       runtime_hooks/setup_env.py
 	$(PIXI) run -e appimage python -m PyInstaller \
 		--distpath dist-onefile \
