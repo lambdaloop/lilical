@@ -46,6 +46,7 @@ class _CompletionPopup(QListWidget):
         self.setWindowFlags(Qt.WindowType.Popup)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFocusProxy(anchor)
         self.setMouseTracking(True)
         self.itemClicked.connect(self._on_item_clicked)
         self.hide()
@@ -146,15 +147,6 @@ class _ChipLineEdit(QLineEdit):
             self.backspace_at_start.emit()
             return
         super().keyPressEvent(event)
-
-    def focusOutEvent(self, event) -> None:
-        super().focusOutEvent(event)
-        parent = self.parent()
-        popup: "_CompletionPopup | None" = getattr(parent, "_popup", None) if parent is not None else None
-        if popup is not None:
-            # Defer so a popup click still registers before the popup hides.
-            QTimer.singleShot(150, popup.hide)
-
 
 class InviteeChipEdit(QWidget):
     """Chip-style multi-invitee input with contact autocomplete popup."""
