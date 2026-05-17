@@ -8,6 +8,7 @@ platforms = ["linux-64"]
 [dependencies]
 python = "3.12.*"
 pyside6 = ">=6.11"
+qt6-webengine = ">=6.11"
 sqlalchemy = ">=2.0"
 alembic = "*"
 google-auth = "*"
