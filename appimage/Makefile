@@ -66,6 +66,15 @@ run: build
 	@echo "Extracting AppImage for headless smoke test..."
 	rm -rf squashfs-root
 	./$(OUTPUT) --appimage-extract > /dev/null
+	@echo "Checking WebEngine assets..."
+	@for f in \
+	    squashfs-root/opt/lilical/_internal/QtWebEngineProcess6 \
+	    squashfs-root/opt/lilical/_internal/resources/icudtl.dat \
+	    squashfs-root/opt/lilical/_internal/resources/qtwebengine_resources.pak \
+	    squashfs-root/opt/lilical/_internal/translations/qtwebengine_locales/en-US.pak; do \
+	    if [ ! -e "$$f" ]; then echo "MISSING: $$f"; exit 1; fi; \
+	done
+	@echo "WebEngine assets OK"
 	@echo "Running with offscreen Qt platform (5-second timeout)..."
 	QT_QPA_PLATFORM=offscreen timeout 5 ./squashfs-root/AppRun 2>&1 | tee /tmp/lilical-smoke.log; \
 	  code=$$?; \
