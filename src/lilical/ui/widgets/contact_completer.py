@@ -13,12 +13,15 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from lilical.ui.widgets.flow_layout import FlowLayout
+from lilical.utils.names import format_display_name
 
 if TYPE_CHECKING:
     from lilical.models.contact import Contact
@@ -51,8 +54,9 @@ class _ContactModel(QAbstractListModel):
             return None
         c = self._results[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
-            if c.display_name:
-                return f"{c.display_name} <{c.email}>"
+            display = format_display_name(c.display_name)
+            if display:
+                return f"{display} <{c.email}>"
             return c.email
         if role == Qt.ItemDataRole.UserRole:
             return c
@@ -73,14 +77,14 @@ class _InviteeChip(QFrame):
         layout.setContentsMargins(6, 2, 2, 2)
         layout.setSpacing(4)
 
-        label_text = attendee.display_name or attendee.email
+        label_text = format_display_name(attendee.display_name) or attendee.email
         label = QLabel(label_text)
         label.setToolTip(attendee.email)
         layout.addWidget(label)
 
-        btn = QPushButton("×")
-        btn.setFixedSize(16, 16)
-        btn.setFlat(True)
+        btn = QToolButton()
+        btn.setText("×")
+        btn.setObjectName("inviteeChipRemove")
         btn.setCursor(Qt.CursorShape.ArrowCursor)
         btn.clicked.connect(lambda: self.removed.emit(self._attendee))
         layout.addWidget(btn)
@@ -126,22 +130,7 @@ class InviteeChipEdit(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(2)
 
-        # Scroll area holding the chip flow.
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._scroll.setMaximumHeight(80)
-        self._scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        self._chip_container = QWidget()
-        self._chip_layout = QHBoxLayout(self._chip_container)
-        self._chip_layout.setContentsMargins(2, 2, 2, 2)
-        self._chip_layout.setSpacing(4)
-        self._chip_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._scroll.setWidget(self._chip_container)
-        outer.addWidget(self._scroll)
-
-        # Text input.
+        # Text input (on top).
         self._edit = _ChipLineEdit()
         self._edit.setPlaceholderText("Add invitee…")
         self._edit.backspace_at_start.connect(self._on_backspace_at_start)
@@ -149,20 +138,34 @@ class InviteeChipEdit(QWidget):
         self._edit.returnPressed.connect(self._commit_current)
         outer.addWidget(self._edit)
 
-        # Completer.
+        # Scroll area holding the chip flow (below input, hidden when empty).
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setMaximumHeight(120)
+        self._scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._scroll.setVisible(False)
+
+        self._chip_container = QWidget()
+        self._chip_layout = FlowLayout(self._chip_container, margin=2, h_spacing=4, v_spacing=4)
+        self._scroll.setWidget(self._chip_container)
+        outer.addWidget(self._scroll)
+
+        # Completer — UnfilteredPopupCompletion so our pre-filtered model drives
+        # the popup entirely; we call complete() manually after each refresh.
         if contact_store is not None:
             self._model = _ContactModel(contact_store, self._account_ids)
             self._completer = QCompleter(self._model)
             self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-            self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            self._completer.setCompletionMode(
+                QCompleter.CompletionMode.UnfilteredPopupCompletion
+            )
             self._completer.activated[QModelIndex].connect(self._on_completion_selected)
             self._edit.setCompleter(self._completer)
         else:
             self._model = None
             self._completer = None
 
-        # Connect contacts_changed signal if available.
         if contact_store is not None:
             contact_store.contacts_changed.connect(lambda _: self._refresh_model())
 
@@ -171,8 +174,13 @@ class InviteeChipEdit(QWidget):
             self._model.refresh(self._edit.text())
 
     def _on_text_changed(self, text: str) -> None:
-        if self._model is not None:
-            self._model.refresh(text)
+        if self._model is None:
+            return
+        self._model.refresh(text)
+        if self._model.rowCount() > 0:
+            self._completer.complete()
+        else:
+            self._completer.popup().hide()
 
     def _on_completion_selected(self, index: QModelIndex) -> None:
         contact = self._model.data(index, Qt.ItemDataRole.UserRole) if self._model else None
@@ -216,6 +224,7 @@ class InviteeChipEdit(QWidget):
         chip.removed.connect(self._remove_chip)
         self._chip_layout.addWidget(chip)
         self._chips.append(chip)
+        self._update_scroll_visibility()
         self.invitees_changed.emit()
 
     def _remove_chip(self, attendee: "Attendee") -> None:
@@ -226,7 +235,11 @@ class InviteeChipEdit(QWidget):
                 chip.deleteLater()
                 self._chips.remove(chip)
                 break
+        self._update_scroll_visibility()
         self.invitees_changed.emit()
+
+    def _update_scroll_visibility(self) -> None:
+        self._scroll.setVisible(bool(self._chips))
 
     def _on_backspace_at_start(self) -> None:
         if self._chips:
@@ -242,6 +255,7 @@ class InviteeChipEdit(QWidget):
         for a in attendees:
             if not a.is_self:
                 self._add_chip(a)
+        self._update_scroll_visibility()
 
     def invitees(self) -> "list[Attendee]":
         return [c.attendee for c in self._chips]

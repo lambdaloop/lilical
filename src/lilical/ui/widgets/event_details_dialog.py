@@ -5,6 +5,8 @@ from datetime import timedelta
 from html import escape
 from typing import TYPE_CHECKING
 
+from lilical.utils.names import format_display_name
+
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
@@ -366,7 +368,8 @@ def _format_organizer(organizer: object) -> str:
     if not isinstance(organizer, Organizer):
         return str(organizer)
     if organizer.display_name:
-        return f"{organizer.display_name} <{organizer.email}>" + (" (you)" if organizer.is_self else "")
+        name = format_display_name(organizer.display_name)
+        return f"{name} <{organizer.email}>" + (" (you)" if organizer.is_self else "")
     return organizer.email + (" (you)" if organizer.is_self else "")
 
 
@@ -403,7 +406,7 @@ def _format_attendee_line(a: object) -> str:
         return _format_attendee_legacy(str(a))
     parts = []
     if a.display_name:
-        parts.append(f"{a.display_name} <{a.email}>")
+        parts.append(f"{format_display_name(a.display_name)} <{a.email}>")
     else:
         parts.append(a.email)
     if a.is_organizer:
