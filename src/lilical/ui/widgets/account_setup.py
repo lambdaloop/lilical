@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
-import webbrowser
 from typing import Any
+
+from lilical.util.browser import open_url
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -239,7 +240,7 @@ class AccountSetupDialog(QDialog):
             "verification_uri", "https://microsoft.com/devicelogin"
         )
         with contextlib.suppress(Exception):
-            webbrowser.open(str(verification_uri))
+            open_url(str(verification_uri))
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Sign in to Microsoft 365")

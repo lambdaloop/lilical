@@ -453,11 +453,20 @@ def run_google_oauth_sync() -> str:
     browser. InstalledAppFlow.run_local_server handles the loopback HTTP
     server, token exchange, and "you may close this tab" page automatically.
     """
+    import webbrowser
+
     from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from lilical.util.browser import open_url
 
     _validate_client_config()
     flow = InstalledAppFlow.from_client_config(CLIENT_CONFIG, SCOPES)
-    creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
+    _orig_open = webbrowser.open
+    webbrowser.open = lambda url, *_a, **_kw: open_url(url)
+    try:
+        creds = flow.run_local_server(open_browser=True, timeout_seconds=300)
+    finally:
+        webbrowser.open = _orig_open
     return creds.to_json()
 
 
