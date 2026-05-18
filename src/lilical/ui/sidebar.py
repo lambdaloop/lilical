@@ -336,6 +336,9 @@ class Sidebar(QWidget):
         self._mini_month.clear_active_range()
         self._update_mini_label()
 
+    def set_week_start(self, week_start: str) -> None:
+        self._mini_month.set_week_start(week_start)
+
     # ── Calendar list ──────────────────────────────────────────────────────
 
     def _build_snapshot(self) -> list[tuple]:

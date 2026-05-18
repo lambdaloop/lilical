@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui import theme
+from lilical.ui.views._week_start import dow_labels_short, start_of_week
 
-_DOW_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 _HEADER_H = 20
 _CELL_H = 24
 _VIEWPORT_PADDING = 4  # QGraphicsView frame border on each axis
@@ -30,6 +30,7 @@ class MiniMonthGrid(QGraphicsView):
         self.year = year or today.year
         self.month = month or today.month
         self._selected = today
+        self._week_start = "monday"
         self._active_start: date | None = None
         self._active_end: date | None = None
         self._cell_w = 26  # updated in resizeEvent
@@ -78,14 +79,14 @@ class MiniMonthGrid(QGraphicsView):
         cw = self._cell_w
         ch = _CELL_H
         first = date(self.year, self.month, 1)
-        start = first - timedelta(days=first.weekday())
+        start = start_of_week(first, self._week_start)
         today = date.today()
         a_start = self._active_start
         a_end = self._active_end
 
         # Day-of-week header row
         dow_font = QFont(theme.FONT_FAMILY, 8)
-        for i, label in enumerate(_DOW_LABELS):
+        for i, label in enumerate(dow_labels_short(self._week_start)):
             item = self._scene.addText(label, dow_font)
             item.setDefaultTextColor(QColor(theme.TEXT_DISABLED))
             item.setPos(i * cw + 3, 2)
@@ -133,6 +134,12 @@ class MiniMonthGrid(QGraphicsView):
                 item.setDefaultTextColor(QColor(theme.TEXT_PRIMARY))
             else:
                 item.setDefaultTextColor(QColor(theme.TEXT_SECONDARY))
+
+    def set_week_start(self, week_start: str) -> None:
+        if week_start == self._week_start:
+            return
+        self._week_start = week_start
+        self.render()
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() != Qt.MouseButton.LeftButton:

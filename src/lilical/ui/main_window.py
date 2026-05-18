@@ -200,6 +200,12 @@ class MainWindow(QMainWindow):
             default_view = _DEFAULT_VIEW
         self._default_view_name: str = default_view
         self._current_view_name: str = default_view
+        week_start_raw = str(self._settings.value("week_start", "monday") or "monday")
+        self._week_start: str = (
+            week_start_raw
+            if week_start_raw in ("monday", "sunday", "saturday")
+            else "monday"
+        )
 
         self.setWindowTitle("lilical")
         self.resize(1200, 800)
@@ -306,6 +312,7 @@ class MainWindow(QMainWindow):
         self._setup_shortcuts()
 
         # ── Initial state ──────────────────────────────────────────────────
+        self._sidebar.set_week_start(self._week_start)
         self._switch_view(self._default_view_name)
 
         # Rebuild instances asynchronously to avoid first-launch freeze
@@ -625,6 +632,8 @@ class MainWindow(QMainWindow):
             v.set_time_format(saved_time_format)  # type: ignore[reportAttributeAccessIssue]
         if hasattr(v, "set_snap_minutes"):
             v.set_snap_minutes(saved_snap)  # type: ignore[reportAttributeAccessIssue]
+        if hasattr(v, "set_week_start"):
+            v.set_week_start(self._week_start)  # type: ignore[reportAttributeAccessIssue]
 
         self._view_stack_layout.addWidget(v)
         v.hide()
@@ -726,6 +735,7 @@ class MainWindow(QMainWindow):
             current_snap_minutes=self._snap_minutes,
             current_chip_mode=current_chip_mode,
             current_time_format=current_time_format,
+            current_week_start=self._week_start,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             if dlg.theme != self._theme:
@@ -757,6 +767,17 @@ class MainWindow(QMainWindow):
                 for v in self._views.values():
                     if hasattr(v, "set_time_format"):
                         v.set_time_format(dlg.time_format)  # type: ignore[reportAttributeAccessIssue]
+            if dlg.week_start != self._week_start and dlg.week_start in (
+                "monday",
+                "sunday",
+                "saturday",
+            ):
+                self._week_start = dlg.week_start
+                self._settings.setValue("week_start", self._week_start)
+                for v in self._views.values():
+                    if hasattr(v, "set_week_start"):
+                        v.set_week_start(self._week_start)  # type: ignore[reportAttributeAccessIssue]
+                self._sidebar.set_week_start(self._week_start)
 
     def _apply_theme(self, name: str) -> None:
         _theme_module.apply(name)

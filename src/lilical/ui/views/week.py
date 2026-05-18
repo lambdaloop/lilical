@@ -14,6 +14,7 @@ from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
+from lilical.ui.views._week_start import start_of_week
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -583,6 +584,7 @@ class WeekView(QGraphicsView):
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
+        self._week_start_pref: str = "monday"
         self._chips: dict[tuple[str, str, str], EventChip] = {}
         self._more_markers: dict[int, _MoreMarker] = {}
         self._refresh_task: asyncio.Task | None = None
@@ -623,7 +625,7 @@ class WeekView(QGraphicsView):
         self.setMinimumWidth(0)
 
         today = date.today()
-        week_start = today - timedelta(days=today.weekday())
+        week_start = start_of_week(today, self._week_start_pref)
         self._start = week_start
         # Initial width is a temporary value — resizeEvent will set the real
         # viewport width as soon as the widget is laid out.
@@ -723,6 +725,13 @@ class WeekView(QGraphicsView):
         self._time_format = fmt
         self.refresh(data_dirty=False)
 
+    def set_week_start(self, week_start: str) -> None:
+        if week_start == self._week_start_pref:
+            return
+        self._week_start_pref = week_start
+        self._start = start_of_week(self._start, week_start)
+        self.refresh()
+
     def set_snap_minutes(self, m: int) -> None:
         """Set the snap granularity used by every drag interaction.
 
@@ -777,7 +786,7 @@ class WeekView(QGraphicsView):
 
     def go_today(self) -> None:
         today = date.today()
-        self._start = today - timedelta(days=today.weekday())
+        self._start = start_of_week(today, self._week_start_pref)
         self._needs_scroll = True
         self.refresh()
 
@@ -786,7 +795,7 @@ class WeekView(QGraphicsView):
         self.viewport().update()
 
     def go_to_date(self, d: date) -> None:
-        self._start = d - timedelta(days=d.weekday())
+        self._start = start_of_week(d, self._week_start_pref)
         self._needs_scroll = True
         self.refresh()
 

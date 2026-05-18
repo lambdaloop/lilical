@@ -16,6 +16,11 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui.views._week_start import (
+    dow_labels,
+    start_of_week,
+    weekend_columns,
+)
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 
 log = logging.getLogger(__name__)
@@ -37,16 +42,17 @@ def _local_midnight(d: date) -> datetime:
 
 
 class MonthGrid(QGraphicsItem):
-    def __init__(self, year: int, month: int) -> None:
+    def __init__(self, year: int, month: int, week_start: str = "monday") -> None:
         super().__init__()
         self._year = year
         self._month = month
+        self._week_start = week_start
         self._first = date(year, month, 1)
         if month == 12:
             self._last = date(year + 1, 1, 1) - timedelta(days=1)
         else:
             self._last = date(year, month + 1, 1) - timedelta(days=1)
-        self._start = self._first - timedelta(days=self._first.weekday())
+        self._start = start_of_week(self._first, week_start)
         self._today = date.today()
 
     @override
@@ -76,15 +82,15 @@ class MonthGrid(QGraphicsItem):
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Weekend column tint (Sat/Sun): subtle.
-        for c in (5, 6):  # Mon=0, so Sat=5, Sun=6
+        # Weekend column tint (Sat/Sun): always shade wherever they land.
+        for c in weekend_columns(self._week_start):
             painter.fillRect(
                 QRectF(c * CELL_W, HEADER_H, CELL_W, ROWS * CELL_H),
                 QColor(theme.BG_WEEKEND),
             )
 
         # Day-of-week strip.
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        days = dow_labels(self._week_start)
         painter.setFont(
             QFont(theme.FONT_FAMILY, theme.FONT_MONTH_HEADER, QFont.Weight.Bold)
         )
@@ -234,7 +240,8 @@ class MonthView(QGraphicsView):
         now = date.today()
         self._year = now.year
         self._month = now.month
-        self._grid = MonthGrid(now.year, now.month)
+        self._week_start = "monday"
+        self._grid = MonthGrid(now.year, now.month, self._week_start)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
         self._rendered_month = (self._year, self._month)
@@ -275,7 +282,7 @@ class MonthView(QGraphicsView):
 
     def _rebuild_grid(self) -> None:
         self._scene.removeItem(self._grid)
-        self._grid = MonthGrid(self._year, self._month)
+        self._grid = MonthGrid(self._year, self._month, self._week_start)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
         self._rendered_month = (self._year, self._month)
@@ -318,6 +325,13 @@ class MonthView(QGraphicsView):
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
 
+    def set_week_start(self, week_start: str) -> None:
+        if week_start == self._week_start:
+            return
+        self._week_start = week_start
+        self._rebuild_grid()
+        self.refresh()
+
     def refresh(self, *, data_dirty: bool = True) -> None:
         if not data_dirty and self._cached_data is not None:
             self._apply_plan(self._cached_data)
@@ -325,7 +339,7 @@ class MonthView(QGraphicsView):
         if self._refresh_task and not self._refresh_task.done():
             self._refresh_task.cancel()
         first = date(self._year, self._month, 1)
-        grid_start = first - timedelta(days=first.weekday())
+        grid_start = start_of_week(first, self._week_start)
         end_day = grid_start + timedelta(days=42)
         cal_info_snap = self._cal_info_provider()
         self._refresh_task = asyncio.ensure_future(
