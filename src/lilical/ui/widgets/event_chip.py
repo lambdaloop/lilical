@@ -170,6 +170,7 @@ class EventChip(QGraphicsObject):
     details_requested = Signal(object)  # emits Event — left-click opens read-only view
     edit_requested = Signal(object)  # emits Event — right-click → Edit
     delete_requested = Signal(object)  # emits Event
+    toggle_complete_requested = Signal(object, bool)  # (inst_key triple, new completed)
     # Drag signals: see docstring for the chip-drag state machine.
     # Payload: (event, mode, scene_pos). mode ∈ {"move", "resize_top",
     # "resize_bottom"}.
@@ -200,6 +201,7 @@ class EventChip(QGraphicsObject):
         overlap_cols: int = 1,
         instance_dtstart: datetime | None = None,
         completed: bool = False,
+        inst_key: tuple[str, str, int] | None = None,
     ) -> None:
         super().__init__()
         self._event = event
@@ -215,6 +217,7 @@ class EventChip(QGraphicsObject):
         self._hovered = False
         self._instance_dtstart = instance_dtstart
         self._completed: bool = completed
+        self._inst_key: tuple[str, str, int] | None = inst_key
         self._completed_display_enabled: bool = False
         # Drag state
         self._drag_mode: str | None = None
@@ -312,12 +315,19 @@ class EventChip(QGraphicsObject):
         self.setToolTip(self._build_tooltip())
         self.update()
 
-    def update_event_data(self, event: "Event", *, completed: bool = False) -> None:
+    def update_event_data(
+        self,
+        event: "Event",
+        *,
+        completed: bool = False,
+        inst_key: tuple[str, str, int] | None = None,
+    ) -> None:
         """Refresh event data without changing geometry; skipped if chip is mid-drag."""
         if self._drag_mode is not None:
             return
         self._event = event
         self._completed = completed
+        self._inst_key = inst_key
         self.setToolTip(self._build_tooltip())
         self.update()
 
@@ -954,11 +964,18 @@ class EventChip(QGraphicsObject):
     @override
     def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
         menu = QMenu()
+        toggle_act = None
+        if self._completed_display_enabled and self._inst_key is not None:
+            label = "Mark incomplete" if self._completed else "Mark complete"
+            toggle_act = menu.addAction(label)
+            menu.addSeparator()
         edit_act = menu.addAction("Edit…")
         menu.addSeparator()
         del_act = menu.addAction("Delete…")
         chosen = menu.exec(event.screenPos())
-        if chosen is edit_act:
+        if toggle_act is not None and chosen is toggle_act:
+            self.toggle_complete_requested.emit(self._inst_key, not self._completed)
+        elif chosen is edit_act:
             self.edit_requested.emit(self._event)
         elif chosen is del_act:
             self.delete_requested.emit(self._event)

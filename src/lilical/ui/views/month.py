@@ -550,6 +550,9 @@ class MonthView(QGraphicsView):
                         continues_right=(e_day > row_end_day),
                         instance_dtstart=inst_t,
                         completed=_is_comp,
+                        inst_key=(  # type: ignore[reportAttributeAccessIssue]
+                            inst.calendar_id, inst.uid, inst.dtstart_utc
+                        ),
                         old_chips=old_event_chips,
                         new_chips=new_event_chips,
                     )
@@ -605,6 +608,7 @@ class MonthView(QGraphicsView):
                     time_prefix=time_prefix,
                     instance_dtstart=start_dt2,
                     completed=_is_comp,
+                    inst_key=(inst.calendar_id, inst.uid, inst.dtstart_utc),
                     old_chips=old_event_chips,
                     new_chips=new_event_chips,
                 )
@@ -663,12 +667,13 @@ class MonthView(QGraphicsView):
         continues_right: bool = False,
         instance_dtstart,
         completed: bool = False,
+        inst_key: tuple[str, str, int] | None = None,
         old_chips: dict,
         new_chips: dict,
     ) -> EventChip:
         if key in old_chips:
             chip = old_chips[key]
-            chip.update_event_data(event, completed=completed)
+            chip.update_event_data(event, completed=completed, inst_key=inst_key)
             chip.update_layout(
                 rect,
                 calendar_color=calendar_color,
@@ -692,6 +697,7 @@ class MonthView(QGraphicsView):
                 continues_right=continues_right,
                 instance_dtstart=instance_dtstart,
                 completed=completed,
+                inst_key=inst_key,
             )
             chip.details_requested.connect(
                 lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
@@ -702,11 +708,18 @@ class MonthView(QGraphicsView):
             chip.delete_requested.connect(
                 lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
             )
+            chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
             self._scene.addItem(chip)
         chip.set_completed_display(self._completed_enabled)
         new_chips[key] = chip
         self._chips.append(chip)
         return chip
+
+    def _on_toggle_complete_requested(
+        self, inst_key: tuple[str, str, int], completed: bool
+    ) -> None:
+        cal_id, uid, dtstart_utc = inst_key
+        self._store.set_completed(cal_id, uid, dtstart_utc, completed)
 
     def _cell_of(self, rect: QRectF) -> tuple[int, int]:
         col = int(rect.x() // CELL_W)

@@ -910,10 +910,13 @@ class WeekView(QGraphicsView):
                     self._scene.removeItem(chip)
         for key, pl in new_placements.items():
             is_sticky = pl["is_sticky"]
-            is_comp = pl.get("inst_key", ("", "", -1)) in completions
+            inst_key = pl.get("inst_key")
+            is_comp = inst_key in completions if inst_key else False
             if key in old_chips:
                 chip = old_chips[key]
-                chip.update_event_data(pl["event"], completed=is_comp)
+                chip.update_event_data(
+                    pl["event"], completed=is_comp, inst_key=inst_key
+                )
                 chip.update_layout(
                     pl["rect"],
                     calendar_color=pl["calendar_color"],
@@ -940,6 +943,7 @@ class WeekView(QGraphicsView):
                     overlap_cols=pl["overlap_cols"],
                     instance_dtstart=pl["instance_dtstart"],
                     completed=is_comp,
+                    inst_key=inst_key,
                 )
                 self._wire_chip_signals(chip)
                 if is_sticky:
@@ -1003,9 +1007,16 @@ class WeekView(QGraphicsView):
         chip.delete_requested.connect(
             lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
         )
+        chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
         chip.drag_progress.connect(self._on_chip_drag_progress)
         chip.drag_committed.connect(self._on_chip_drag_committed)
         chip.drag_cancelled.connect(self._on_chip_drag_cancelled)
+
+    def _on_toggle_complete_requested(
+        self, inst_key: tuple[str, str, int], completed: bool
+    ) -> None:
+        cal_id, uid, dtstart_utc = inst_key
+        self._store.set_completed(cal_id, uid, dtstart_utc, completed)
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 

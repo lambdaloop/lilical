@@ -323,7 +323,9 @@ class AgendaView(QWidget):
         self._store.set_completed(cal_id, uid, dtstart_utc, completed)
         self._style_completed_row(item, completed)
 
-    def _on_item_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+    def _on_item_clicked(self, item: QTreeWidgetItem, col: int) -> None:
+        if col == 0 and self._completed_enabled:
+            return
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
             return
