@@ -279,10 +279,14 @@ to keep the table small.
 | CalDAV   | HTTP Basic or App-Password; URL discovery via `.well-known/caldav` |
 
 Refresh tokens / app passwords go into the OS keyring via the `keyring`
-library. If no SecretService is reachable (headless, sway-without-keyring),
-fall back to a passphrase-encrypted file at
-`$XDG_DATA_HOME/lilical/credentials.enc` (AES-GCM, key derived via
-Argon2id from a passphrase the user enters at startup).
+library. If no SecretService is reachable (headless, AppImage on a system
+without gnome-keyring), the app automatically falls back to an encrypted file
+at `$XDG_DATA_HOME/lilical/credentials.enc` (AES-GCM, key derived via
+HKDF-SHA256 from `/etc/machine-id` with a per-app info string — no key file
+on disk, no passphrase prompt). A one-time WARNING is logged at startup when
+the fallback is active. Note: the fallback file is machine-bound; moving it
+to another host without its originating `/etc/machine-id` renders it
+unreadable.
 
 ### 4.5 Recurrence
 

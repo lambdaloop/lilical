@@ -48,6 +48,9 @@ a = Analysis(
         "secretstorage",
         "jeepney",
         "jeepney.io.blocking",
+        # AES-GCM + HKDF for encrypted-file fallback when keyring is unavailable
+        "cryptography.hazmat.primitives.ciphers.aead",
+        "cryptography.hazmat.primitives.kdf.hkdf",
         # desktop-notifier loads a backend per platform
         "desktop_notifier.backends.linux",
         # alembic runtime migration needs explicit import

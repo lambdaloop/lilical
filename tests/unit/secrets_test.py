@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from lilical.config import Config
-from lilical.storage.secrets import SecretsStore
+from lilical.storage.secrets import SecretsStore, _FileBackend
 
 # All tests patch keyring.* — otherwise the in-memory tests below would clobber
 # the developer's real system keyring (and have, historically: a stale `_index`
 # pointing at test fixtures orphaned real account secrets and caused a forced
 # re-auth on every app restart).
+
+_TEST_MACHINE_ID = "aabbccddeeff00112233445566778899"
 
 
 @patch("keyring.set_password")
@@ -152,3 +157,127 @@ def test_secrets_delete_handles_keyring_import_error() -> None:
     store = SecretsStore(data={"acc-1": {"token": "abc"}})
     store.delete("acc-1")
     assert store.get("acc-1") is None
+
+
+# ---------------------------------------------------------------------------
+# _FileBackend unit tests
+# All tests pass machine_id explicitly so they don't depend on /etc/machine-id.
+# ---------------------------------------------------------------------------
+
+
+def test_file_backend_round_trip(tmp_path: Path) -> None:
+    fb = _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID)
+    assert fb.read("x") is None
+    fb.write("acc-1", '{"token":"a"}')
+    fb.write("acc-2", '{"token":"b"}')
+    assert fb.read("acc-1") == '{"token":"a"}'
+    assert fb.read("acc-2") == '{"token":"b"}'
+    fb.remove("acc-1")
+    assert fb.read("acc-1") is None
+    assert fb.read("acc-2") == '{"token":"b"}'
+
+
+def test_file_backend_persists_across_instances(tmp_path: Path) -> None:
+    fb = _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID)
+    fb.write("acc-1", '{"token":"persisted"}')
+    result = _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID).read("acc-1")
+    assert result == '{"token":"persisted"}'
+
+
+def test_file_backend_different_machine_id_cannot_decrypt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Secrets written on machine A must not be readable on machine B."""
+    _FileBackend(tmp_path, machine_id="machine-id-A").write("acc-1", '{"token":"s"}')
+    with caplog.at_level("ERROR"):
+        result = _FileBackend(tmp_path, machine_id="machine-id-B").read("acc-1")
+    assert result is None
+    assert "decryption failed" in caplog.text
+
+
+def test_file_backend_get_missing_returns_none_without_error(tmp_path: Path) -> None:
+    assert _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID).read("ghost") is None
+
+
+def test_file_backend_remove_missing_account_is_noop(tmp_path: Path) -> None:
+    fb = _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID)
+    fb.write("acc-1", '{"token":"a"}')
+    fb.remove("ghost")
+    assert fb.read("acc-1") == '{"token":"a"}'
+
+
+def test_file_backend_corrupt_ciphertext_returns_none_and_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    fb = _FileBackend(tmp_path, machine_id=_TEST_MACHINE_ID)
+    fb.write("acc-1", '{"token":"a"}')
+    (tmp_path / "credentials.enc").write_bytes(b"\x00" * 64)
+    with caplog.at_level("ERROR"):
+        result = fb.read("acc-1")
+    assert result is None
+    assert "decryption failed" in caplog.text
+
+
+def test_file_backend_missing_machine_id_degrades_gracefully(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If machine-id can't be read, write() is a no-op and read() returns None."""
+    err = OSError("no machine-id")
+    with patch("lilical.storage.secrets._read_machine_id", side_effect=err), \
+            caplog.at_level("ERROR"):
+        fb = _FileBackend(tmp_path)
+        fb.write("acc-1", '{"token":"x"}')
+        assert not (tmp_path / "credentials.enc").exists()
+        assert fb.read("acc-1") is None
+    assert "machine-id" in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# SecretsStore.open() backend selection
+# ---------------------------------------------------------------------------
+
+
+def test_secrets_store_open_uses_file_backend_when_no_keyring(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import keyring.backends.fail
+
+    config = Config(db_path=str(tmp_path / "lilical.db"))
+    fail_kr = keyring.backends.fail.Keyring()
+    mid_patch = patch(
+        "lilical.storage.secrets._read_machine_id", return_value=_TEST_MACHINE_ID
+    )
+    kr_patch = patch("keyring.get_keyring", return_value=fail_kr)
+    with kr_patch, mid_patch, caplog.at_level("WARNING"):
+        store = SecretsStore.open(config)
+        store.set("acc-1", {"token": "file-persisted"})
+
+    assert "falling back to encrypted file" in caplog.text.lower()
+    assert (tmp_path / "credentials.enc").exists()
+
+
+def test_secrets_store_open_emits_exactly_one_warning_on_fallback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import keyring.backends.fail
+
+    config = Config(db_path=str(tmp_path / "lilical.db"))
+    with patch("keyring.get_keyring", return_value=keyring.backends.fail.Keyring()), \
+            caplog.at_level("WARNING"):
+        SecretsStore.open(config)
+
+    warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "falling back" in r.message.lower()
+    ]
+    assert len(warnings) == 1
+
+
+def test_secrets_store_open_uses_keyring_backend_when_available() -> None:
+    mock_kr = MagicMock()
+
+    with patch("keyring.get_keyring", return_value=mock_kr), \
+            patch("keyring.set_password") as mock_set:
+        store = SecretsStore.open(Config())
+        store.set("acc-1", {"token": "via-keyring"})
+        mock_set.assert_called_once()

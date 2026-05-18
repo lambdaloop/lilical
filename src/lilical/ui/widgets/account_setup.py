@@ -4,8 +4,6 @@ import concurrent.futures
 import contextlib
 from typing import Any
 
-from lilical.util.browser import open_url
-
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +19,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from lilical.util.browser import open_url
 
 _KIND_TO_LABEL = {
     "google": "Google Calendar",
