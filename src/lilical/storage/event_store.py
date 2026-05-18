@@ -804,6 +804,10 @@ class EventStore(QObject):
                         for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
                             if col_name in _skip:
                                 continue
+                            # Preserve locally-chosen event color when the backend
+                            # doesn't echo it back (e.g. Graph returns None).
+                            if col_name == "color" and getattr(updated, "color", None) is None:
+                                continue
                             setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
                     # Defer instance rebuilds to after this transaction commits so

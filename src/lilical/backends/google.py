@@ -18,6 +18,7 @@ from typing import Any, cast
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 
+from lilical.backends._google_serializer import color_id_to_hex
 from lilical.backends.base import (
     AuthExpired,
     ConflictError,
@@ -39,7 +40,7 @@ GOOGLE_BASE = "https://www.googleapis.com/calendar/v3"
 _EVENTS_LIST_FIELDS = (
     "nextPageToken,nextSyncToken,"
     "items(id,iCalUID,etag,status,recurringEventId,summary,description,location,"
-    "htmlLink,transparency,updated,sequence,recurrence,"
+    "htmlLink,transparency,updated,sequence,recurrence,colorId,"
     "start(date,dateTime,timeZone),end(date,dateTime,timeZone),"
     "originalStartTime(date,dateTime,timeZone),"
     "organizer(email,displayName,self),"
@@ -350,6 +351,7 @@ def _google_event_to_change(
             last_modified=last_modified,
             etag=cast(str | None, ev_json.get("etag")),
             sequence=cast(int, ev_json.get("sequence", 0)),
+            color=color_id_to_hex(cast(str | None, ev_json.get("colorId"))),
         )
         return EventChange(kind="upsert", event=override_event, uid=uid)
 
@@ -442,6 +444,7 @@ def _google_event_to_change(
         last_modified=last_modified,
         etag=cast(str | None, ev_json.get("etag")),
         sequence=cast(int, ev_json.get("sequence", 0)),
+        color=color_id_to_hex(cast(str | None, ev_json.get("colorId"))),
     )
     return EventChange(kind="upsert", event=event, uid=uid)
 

@@ -25,6 +25,29 @@ _HEX_TO_COLOR_ID: dict[str, str] = {
     "#3ab8c8": "7",  # Cyan → Peacock (closest)
 }
 
+# Canonical hex per Google colorId (inverse of _HEX_TO_COLOR_ID).
+# colorId "7" maps to both #3a80c8 and #3ab8c8; #3a80c8 (Peacock) is preferred.
+_COLOR_ID_TO_HEX: dict[str, str] = {
+    "1": "#9a78e0",   # Lavender
+    "2": "#70a870",   # Sage
+    "3": "#7a3aaa",   # Grape
+    "4": "#e07878",   # Flamingo
+    "5": "#e0c830",   # Banana
+    "6": "#e08030",   # Tangerine
+    "7": "#3a80c8",   # Peacock
+    "8": "#8a8a8a",   # Graphite
+    "9": "#3a50b8",   # Blueberry
+    "10": "#3a7a3a",  # Basil
+    "11": "#e05050",  # Tomato
+}
+
+
+def color_id_to_hex(color_id: str | None) -> str | None:
+    """Map a Google Calendar colorId string to a canonical hex color."""
+    if not color_id:
+        return None
+    return _COLOR_ID_TO_HEX.get(str(color_id))
+
 
 def event_to_google_body(event: "Event") -> dict[str, Any]:
     """Serialize an Event to a Google Calendar API request body."""

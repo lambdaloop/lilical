@@ -376,6 +376,7 @@ def _vevent_to_event(
             dtend = datetime.combine(dtend.date(), time.min, tzinfo=local_zone)
         tz = local_zone.key
 
+    color_raw = ve.get("COLOR")
     return Event(
         uid=str(ve.get("UID", "")),
         calendar_id=calendar_id,
@@ -401,6 +402,7 @@ def _vevent_to_event(
         last_modified=last_modified,
         etag=etag,
         sequence=int(ve.get("SEQUENCE", 0)),
+        color=_normalise_hex_color(str(color_raw)) if color_raw is not None else None,
     )
 
 

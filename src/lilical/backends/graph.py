@@ -507,7 +507,17 @@ def _graph_event_to_change(
     )
 
     categories_raw = cast("list[object]", ev_json.get("categories") or [])
-    categories = tuple(str(c) for c in categories_raw if c)
+    # Strip our managed color category before storing user-visible categories.
+    _color_prefix = "lilical-color:"
+    event_color: str | None = None
+    visible_categories: list[str] = []
+    for _c in categories_raw:
+        _cs = str(_c)
+        if _cs.startswith(_color_prefix):
+            event_color = _cs[len(_color_prefix):]
+        else:
+            visible_categories.append(_cs)
+    categories = tuple(visible_categories)
 
     attendees_raw = cast("list[object]", ev_json.get("attendees") or [])
     attendees: list[Attendee] = []
@@ -612,6 +622,7 @@ def _graph_event_to_change(
         transparency=transparency,
         last_modified=last_modified,
         etag=cast("str | None", ev_json.get("@odata.etag")),
+        color=event_color,
     )
     return EventChange(kind="upsert", event=event, uid=uid)
 
@@ -743,8 +754,11 @@ def _event_to_graph_json(event: Event) -> dict[str, Any]:
             body["recurrence"] = rec
     if event.transparency:
         body["showAs"] = "free" if event.transparency == "TRANSPARENT" else "busy"
-    if event.categories:
-        body["categories"] = list(event.categories)
+    # Merge user categories with our managed color category.
+    managed_cats = [f"lilical-color:{event.color}"] if event.color else []
+    all_cats = list(event.categories) + managed_cats
+    if all_cats:
+        body["categories"] = all_cats
     if event.attendees:
         attendees_list = [
             {"emailAddress": {"address": att.email, "name": att.display_name or ""}}
