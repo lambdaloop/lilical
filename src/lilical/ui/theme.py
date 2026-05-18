@@ -59,7 +59,7 @@ def apply(name: str) -> None:
 
 # ── Scale ─────────────────────────────────────────────────────────────────
 
-UI_SCALE_PRESETS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
+UI_SCALE_PRESETS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0)
 
 UI_SCALE: float = 1.0
 
