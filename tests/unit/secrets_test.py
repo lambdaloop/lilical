@@ -85,8 +85,9 @@ def test_secrets_does_not_overwrite_other_accounts_on_delete(
     mock_delete.assert_called_once_with("lilical", "account:acc-a")
 
 
+@patch("keyring.get_keyring", return_value=MagicMock())
 @patch("keyring.get_password")
-def test_secrets_get_reads_from_keyring_on_cache_miss(mock_get) -> None:
+def test_secrets_get_reads_from_keyring_on_cache_miss(mock_get, _mock_gk) -> None:
     """The fix for the re-auth-on-restart bug: even if open() did not
     pre-load an account, get() must still find its secret in keyring."""
     mock_get.side_effect = lambda service, key: {
@@ -100,22 +101,25 @@ def test_secrets_get_reads_from_keyring_on_cache_miss(mock_get) -> None:
     assert mock_get.call_count == 1
 
 
+@patch("keyring.get_keyring", return_value=MagicMock())
 @patch("keyring.get_password", return_value=None)
-def test_secrets_get_returns_none_when_not_in_keyring(mock_get) -> None:
+def test_secrets_get_returns_none_when_not_in_keyring(mock_get, _mock_gk) -> None:
     store = SecretsStore.open(Config())
     assert store.get("ghost") is None
 
 
+@patch("keyring.get_keyring", return_value=MagicMock())
 @patch("keyring.get_password", side_effect=RuntimeError("dbus disconnected"))
-def test_secrets_get_returns_none_when_keyring_raises(mock_get) -> None:
+def test_secrets_get_returns_none_when_keyring_raises(mock_get, _mock_gk) -> None:
     """Keyring backend errors must not crash callers — they get None and
     can prompt the user to re-enter credentials."""
     store = SecretsStore.open(Config())
     assert store.get("acc-a") is None
 
 
+@patch("keyring.get_keyring", return_value=MagicMock())
 @patch("keyring.get_password", return_value="this is not json")
-def test_secrets_get_returns_none_on_malformed_payload(mock_get) -> None:
+def test_secrets_get_returns_none_on_malformed_payload(mock_get, _mock_gk) -> None:
     store = SecretsStore.open(Config())
     assert store.get("acc-a") is None
 
