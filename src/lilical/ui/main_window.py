@@ -627,7 +627,7 @@ class MainWindow(QMainWindow):
             raise ValueError(f"Unknown view: {name}")
 
         saved_enable_completed = bool(
-            int(self._settings.value("enable_completed_events", 0) or 0)
+            int(self._settings.value("enable_completed_events", 0) or 0)  # type: ignore[reportArgumentType]
         )
 
         if hasattr(v, "set_chip_mode"):
@@ -735,7 +735,7 @@ class MainWindow(QMainWindow):
         current_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
         current_time_format = str(self._settings.value("time_format", "24h") or "24h")
         current_enable_completed = bool(
-            int(self._settings.value("enable_completed_events", 0) or 0)
+            int(self._settings.value("enable_completed_events", 0) or 0)  # type: ignore[reportArgumentType]
         )
         dlg = PreferencesDialog(
             self,

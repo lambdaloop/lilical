@@ -242,7 +242,7 @@ class EventDetailsDialog(QDialog):
             btn_bar_layout.addWidget(sep)
 
         enable_completed = bool(
-            int(QSettings().value("enable_completed_events", 0) or 0)
+            int(QSettings().value("enable_completed_events", 0) or 0)  # type: ignore[reportArgumentType]
         )
         if enable_completed and self._completed_dtstart_utc is not None:
             self._completed_check = QCheckBox("Completed")
