@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -39,6 +40,7 @@ class PreferencesDialog(QDialog):
         current_snap_minutes: int = 15,
         current_chip_mode: str = "bars",
         current_time_format: str = "24h",
+        current_enable_completed_events: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -100,6 +102,10 @@ class PreferencesDialog(QDialog):
         self._time_format_combo.setCurrentIndex(tf_idx)
         form.addRow("Time format:", self._time_format_combo)
 
+        self._enable_completed_check = QCheckBox()
+        self._enable_completed_check.setChecked(current_enable_completed_events)
+        form.addRow("Enable completed events:", self._enable_completed_check)
+
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -141,3 +147,7 @@ class PreferencesDialog(QDialog):
         if 0 <= idx < len(_TIME_FORMAT_OPTIONS):
             return _TIME_FORMAT_OPTIONS[idx][1]
         return "24h"
+
+    @property
+    def enable_completed_events(self) -> bool:
+        return self._enable_completed_check.isChecked()

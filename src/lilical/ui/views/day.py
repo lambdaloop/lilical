@@ -304,6 +304,7 @@ def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
         return None
 
     events = store.events_for_instances(instances)
+    completions = store.completion_for_instances(instances)
     cal_color: dict[str, str | None] = {
         ci.id: ci.color for ci in cal_info_snap.values()
     }
@@ -312,6 +313,7 @@ def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
         "events": events,
         "cal_color": cal_color,
         "day": day,
+        "completions": completions,
     }
 
 
@@ -323,6 +325,7 @@ def _compute_day_placements(
     events = data["events"]
     cal_color = data["cal_color"]
     day = data["day"]
+    completions: frozenset = data.get("completions", frozenset())
 
     # Count band occupants: true all-day events and multi-day timed events covering this day.  # noqa: E501
     all_day_count = 0
@@ -375,6 +378,7 @@ def _compute_day_placements(
                 "instance_dtstart": t,
                 "is_sticky": True,
                 "event": event,
+                "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
             }
             continue
         if span:
@@ -402,6 +406,7 @@ def _compute_day_placements(
                     "instance_dtstart": t,
                     "is_sticky": True,
                     "event": event,
+                    "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
                 }
             all_day_idx += 1
             continue
@@ -430,6 +435,7 @@ def _compute_day_placements(
                     "cal_color": cal_color.get(inst.calendar_id),
                     "instance_dtstart": t,
                     "key": key,
+                    "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
                 },
             )
         )
@@ -456,12 +462,14 @@ def _compute_day_placements(
                 "instance_dtstart": payload["instance_dtstart"],
                 "is_sticky": False,
                 "event": payload["event"],
+                "inst_key": payload["inst_key"],
             }
 
     return {
         "new_placements": new_placements,
         "band_h": band_h,
         "first_event_minutes": first_event_minutes,
+        "completions": completions,
     }
 
 
@@ -529,6 +537,7 @@ class _DayCanvas(QGraphicsView):
         self._refresh_task: asyncio.Task | None = None
         self._rendered_day: date | None = None
         self._needs_scroll: bool = True
+        self._completed_enabled: bool = False
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
         self._drag_kind: str | None = None
@@ -567,6 +576,8 @@ class _DayCanvas(QGraphicsView):
 
         # Keep the sticky header pinned to viewport-top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
+
+        store.instance_completion_changed.connect(self._on_completion_changed)
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -637,6 +648,19 @@ class _DayCanvas(QGraphicsView):
         self._chip_mode = mode
         self.refresh(data_dirty=False)
 
+    def set_completed_events_enabled(self, enabled: bool) -> None:
+        if enabled == self._completed_enabled:
+            return
+        self._completed_enabled = enabled
+        for chip in self._chips.values():
+            chip.set_completed_display(enabled)
+        self.viewport().update()
+
+    def _on_completion_changed(
+        self, _cal_id: str, _uid: str, _dtstart_utc: int
+    ) -> None:
+        self.refresh()
+
     def set_time_format(self, fmt: str) -> None:
         if fmt == self._time_format:
             return
@@ -702,6 +726,7 @@ class _DayCanvas(QGraphicsView):
         else:
             self._sticky.set_all_day_band_h(band_h)
 
+        completions: frozenset = plan.get("completions", frozenset())
         old_chips = self._chips
         new_chips: dict[tuple[str, str, str], EventChip] = {}
         for key, chip in old_chips.items():
@@ -713,9 +738,10 @@ class _DayCanvas(QGraphicsView):
                     self._scene.removeItem(chip)
         for key, pl in new_placements.items():
             is_sticky = pl["is_sticky"]
+            is_comp = pl.get("inst_key", ("", "", -1)) in completions
             if key in old_chips:
                 chip = old_chips[key]
-                chip.update_event_data(pl["event"])
+                chip.update_event_data(pl["event"], completed=is_comp)
                 chip.update_layout(
                     pl["rect"],
                     calendar_color=pl["calendar_color"],
@@ -741,12 +767,14 @@ class _DayCanvas(QGraphicsView):
                     time_format=self._time_format,
                     overlap_cols=pl["overlap_cols"],
                     instance_dtstart=pl["instance_dtstart"],
+                    completed=is_comp,
                 )
                 self._wire_chip_signals(chip)
                 if is_sticky:
                     chip.setParentItem(self._sticky)
                 else:
                     self._scene.addItem(chip)
+            chip.set_completed_display(self._completed_enabled)
             new_chips[key] = chip
         self._chips = new_chips
 
@@ -1260,6 +1288,9 @@ class DayView(QWidget):
 
     def set_snap_minutes(self, m: int) -> None:
         self._canvas.set_snap_minutes(m)
+
+    def set_completed_events_enabled(self, enabled: bool) -> None:
+        self._canvas.set_completed_events_enabled(enabled)
 
     # ── Mini-agenda ──────────────────────────────────────────────────────
 

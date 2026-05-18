@@ -207,6 +207,7 @@ def _query_month_data(
         log.exception("MonthView: failed to query instances")
         return None
     events = store.events_for_instances(instances)
+    completions = store.completion_for_instances(instances)
     cal_color: dict[str, str | None] = {
         ci.id: ci.color for ci in cal_info_snap.values()
     }
@@ -215,6 +216,7 @@ def _query_month_data(
         "events": events,
         "cal_color": cal_color,
         "grid_start": grid_start,
+        "completions": completions,
     }
 
 
@@ -243,10 +245,12 @@ class MonthView(QGraphicsView):
         self._month = now.month
         self._week_start = "monday"
         self._time_format = "24h"
+        self._completed_enabled = False
         self._grid = MonthGrid(now.year, now.month, self._week_start)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
         self._rendered_month = (self._year, self._month)
+        store.instance_completion_changed.connect(self._on_completion_changed)
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -340,6 +344,19 @@ class MonthView(QGraphicsView):
         self._time_format = fmt
         self.refresh(data_dirty=False)
 
+    def set_completed_events_enabled(self, enabled: bool) -> None:
+        if enabled == self._completed_enabled:
+            return
+        self._completed_enabled = enabled
+        for chip in self._event_chips.values():
+            chip.set_completed_display(enabled)
+        self.viewport().update()
+
+    def _on_completion_changed(
+        self, _cal_id: str, _uid: str, _dtstart_utc: int
+    ) -> None:
+        self.refresh()
+
     def refresh(self, *, data_dirty: bool = True) -> None:
         if not data_dirty and self._cached_data is not None:
             self._apply_plan(self._cached_data)
@@ -378,6 +395,7 @@ class MonthView(QGraphicsView):
         events = plan["events"]
         cal_color: dict[str, str | None] = plan["cal_color"]
         grid_start: date = plan["grid_start"]
+        completions: frozenset = plan.get("completions", frozenset())
 
         # Remove only _OverflowChip items (rebuilt every refresh); EventChip
         # items are diffed below via self._event_chips so they survive unchanged.
@@ -518,6 +536,9 @@ class MonthView(QGraphicsView):
                         row,
                         col,
                     )  # type: ignore[reportAttributeAccessIssue]
+                    _is_comp = (
+                        inst.calendar_id, inst.uid, inst.dtstart_utc  # type: ignore[reportAttributeAccessIssue]
+                    ) in completions
                     self._place_event_chip(
                         _chip_key,
                         event,
@@ -528,6 +549,7 @@ class MonthView(QGraphicsView):
                         continues_left=(s_day < grid_start + timedelta(days=row * 7)),
                         continues_right=(e_day > row_end_day),
                         instance_dtstart=inst_t,
+                        completed=_is_comp,
                         old_chips=old_event_chips,
                         new_chips=new_event_chips,
                     )
@@ -573,6 +595,7 @@ class MonthView(QGraphicsView):
                         start_dt2.hour, start_dt2.minute, self._time_format
                     )
                 _chip_key = (inst.calendar_id, inst.uid, inst.dtstart_local, "single")
+                _is_comp = (inst.calendar_id, inst.uid, inst.dtstart_utc) in completions
                 self._place_event_chip(
                     _chip_key,
                     event,
@@ -581,6 +604,7 @@ class MonthView(QGraphicsView):
                     show_time_prefix=not inst.all_day,
                     time_prefix=time_prefix,
                     instance_dtstart=start_dt2,
+                    completed=_is_comp,
                     old_chips=old_event_chips,
                     new_chips=new_event_chips,
                 )
@@ -638,12 +662,13 @@ class MonthView(QGraphicsView):
         continues_left: bool = False,
         continues_right: bool = False,
         instance_dtstart,
+        completed: bool = False,
         old_chips: dict,
         new_chips: dict,
     ) -> EventChip:
         if key in old_chips:
             chip = old_chips[key]
-            chip.update_event_data(event)
+            chip.update_event_data(event, completed=completed)
             chip.update_layout(
                 rect,
                 calendar_color=calendar_color,
@@ -666,6 +691,7 @@ class MonthView(QGraphicsView):
                 continues_left=continues_left,
                 continues_right=continues_right,
                 instance_dtstart=instance_dtstart,
+                completed=completed,
             )
             chip.details_requested.connect(
                 lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
@@ -677,6 +703,7 @@ class MonthView(QGraphicsView):
                 lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
             )
             self._scene.addItem(chip)
+        chip.set_completed_display(self._completed_enabled)
         new_chips[key] = chip
         self._chips.append(chip)
         return chip

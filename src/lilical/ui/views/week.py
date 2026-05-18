@@ -368,6 +368,7 @@ def _query_week_data(
         return None
 
     events = store.events_for_instances(instances)
+    completions = store.completion_for_instances(instances)
     cal_color: dict[str, str | None] = {
         ci.id: ci.color for ci in cal_info_snap.values()
     }
@@ -377,6 +378,7 @@ def _query_week_data(
         "cal_color": cal_color,
         "start": start,
         "day_count": day_count,
+        "completions": completions,
     }
 
 
@@ -389,6 +391,7 @@ def _compute_week_placements(
     cal_color = data["cal_color"]
     start = data["start"]
     day_count = data["day_count"]
+    completions: frozenset = data.get("completions", frozenset())
 
     week_end = start + timedelta(days=day_count - 1)
     first_event_minutes: int | None = None
@@ -499,6 +502,7 @@ def _compute_week_placements(
             "instance_dtstart": inst_t,
             "is_sticky": True,
             "event": event,
+            "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
         }
 
     # Render single-day timed events.
@@ -527,6 +531,7 @@ def _compute_week_placements(
                     "cal_color": cal_color.get(inst.calendar_id),
                     "instance_dtstart": t,
                     "key": key,
+                    "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
                 },
             )
         )
@@ -556,6 +561,7 @@ def _compute_week_placements(
                 "instance_dtstart": payload["instance_dtstart"],
                 "is_sticky": False,
                 "event": payload["event"],
+                "inst_key": payload["inst_key"],
             }
 
     more_markers: dict[int, tuple[QRectF, str]] = {}
@@ -575,6 +581,7 @@ def _compute_week_placements(
         "band_h": float(band_h),
         "more_markers": more_markers,
         "first_event_minutes": first_event_minutes,
+        "completions": completions,
     }
 
 
@@ -596,6 +603,7 @@ class WeekView(QGraphicsView):
         self._refresh_task: asyncio.Task | None = None
         self._rendered_start: date | None = None
         self._needs_scroll: bool = True
+        self._completed_enabled: bool = False
         # Drag-to-create / move / resize state
         self._snap_minutes: int = 15
         # Active drag (either originated on empty grid or on a chip)
@@ -653,6 +661,8 @@ class WeekView(QGraphicsView):
 
         # Pin the sticky header to the viewport top as the user scrolls.
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
+
+        store.instance_completion_changed.connect(self._on_completion_changed)
 
     # ── Geometry helpers ─────────────────────────────────────────────────
 
@@ -731,6 +741,19 @@ class WeekView(QGraphicsView):
         self._time_format = fmt
         self._grid.set_time_format(fmt)
         self.refresh(data_dirty=False)
+
+    def set_completed_events_enabled(self, enabled: bool) -> None:
+        if enabled == self._completed_enabled:
+            return
+        self._completed_enabled = enabled
+        for chip in self._chips.values():
+            chip.set_completed_display(enabled)
+        self.viewport().update()
+
+    def _on_completion_changed(
+        self, _cal_id: str, _uid: str, _dtstart_utc: int
+    ) -> None:
+        self.refresh()
 
     def set_week_start(self, week_start: str) -> None:
         if week_start == self._week_start_pref:
@@ -874,6 +897,7 @@ class WeekView(QGraphicsView):
         else:
             self._sticky.set_all_day_band_h(band_h)
 
+        completions: frozenset = plan.get("completions", frozenset())
         new_placements = plan["new_placements"]
         old_chips = self._chips
         new_chips: dict[tuple[str, str, str], EventChip] = {}
@@ -886,9 +910,10 @@ class WeekView(QGraphicsView):
                     self._scene.removeItem(chip)
         for key, pl in new_placements.items():
             is_sticky = pl["is_sticky"]
+            is_comp = pl.get("inst_key", ("", "", -1)) in completions
             if key in old_chips:
                 chip = old_chips[key]
-                chip.update_event_data(pl["event"])
+                chip.update_event_data(pl["event"], completed=is_comp)
                 chip.update_layout(
                     pl["rect"],
                     calendar_color=pl["calendar_color"],
@@ -914,12 +939,14 @@ class WeekView(QGraphicsView):
                     time_format=self._time_format,
                     overlap_cols=pl["overlap_cols"],
                     instance_dtstart=pl["instance_dtstart"],
+                    completed=is_comp,
                 )
                 self._wire_chip_signals(chip)
                 if is_sticky:
                     chip.setParentItem(self._sticky)
                 else:
                     self._scene.addItem(chip)
+            chip.set_completed_display(self._completed_enabled)
             new_chips[key] = chip
         self._chips = new_chips
 

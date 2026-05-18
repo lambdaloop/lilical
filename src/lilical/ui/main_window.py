@@ -626,6 +626,10 @@ class MainWindow(QMainWindow):
         else:
             raise ValueError(f"Unknown view: {name}")
 
+        saved_enable_completed = bool(
+            int(self._settings.value("enable_completed_events", 0) or 0)
+        )
+
         if hasattr(v, "set_chip_mode"):
             v.set_chip_mode(initial_mode)  # type: ignore[reportAttributeAccessIssue]
         if hasattr(v, "set_time_format"):
@@ -634,6 +638,8 @@ class MainWindow(QMainWindow):
             v.set_snap_minutes(saved_snap)  # type: ignore[reportAttributeAccessIssue]
         if hasattr(v, "set_week_start"):
             v.set_week_start(self._week_start)  # type: ignore[reportAttributeAccessIssue]
+        if hasattr(v, "set_completed_events_enabled"):
+            v.set_completed_events_enabled(saved_enable_completed)  # type: ignore[reportAttributeAccessIssue]
 
         self._view_stack_layout.addWidget(v)
         v.hide()
@@ -728,6 +734,9 @@ class MainWindow(QMainWindow):
 
         current_chip_mode = str(self._settings.value("chip_mode", "bars") or "bars")
         current_time_format = str(self._settings.value("time_format", "24h") or "24h")
+        current_enable_completed = bool(
+            int(self._settings.value("enable_completed_events", 0) or 0)
+        )
         dlg = PreferencesDialog(
             self,
             current_theme=self._theme,
@@ -736,6 +745,7 @@ class MainWindow(QMainWindow):
             current_chip_mode=current_chip_mode,
             current_time_format=current_time_format,
             current_week_start=self._week_start,
+            current_enable_completed_events=current_enable_completed,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             if dlg.theme != self._theme:
@@ -778,6 +788,13 @@ class MainWindow(QMainWindow):
                     if hasattr(v, "set_week_start"):
                         v.set_week_start(self._week_start)  # type: ignore[reportAttributeAccessIssue]
                 self._sidebar.set_week_start(self._week_start)
+            if dlg.enable_completed_events != current_enable_completed:
+                self._settings.setValue(
+                    "enable_completed_events", int(dlg.enable_completed_events)
+                )
+                for v in self._views.values():
+                    if hasattr(v, "set_completed_events_enabled"):
+                        v.set_completed_events_enabled(dlg.enable_completed_events)  # type: ignore[reportAttributeAccessIssue]
 
     def _apply_theme(self, name: str) -> None:
         _theme_module.apply(name)

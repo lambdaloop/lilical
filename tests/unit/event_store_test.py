@@ -165,6 +165,17 @@ def _create_test_schema(engine) -> None:
             )
             """
         )
+        conn.exec_driver_sql(
+            """
+            CREATE TABLE event_completions (
+                calendar_id TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                dtstart_utc INTEGER NOT NULL,
+                completed_at TEXT NOT NULL,
+                PRIMARY KEY(calendar_id, uid, dtstart_utc)
+            )
+            """
+        )
 
 
 def test_model_metadata_creates_sqlite_schema() -> None:

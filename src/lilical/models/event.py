@@ -100,6 +100,18 @@ class EventInstanceRow(Base):
     recurrence_id: Mapped[str] = mapped_column(Text, default="")
 
 
+class EventCompletionRow(Base):
+    __tablename__ = "event_completions"
+    __table_args__ = (
+        Index("ix_event_completions_cal_dt", "calendar_id", "dtstart_utc"),
+    )
+
+    calendar_id: Mapped[str] = mapped_column(String, primary_key=True)
+    uid: Mapped[str] = mapped_column(String, primary_key=True)
+    dtstart_utc: Mapped[int] = mapped_column(Integer, primary_key=True)
+    completed_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 @dataclass(frozen=True, slots=True)
 class Event:
     uid: str

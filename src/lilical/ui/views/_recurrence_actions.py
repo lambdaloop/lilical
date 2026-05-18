@@ -26,7 +26,9 @@ def open_details_dialog(
     """Show read-only event details; routes to edit/delete flows on user request."""
     from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
 
-    dlg = EventDetailsDialog(parent, store=store, event=event)
+    dlg = EventDetailsDialog(
+        parent, store=store, event=event, instance_dtstart=instance_dtstart
+    )
     if not dlg.exec():
         return
     if dlg.response_choice is not None:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from html import escape
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -46,8 +47,12 @@ class EventDetailsDialog(QDialog):
         *,
         store: "EventStore",
         event: "Event",
+        instance_dtstart: datetime | None = None,
     ) -> None:
         super().__init__(parent)
+        self._store = store
+        self._event = event
+        self._instance_dtstart = instance_dtstart
         summary = event.summary or ""
         title = (
             f"Event details — {summary[:50]}{'…' if len(summary) > 50 else ''}"
@@ -60,6 +65,7 @@ class EventDetailsDialog(QDialog):
         self.edit_requested: bool = False
         self.delete_requested: bool = False
         self.response_choice: str | None = None
+        self._completed_dtstart_utc: int | None = self._resolve_dtstart_utc()
 
         time_fmt = str(QSettings().value("time_format", "24h") or "24h")
 
@@ -235,6 +241,22 @@ class EventDetailsDialog(QDialog):
             sep.setFrameShadow(QFrame.Shadow.Sunken)
             btn_bar_layout.addWidget(sep)
 
+        enable_completed = bool(
+            int(QSettings().value("enable_completed_events", 0) or 0)
+        )
+        if enable_completed and self._completed_dtstart_utc is not None:
+            self._completed_check = QCheckBox("Completed")
+            is_comp = store.is_completed(
+                event.calendar_id, event.uid, self._completed_dtstart_utc
+            )
+            self._completed_check.setChecked(is_comp)
+            self._completed_check.toggled.connect(self._on_completed_toggled)
+            btn_bar_layout.addWidget(self._completed_check)
+            sep2 = QFrame()
+            sep2.setFrameShape(QFrame.Shape.VLine)
+            sep2.setFrameShadow(QFrame.Shadow.Sunken)
+            btn_bar_layout.addWidget(sep2)
+
         edit_btn = QPushButton("Edit")
         delete_btn = QPushButton("Delete")
         close_btn = QPushButton("Close")
@@ -250,6 +272,27 @@ class EventDetailsDialog(QDialog):
         btn_bar_layout.addWidget(delete_btn)
         btn_bar_layout.addWidget(close_btn)
         outer.addWidget(btn_bar)
+
+    def _resolve_dtstart_utc(self) -> int | None:
+        dt = self._instance_dtstart or self._event.dtstart
+        if dt is None:
+            return None
+        if not hasattr(dt, "timestamp"):
+            return None
+        from datetime import timezone
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+
+    def _on_completed_toggled(self, checked: bool) -> None:
+        if self._completed_dtstart_utc is None:
+            return
+        self._store.set_completed(
+            self._event.calendar_id,
+            self._event.uid,
+            self._completed_dtstart_utc,
+            checked,
+        )
 
     def _on_edit(self) -> None:
         self.edit_requested = True

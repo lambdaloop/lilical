@@ -13,7 +13,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from lilical.models.calendar import Calendar
-from lilical.models.event import Attendee, Event, EventInstanceRow, EventRow, Organizer
+from lilical.models.event import (
+    Attendee,
+    Event,
+    EventCompletionRow,
+    EventInstanceRow,
+    EventRow,
+    Organizer,
+)
 from lilical.models.pending_op import PendingOpRow
 from lilical.utils.timezone import local_iana_tz
 
@@ -183,6 +190,7 @@ class EventStore(QObject):
     instances_changed = Signal(str, datetime, datetime)
     local_events_changed = Signal()  # fired after any locally-originated mutation
     cal_metadata_changed = Signal(str)  # calendar_id — color or visibility changed
+    instance_completion_changed = Signal(str, str, int)  # calendar_id, uid, dtstart_utc
 
     _instances_window_years = 1
 
@@ -407,6 +415,53 @@ class EventStore(QObject):
             if row is not None:
                 out[id(inst)] = _row_to_event(row)
         return out
+
+    def completion_for_instances(
+        self, instances: "list[EventInstanceRow]"
+    ) -> "frozenset[tuple[str, str, int]]":
+        """Return (calendar_id, uid, dtstart_utc) triples marked completed."""
+        if not instances:
+            return frozenset()
+        keys = [(i.calendar_id, i.uid, i.dtstart_utc) for i in instances]
+        with Session(self._engine) as s:
+            rows = s.query(EventCompletionRow).filter(
+                EventCompletionRow.calendar_id.in_({k[0] for k in keys}),
+                EventCompletionRow.dtstart_utc.in_({k[2] for k in keys}),
+            ).all()
+        key_set = {(r.calendar_id, r.uid, r.dtstart_utc) for r in rows}
+        return frozenset(k for k in keys if k in key_set)
+
+    def set_completed(
+        self, calendar_id: str, uid: str, dtstart_utc: int, completed: bool
+    ) -> None:
+        """Insert or delete the completion row for one occurrence."""
+        with self._write_session() as s:
+            row = (
+                s.query(EventCompletionRow)
+                .filter_by(calendar_id=calendar_id, uid=uid, dtstart_utc=dtstart_utc)
+                .first()
+            )
+            if completed and row is None:
+                s.add(
+                    EventCompletionRow(
+                        calendar_id=calendar_id,
+                        uid=uid,
+                        dtstart_utc=dtstart_utc,
+                        completed_at=_utc_now(),
+                    )
+                )
+            elif not completed and row is not None:
+                s.delete(row)
+        self.instance_completion_changed.emit(calendar_id, uid, dtstart_utc)
+
+    def is_completed(self, calendar_id: str, uid: str, dtstart_utc: int) -> bool:
+        """Single-instance lookup for the event details dialog."""
+        with Session(self._engine) as s:
+            return (
+                s.query(EventCompletionRow)
+                .filter_by(calendar_id=calendar_id, uid=uid, dtstart_utc=dtstart_utc)
+                .first()
+            ) is not None
 
     def get_override_events(self, uid: str, calendar_id: str) -> list[Event]:
         """Return all non-deleted override EventRows for a recurring series."""
@@ -908,6 +963,9 @@ class EventStore(QObject):
             if cal_ids:
                 s.query(EventInstanceRow).filter(
                     EventInstanceRow.calendar_id.in_(cal_ids)
+                ).delete(synchronize_session=False)
+                s.query(EventCompletionRow).filter(
+                    EventCompletionRow.calendar_id.in_(cal_ids)
                 ).delete(synchronize_session=False)
                 s.query(EventRow).filter(EventRow.calendar_id.in_(cal_ids)).delete(
                     synchronize_session=False

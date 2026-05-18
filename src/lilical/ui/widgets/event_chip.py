@@ -73,6 +73,14 @@ def _readable_text_color(bg: QColor) -> QColor:
     return black
 
 
+def _desaturate(c: QColor, factor: float) -> QColor:
+    """Reduce saturation of `c` to `factor` fraction (0 = gray, 1 = unchanged)."""
+    h, s, lum, a = c.getHslF()
+    result = QColor()
+    result.setHslF(h, max(0.0, s * factor), lum, a)
+    return result
+
+
 def _ellipsize(painter: QPainter, text: str, max_w: float) -> str:
     """Single-line ellipsize using the painter's current font."""
     fm = QFontMetricsF(painter.font())
@@ -191,6 +199,7 @@ class EventChip(QGraphicsObject):
         continues_right: bool = False,
         overlap_cols: int = 1,
         instance_dtstart: datetime | None = None,
+        completed: bool = False,
     ) -> None:
         super().__init__()
         self._event = event
@@ -205,6 +214,8 @@ class EventChip(QGraphicsObject):
         self._overlap_cols = overlap_cols
         self._hovered = False
         self._instance_dtstart = instance_dtstart
+        self._completed: bool = completed
+        self._completed_display_enabled: bool = False
         # Drag state
         self._drag_mode: str | None = None
         self._press_scene_pos: QPointF | None = None
@@ -234,7 +245,19 @@ class EventChip(QGraphicsObject):
         elif self._is_needs_action():
             sr = (self._event.self_response or "").upper()
             parts.append("(tentative)" if sr == "TENTATIVE" else "(awaiting response)")
+        if self._is_completed():
+            parts.append("(completed)")
         return "\n".join(parts)
+
+    def _is_completed(self) -> bool:
+        return self._completed and self._completed_display_enabled
+
+    def set_completed_display(self, enabled: bool) -> None:
+        if enabled == self._completed_display_enabled:
+            return
+        self._completed_display_enabled = enabled
+        self.setToolTip(self._build_tooltip())
+        self.update()
 
     def _is_dimmed(self) -> bool:
         """An event is dimmed when it's cancelled or the user declined."""
@@ -289,11 +312,12 @@ class EventChip(QGraphicsObject):
         self.setToolTip(self._build_tooltip())
         self.update()
 
-    def update_event_data(self, event: "Event") -> None:
+    def update_event_data(self, event: "Event", *, completed: bool = False) -> None:
         """Refresh event data without changing geometry; skipped if chip is mid-drag."""
         if self._drag_mode is not None:
             return
         self._event = event
+        self._completed = completed
         self.setToolTip(self._build_tooltip())
         self.update()
 
@@ -304,16 +328,24 @@ class EventChip(QGraphicsObject):
     @override
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
         base = _resolve_color(self._event.color, self._calendar_color)
+        if self._is_completed():
+            base = _desaturate(base, 0.30)
         if self._hovered:
             base = base.lighter(115)
 
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Cancelled events + events the user declined are drawn at reduced
-        # opacity. Title also gets a strikethrough (see title font construction).
+        # Cancelled/declined events are drawn at reduced opacity; completed
+        # events are drawn at 0.60 opacity (dimmed wins when both apply).
+        _needs_restore = False
         if self._is_dimmed():
             painter.save()
             painter.setOpacity(0.45)
+            _needs_restore = True
+        elif self._is_completed():
+            painter.save()
+            painter.setOpacity(0.60)
+            _needs_restore = True
 
         if self._mode is ChipMode.DOT:
             self._paint_dot(painter, base)
@@ -323,8 +355,11 @@ class EventChip(QGraphicsObject):
             # BARS mode (default)
             self._paint_bars_mode(painter, base)
 
-        if self._is_dimmed():
+        if _needs_restore:
             painter.restore()
+
+        if self._is_completed() and not self._is_dimmed():
+            self._draw_completed_check(painter, base)
 
     def _title_font(self, pt: int) -> QFont:
         """Build a title font at the given point size, respecting dimmed state."""
@@ -335,6 +370,34 @@ class EventChip(QGraphicsObject):
 
     def _make_title_font(self) -> QFont:
         return self._title_font(theme.FONT_CHIP_TITLE)
+
+    def _draw_completed_check(self, painter: QPainter, base: QColor) -> None:
+        """Draw a ✓ glyph at the top-right of the chip (full opacity, after restore)."""
+        h = self._rect.height()
+        if h < theme.CHIP_MIN_TITLE_H:
+            return  # chip too small — opacity + desaturation alone signal completion
+        glyph = "✓"
+        pt = max(6, min(9, int(h * 0.35)))
+        f = QFont(theme.FONT_FAMILY, pt, QFont.Weight.Bold)
+        fm = QFontMetricsF(f)
+        glyph_w = fm.horizontalAdvance(glyph)
+        x = self._rect.right() - glyph_w - 4
+        y = self._rect.top() + 2
+        painter.save()
+        painter.setFont(f)
+        text_c = (
+            _readable_text_color(base)
+            if self._mode is ChipMode.BARS
+            else QColor(theme.SUCCESS)
+        )
+        painter.setPen(text_c)
+        painter.setClipping(False)
+        painter.drawText(
+            QRectF(x, y, glyph_w + 2, fm.height()),
+            Qt.AlignmentFlag.AlignLeft,
+            glyph,
+        )
+        painter.restore()
 
     # ── Bars mode ────────────────────────────────────────────────────────
     def _paint_bars_mode(self, painter: QPainter, base: QColor) -> None:
