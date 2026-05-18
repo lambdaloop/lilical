@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
+from typing import override
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QHeaderView,
     QSizePolicy,
     QTreeWidget,
     QTreeWidgetItem,
@@ -86,6 +88,7 @@ class AgendaView(QWidget):
         self._snapshot: frozenset[tuple] = frozenset()
         self._snapshot_start: "date | None" = None
         self._refresh_task: asyncio.Task | None = None
+        self._time_format = "24h"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -93,7 +96,11 @@ class AgendaView(QWidget):
         self._tree = QTreeWidget()
         self._tree.setColumnCount(3)
         self._tree.setHeaderLabels(["Time", "Event", "Calendar"])
-        self._tree.header().setStretchLastSection(True)
+        header = self._tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self._tree.setUniformRowHeights(False)
         self._tree.setAlternatingRowColors(True)
         self._tree.setSizePolicy(
@@ -114,6 +121,19 @@ class AgendaView(QWidget):
 
     def go_to_date(self, d: date) -> None:
         self._start = d
+        self.refresh()
+
+    @override
+    def showEvent(self, event) -> None:  # noqa: ANN001
+        super().showEvent(event)
+        if self._snapshot_start is None:
+            self.refresh()
+
+    def set_time_format(self, fmt: str) -> None:
+        if fmt == self._time_format:
+            return
+        self._time_format = fmt
+        self._snapshot_start = None
         self.refresh()
 
     def refresh_theme(self) -> None:
@@ -204,6 +224,7 @@ class AgendaView(QWidget):
             day_item.setBackground(2, QColor(theme.BG_SURFACE_3))
             day_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
 
+            tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
             for t, inst in sorted(by_day[d], key=lambda x: (not x[1].all_day, x[0])):  # type: ignore[reportAttributeAccessIssue]
                 event = events.get(id(inst))
                 if event is None:
@@ -212,7 +233,11 @@ class AgendaView(QWidget):
                 if inst.all_day:  # type: ignore[reportAttributeAccessIssue]
                     row.setText(0, "All day")
                 else:
-                    row.setText(0, t.strftime("%H:%M"))
+                    try:
+                        end_t = datetime.fromisoformat(inst.dtend_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
+                        row.setText(0, f"{t.strftime(tfmt)} – {end_t.strftime(tfmt)}")
+                    except (ValueError, TypeError, AttributeError):
+                        row.setText(0, t.strftime(tfmt))
                 row.setText(1, event.summary or "(no title)")
 
                 cal_name, cal_color = cal_info.get(
