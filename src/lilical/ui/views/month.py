@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui._time_fmt import fmt_hm
 from lilical.ui.views._week_start import (
     dow_labels,
     start_of_week,
@@ -241,6 +242,7 @@ class MonthView(QGraphicsView):
         self._year = now.year
         self._month = now.month
         self._week_start = "monday"
+        self._time_format = "24h"
         self._grid = MonthGrid(now.year, now.month, self._week_start)
         self._scene.addItem(self._grid)
         self._scene.setSceneRect(self._grid.boundingRect())
@@ -331,6 +333,12 @@ class MonthView(QGraphicsView):
         self._week_start = week_start
         self._rebuild_grid()
         self.refresh()
+
+    def set_time_format(self, fmt: str) -> None:
+        if fmt == self._time_format:
+            return
+        self._time_format = fmt
+        self.refresh(data_dirty=False)
 
     def refresh(self, *, data_dirty: bool = True) -> None:
         if not data_dirty and self._cached_data is not None:
@@ -561,7 +569,9 @@ class MonthView(QGraphicsView):
                 y = HEADER_H + row * CELL_H + 22 + track * (CHIP_H + CHIP_GAP)
                 time_prefix = None
                 if not inst.all_day:
-                    time_prefix = start_dt2.strftime("%H:%M")
+                    time_prefix = fmt_hm(
+                        start_dt2.hour, start_dt2.minute, self._time_format
+                    )
                 _chip_key = (inst.calendar_id, inst.uid, inst.dtstart_local, "single")
                 self._place_event_chip(
                     _chip_key,

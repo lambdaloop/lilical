@@ -4,7 +4,7 @@ import zoneinfo
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QDate, QDateTime, QTime
+from PySide6.QtCore import QDate, QDateTime, QSettings, QTime
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -148,13 +148,17 @@ class EventDialog(QDialog):
             start_default = event.dtstart or start_default
             end_default = event.dtend or end_default
 
+        _time_format = str(QSettings().value("time_format", "24h") or "24h")
+        _is_12h = _time_format == "12h"
+        _dt_fmt = "yyyy-MM-dd  h:mm AP" if _is_12h else "yyyy-MM-dd  HH:mm"
+
         self._start_edit = QDateTimeEdit()
-        self._start_edit.setDisplayFormat("yyyy-MM-dd  HH:mm")
+        self._start_edit.setDisplayFormat(_dt_fmt)
         self._start_edit.setCalendarPopup(True)
         self._start_edit.setDateTime(_dt_to_qdatetime(start_default))
 
         self._end_edit = QDateTimeEdit()
-        self._end_edit.setDisplayFormat("yyyy-MM-dd  HH:mm")
+        self._end_edit.setDisplayFormat(_dt_fmt)
         self._end_edit.setCalendarPopup(True)
         self._end_edit.setDateTime(_dt_to_qdatetime(end_default))
 
@@ -334,7 +338,11 @@ class EventDialog(QDialog):
         self.accept()
 
     def _on_all_day_toggled(self, checked: bool) -> None:
-        fmt = "yyyy-MM-dd" if checked else "yyyy-MM-dd  HH:mm"
+        if checked:
+            fmt = "yyyy-MM-dd"
+        else:
+            _tf = str(QSettings().value("time_format", "24h") or "24h")
+            fmt = "yyyy-MM-dd  h:mm AP" if _tf == "12h" else "yyyy-MM-dd  HH:mm"
         self._start_edit.setDisplayFormat(fmt)
         self._end_edit.setDisplayFormat(fmt)
 

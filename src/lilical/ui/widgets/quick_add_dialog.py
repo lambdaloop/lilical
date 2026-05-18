@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -108,9 +108,11 @@ class QuickAddDialog(QDialog):
             local_start = start.astimezone()
             local_end = end.astimezone()
             title = result.get("title", text)
+            _tf = str(QSettings().value("time_format", "24h") or "24h")
+            _tfmt = "%-I:%M %p" if _tf == "12h" else "%H:%M"
             self._preview.setText(
-                f"{local_start.strftime('%a %b %-d, %H:%M')} – "
-                f"{local_end.strftime('%H:%M')}  ·  {title}"
+                f"{local_start.strftime('%a %b %-d, ')}{local_start.strftime(_tfmt)}"
+                f" – {local_end.strftime(_tfmt)}  ·  {title}"
             )
         else:
             self._preview.setText(

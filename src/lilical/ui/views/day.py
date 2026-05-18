@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.widgets.drag_preview import DragPreview
@@ -63,6 +64,7 @@ class DayGrid(QGraphicsItem):
         self._width = width
         self._px_per_hour = px_per_hour
         self._all_day_band_h = all_day_band_h
+        self._time_format = "24h"
         self.setZValue(-10)
 
     def grid_height(self) -> float:
@@ -89,6 +91,10 @@ class DayGrid(QGraphicsItem):
 
     def set_all_day_band_h(self, h: float) -> None:
         self._all_day_band_h = max(ALL_DAY_BAND_MIN, h)
+
+    def set_time_format(self, fmt: str) -> None:
+        self._time_format = fmt
+        self.update()
         self.prepareGeometryChange()
 
     @override
@@ -161,7 +167,7 @@ class DayGrid(QGraphicsItem):
             painter.drawText(
                 QRectF(0, y - 8, TIME_AXIS_WIDTH - 6, 16),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                f"{hour:02d}:00",
+                fmt_hour_label(hour, self._time_format),
             )
 
 
@@ -460,7 +466,7 @@ def _compute_day_placements(
 
 
 def _build_mini_agenda_plan(
-    store, now: datetime, count: int, cal_info_snap: dict
+    store, now: datetime, count: int, cal_info_snap: dict, time_format: str = "24h"
 ) -> list[dict]:
     """Off-thread: query DB and build mini-agenda item data."""
     end = now + timedelta(days=14)
@@ -495,10 +501,8 @@ def _build_mini_agenda_plan(
         if event is None:
             continue
         color_hint = event.color or cal_color.get(inst.calendar_id)  # type: ignore[attr-defined]
-        if now.date() == t.date():
-            when = t.strftime("Today %H:%M")
-        else:
-            when = t.strftime("%a %H:%M")
+        hm = fmt_hm(t.hour, t.minute, time_format)
+        when = f"Today {hm}" if now.date() == t.date() else f"{t.strftime('%a')} {hm}"
         if inst.all_day:  # type: ignore[attr-defined]
             when = t.strftime("%a") if t.date() != now.date() else "Today"
             when = f"{when}  (all day)"
@@ -637,7 +641,9 @@ class _DayCanvas(QGraphicsView):
         if fmt == self._time_format:
             return
         self._time_format = fmt
+        self._grid.set_time_format(fmt)
         self.refresh(data_dirty=False)
+        self._refresh_mini_agenda()
 
     @property
     def chip_mode(self) -> ChipMode:
@@ -896,7 +902,9 @@ class _DayCanvas(QGraphicsView):
                 dur_str = f"({dh}h)"
             else:
                 dur_str = f"({dm}m)"
-            label = f"{sh:02d}:{sm:02d} – {eh:02d}:{em:02d}  {dur_str}"
+            s = fmt_hm(sh, sm, self._time_format)
+            e = fmt_hm(eh, em, self._time_format)
+            label = f"{s} – {e}  {dur_str}"
         else:  # create_allday
             rect = self._compute_allday_chip_rect()
             label = "All day"
@@ -1269,7 +1277,12 @@ class DayView(QWidget):
     ) -> None:
         try:
             items = await asyncio.to_thread(
-                _build_mini_agenda_plan, self._store, now, count, cal_info_snap
+                _build_mini_agenda_plan,
+                self._store,
+                now,
+                count,
+                cal_info_snap,
+                self._time_format,
             )
         except asyncio.CancelledError:
             return

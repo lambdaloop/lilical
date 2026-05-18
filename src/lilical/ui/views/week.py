@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSiz
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.views._week_start import start_of_week
@@ -60,6 +61,7 @@ class WeekGrid(QGraphicsItem):
         self._width = width
         self._px_per_hour = px_per_hour
         self._all_day_band_h = all_day_band_h
+        self._time_format = "24h"
         self.setZValue(-10)
 
     def grid_height(self) -> float:
@@ -79,6 +81,10 @@ class WeekGrid(QGraphicsItem):
     def set_all_day_band_h(self, h: float) -> None:
         self._all_day_band_h = max(ALL_DAY_BAND_MIN, h)
         self.prepareGeometryChange()
+
+    def set_time_format(self, fmt: str) -> None:
+        self._time_format = fmt
+        self.update()
 
     @property
     def px_per_hour(self) -> int:
@@ -178,7 +184,7 @@ class WeekGrid(QGraphicsItem):
             painter.drawText(
                 QRectF(0, y - 8, TIME_AXIS_WIDTH - 6, 16),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                f"{h:02d}:00",
+                fmt_hour_label(h, self._time_format),
             )
 
 
@@ -723,6 +729,7 @@ class WeekView(QGraphicsView):
         if fmt == self._time_format:
             return
         self._time_format = fmt
+        self._grid.set_time_format(fmt)
         self.refresh(data_dirty=False)
 
     def set_week_start(self, week_start: str) -> None:
@@ -1031,7 +1038,9 @@ class WeekView(QGraphicsView):
         eh, em = divmod(end_min % 1440, 60)
         duration = end_min - start_min
         dh, dm = divmod(duration, 60)
-        time_str = f"{sh:02d}:{sm:02d} – {eh:02d}:{em:02d}"
+        s = fmt_hm(sh, sm, self._time_format)
+        e = fmt_hm(eh, em, self._time_format)
+        time_str = f"{s} – {e}"
         if dh and dm:
             dur_str = f"({dh}h {dm}m)"
         elif dh:
@@ -1126,7 +1135,9 @@ class WeekView(QGraphicsView):
                 dur_str = f"({dh}h)"
             else:
                 dur_str = f"({dm}m)"
-            label = f"{sh:02d}:{sm:02d} – {eh:02d}:{em:02d}  {dur_str}"
+            s = fmt_hm(sh, sm, self._time_format)
+            e = fmt_hm(eh, em, self._time_format)
+            label = f"{s} – {e}  {dur_str}"
         else:  # create_allday
             end_day = self._scene_x_to_day_offset(scene_pos.x())
             if end_day is None:
