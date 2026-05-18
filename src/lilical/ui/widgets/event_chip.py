@@ -97,7 +97,7 @@ def _draw_tight_wrapped(
     that extend past rect.height() are silently discarded.
     """
     fm = QFontMetricsF(font)
-    line_step = fm.ascent() + fm.descent()
+    line_step = round((fm.ascent() + fm.descent()) * 0.85)
     max_h = rect.height()
 
     layout = QTextLayout(text, font)
@@ -567,17 +567,24 @@ class EventChip(QGraphicsObject):
             if prefix:
                 prefix_str = prefix + "  "
                 prefix_px = pfm.horizontalAdvance(prefix_str)
-                pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.85)
-                painter.setFont(pf)
-                painter.setPen(pen_color)
-                painter.drawText(
-                    QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    prefix_str,
-                )
-                title_x = text_x + prefix_px
-                remaining_w = max(0.0, text_w - prefix_px)
+                title_w_with_prefix = max(0.0, text_w - prefix_px)
+                title_natural_w = title_fm.horizontalAdvance(title)
+                if title_natural_w > title_w_with_prefix and title_natural_w <= text_w:
+                    # Dropping the prefix lets the title fit whole; time is
+                    # implied by the chip's y-position on the time axis.
+                    pass
+                else:
+                    pen_color = QColor(text_color)
+                    pen_color.setAlphaF(0.85)
+                    painter.setFont(pf)
+                    painter.setPen(pen_color)
+                    painter.drawText(
+                        QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        prefix_str,
+                    )
+                    title_x = text_x + prefix_px
+                    remaining_w = title_w_with_prefix
 
             if remaining_w > 4.0:
                 painter.setFont(title_font)
@@ -727,17 +734,22 @@ class EventChip(QGraphicsObject):
             if prefix:
                 prefix_str = prefix + "  "
                 prefix_px = pfm.horizontalAdvance(prefix_str)
-                pen_color = QColor(text_color)
-                pen_color.setAlphaF(0.85)
-                painter.setFont(pf)
-                painter.setPen(pen_color)
-                painter.drawText(
-                    QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    prefix_str,
-                )
-                title_x = text_x + prefix_px
-                remaining_w = max(0.0, text_w - prefix_px)
+                title_w_with_prefix = max(0.0, text_w - prefix_px)
+                title_natural_w = title_fm.horizontalAdvance(title)
+                if title_natural_w > title_w_with_prefix and title_natural_w <= text_w:
+                    pass
+                else:
+                    pen_color = QColor(text_color)
+                    pen_color.setAlphaF(0.85)
+                    painter.setFont(pf)
+                    painter.setPen(pen_color)
+                    painter.drawText(
+                        QRectF(text_x, cursor_y, min(prefix_px, text_w), pfm.height()),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                        prefix_str,
+                    )
+                    title_x = text_x + prefix_px
+                    remaining_w = title_w_with_prefix
 
             if remaining_w > 4.0:
                 painter.setFont(title_font)
