@@ -106,7 +106,7 @@ def ui_base_font_pt() -> int:
 def apply_all_scales(factor: float) -> None:
     """Scale theme constants and all view/widget layout constants."""
     apply_scale(factor)
-    from lilical.ui.views import month, week, day  # noqa: PLC0415
+    from lilical.ui.views import day, month, week  # noqa: PLC0415
     from lilical.ui.widgets import mini_month  # noqa: PLC0415
 
     month.apply_scale(factor)

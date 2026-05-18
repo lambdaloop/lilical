@@ -48,6 +48,7 @@ def main() -> int:
     # those built inside MainWindow.__init__) starts with the right font.
     from PySide6.QtCore import QSettings
     from PySide6.QtGui import QFont
+
     from lilical.ui import theme as _ui_theme
 
     _s = QSettings()

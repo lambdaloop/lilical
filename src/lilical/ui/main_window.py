@@ -844,7 +844,8 @@ class MainWindow(QMainWindow):
                     scale = _theme_module.UI_SCALE
 
                     def _scale_pt(m: re.Match) -> str:  # type: ignore[type-arg]
-                        return f"font-size: {max(1, round(float(m.group(1)) * scale))}pt;"
+                        pt = max(1, round(float(m.group(1)) * scale))
+                        return f"font-size: {pt}pt;"
 
                     qss = re.sub(r"font-size:\s*(\d+(?:\.\d+)?)pt;", _scale_pt, qss)
                     self._theme_qss_cache[name] = qss
