@@ -613,6 +613,16 @@ class CalDavBackend:
             )
         return result
 
+    @_classify_errors
+    async def rename_calendar(self, calendar_id: str, new_name: str) -> None:
+        client = await self._get_client()
+
+        def _do() -> None:
+            cal = client.calendar(url=calendar_id)
+            cal.set_properties([_dav_elements.DisplayName(new_name)])
+
+        await self._run(_do)
+
     def _events_to_changes(self, events, calendar_id: str) -> list[EventChange]:
         changes: list[EventChange] = []
         for ev in events:

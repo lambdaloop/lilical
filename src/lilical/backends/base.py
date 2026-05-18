@@ -49,6 +49,15 @@ class Backend(Protocol):
 
     async def list_calendars(self) -> list[dict[str, object]]: ...
 
+    async def rename_calendar(self, calendar_id: str, new_name: str) -> None:
+        """Rename *calendar_id* on the provider server.
+
+        Raises PermanentError for permission-denied / read-only.
+        Raises AuthExpired if the session needs re-authentication.
+        Raises TransientError for recoverable network/server issues.
+        """
+        ...
+
     def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]: ...

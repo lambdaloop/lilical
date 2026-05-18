@@ -12,6 +12,7 @@ from typing import override
 from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
+    QColor,
     QFont,
     QFontMetrics,
     QKeySequence,
@@ -20,6 +21,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QDialog,
     QHBoxLayout,
     QInputDialog,
@@ -158,13 +160,14 @@ class _SyncStatusWidget(QWidget):
 
 class MainWindow(QMainWindow):
     def __init__(
-        self, *, config, event_store, sync_engine, recurrence, secrets
+        self, *, config, event_store, sync_engine, recurrence, secrets, backend_factory
     ) -> None:
         super().__init__()
         self._cfg = config
         self._store = event_store
         self._sync = sync_engine
         self._secrets = secrets
+        self._backend_factory = backend_factory
         self._current_view: QWidget | None = None
         self._view_actions: dict[str, QAction] = {}
         # Account display names for sync-status labels (legacy; kept alongside _account_meta).  # noqa: E501
@@ -222,6 +225,8 @@ class MainWindow(QMainWindow):
             self._on_calendar_visibility_changed
         )
         self._sidebar.calendar_color_changed.connect(self._on_calendar_color_changed)
+        self._sidebar.rename_calendar_requested.connect(self._on_rename_calendar)
+        self._sidebar.change_color_requested.connect(self._on_change_calendar_color)
         self._sidebar.account_order_changed.connect(self._on_account_order_changed)
         self._sidebar.calendar_order_changed.connect(self._on_calendar_order_changed)
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
@@ -945,16 +950,16 @@ class MainWindow(QMainWindow):
                 self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
             return
         old = self._cal_info[calendar_id]
-        self._cal_info = {
-            **self._cal_info,
-            calendar_id: CalInfo(
-                id=old.id,
-                display_name=old.display_name,
-                color=cal.color,
-                account_id=old.account_id,
-                visible=bool(cal.is_visible),
-            ),
-        }
+        new_ci = CalInfo(
+            id=old.id,
+            display_name=cal.display_name,
+            color=cal.color,
+            account_id=old.account_id,
+            visible=bool(cal.is_visible),
+        )
+        self._cal_info = {**self._cal_info, calendar_id: new_ci}
+        if new_ci.display_name != old.display_name:
+            self._sidebar.refresh_for_account(old.account_id)
 
     # ── Sync signal handlers ──────────────────────────────────────────────
 
@@ -1075,6 +1080,73 @@ class MainWindow(QMainWindow):
             old = self._account_meta[account_id]
             self._account_meta[account_id] = (new_name, old[1], old[2])
         self._sidebar.refresh()
+
+    def _on_rename_calendar(self, calendar_id: str) -> None:
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename calendar",
+            "Calendar name:",
+            QLineEdit.EchoMode.Normal,
+            cal.display_name,
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == cal.display_name:
+            return
+        self._fire_async(
+            self._rename_calendar_async(
+                cal.id, cal.account_id, cal.provider_id, new_name
+            ),
+            f"rename_calendar/{calendar_id}",
+        )
+
+    async def _rename_calendar_async(
+        self, calendar_id: str, account_id: str, provider_id: str, new_name: str
+    ) -> None:
+        from lilical.backends.base import AuthExpired, PermanentError, TransientError
+
+        acc = await asyncio.to_thread(self._store.get_account, account_id)
+        if acc is None:
+            return
+        backend = await asyncio.to_thread(lambda: self._backend_factory(acc))
+        try:
+            await backend.rename_calendar(provider_id, new_name)
+        except (AuthExpired, PermanentError, TransientError) as exc:
+            msg = str(exc) or repr(exc)
+            QMessageBox.warning(
+                self, "Rename failed", f"Could not rename calendar:\n\n{msg}"
+            )
+            return
+        await asyncio.to_thread(
+            self._store.set_calendar_display_name, calendar_id, new_name
+        )
+
+    def _on_change_calendar_color(self, calendar_id: str) -> None:
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        initial = QColor(cal.color or "#5e9fff")
+        if not initial.isValid():
+            initial = QColor("#5e9fff")
+        chosen = QColorDialog.getColor(
+            initial,
+            self,
+            "Choose calendar color",
+            options=QColorDialog.ColorDialogOption.DontUseNativeDialog,
+        )
+        if not chosen.isValid():
+            return
+        new_hex = chosen.name(QColor.NameFormat.HexRgb).lower()
+        if new_hex == (cal.color or "").lower():
+            return
+        self._store.set_calendar_color(calendar_id, new_hex)
+        chip = self._sidebar._chips.get(calendar_id)  # type: ignore[reportPrivateUsage]
+        if chip is not None:
+            chip.update_color(new_hex)
 
     def _on_reauth_account(self, account_id: str) -> None:
         acc = self._store.get_account(account_id)

@@ -6,7 +6,6 @@ from PySide6.QtCore import QByteArray, QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QApplication,
-    QColorDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,10 +23,9 @@ from lilical.ui.widgets.mini_month import MiniMonthGrid
 
 
 class _CalendarChip(QToolButton):
-    """Colored chip showing calendar visibility; click to toggle, right-click for color, drag to reorder."""  # noqa: E501
+    """Colored chip showing calendar visibility; click to toggle, drag to reorder."""
 
     visibility_changed = Signal(str, bool)  # calendar_id, is_visible
-    color_changed = Signal(str, str)  # calendar_id, new_hex
 
     def __init__(
         self,
@@ -45,7 +43,7 @@ class _CalendarChip(QToolButton):
         self._store = store
         self._drag_start_pos: QPoint | None = None
         self.setFixedSize(16, 16)
-        self.setToolTip("Click to hide/show · Right-click to change color")
+        self.setToolTip("Click to hide/show · Right-click for options")
         self.setAutoRaise(True)
         self._apply_style()
         self.clicked.connect(self._on_clicked)
@@ -107,25 +105,9 @@ class _CalendarChip(QToolButton):
         self._apply_style()
         self.visibility_changed.emit(self._calendar_id, self._visible)
 
-    def contextMenuEvent(self, event) -> None:  # noqa: ANN001, N802
-        initial = QColor(self._color)
-        if not initial.isValid():
-            initial = QColor("#5e9fff")
-        chosen = QColorDialog.getColor(
-            initial,
-            self,
-            "Choose calendar color",
-            options=QColorDialog.ColorDialogOption.DontUseNativeDialog,
-        )
-        if not chosen.isValid():
-            return
-        new_hex = chosen.name(QColor.NameFormat.HexRgb).lower()
-        if new_hex == self._color.lower():
-            return
+    def update_color(self, new_hex: str) -> None:
         self._color = new_hex
-        self._store.set_calendar_color(self._calendar_id, new_hex)
         self._apply_style()
-        self.color_changed.emit(self._calendar_id, new_hex)
 
 
 class _AccountHeader(QWidget):
@@ -231,6 +213,8 @@ class Sidebar(QWidget):
     delete_account_requested = Signal(str)
     calendar_visibility_changed = Signal(str, bool)
     calendar_color_changed = Signal(str, str)  # calendar_id, new_hex
+    rename_calendar_requested = Signal(str)  # calendar_id
+    change_color_requested = Signal(str)  # calendar_id
     account_order_changed = Signal()
     calendar_order_changed = Signal(str)  # account_id
     date_selected = Signal(date)  # from mini-month
@@ -514,12 +498,33 @@ class Sidebar(QWidget):
             chip.visibility_changed.connect(
                 lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
-            chip.color_changed.connect(self._on_calendar_color_changed)
             row_h.addWidget(chip)
 
             name_label = _ElidedLabel(ci.display_name)
             name_label.setObjectName("cal-name")
             row_h.addWidget(name_label, 1)
+
+            calendar_id = ci.id
+
+            def _make_row_menu(cid=calendar_id):
+                def _show_menu(pos) -> None:
+                    menu = QMenu()
+                    act_rename = QAction("Rename…", menu)
+                    act_rename.triggered.connect(
+                        lambda: self.rename_calendar_requested.emit(cid)
+                    )
+                    menu.addAction(act_rename)
+                    act_color = QAction("Change color…", menu)
+                    act_color.triggered.connect(
+                        lambda: self.change_color_requested.emit(cid)
+                    )
+                    menu.addAction(act_color)
+                    menu.exec(QCursor.pos())
+                return _show_menu
+
+            row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            row.customContextMenuRequested.connect(_make_row_menu())
+
             v.addWidget(row)
             self._chips[ci.id] = chip
 
@@ -530,10 +535,6 @@ class Sidebar(QWidget):
             v.addWidget(placeholder)
 
         return container
-
-    def _on_calendar_color_changed(self, calendar_id: str, new_hex: str) -> None:
-        """Re-emit upward so MainWindow can refresh views with the new tint."""
-        self.calendar_color_changed.emit(calendar_id, new_hex)
 
     # ── Drag-and-drop reordering ───────────────────────────────────────────
 

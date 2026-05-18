@@ -952,6 +952,16 @@ class EventStore(QObject):
         with Session(self._engine) as s:
             return s.query(Calendar).filter(Calendar.id == calendar_id).first()
 
+    def set_calendar_display_name(self, calendar_id: str, name: str) -> None:
+        from lilical.models.calendar import Calendar
+
+        with self._write_session() as s:
+            row = s.query(Calendar).filter(Calendar.id == calendar_id).first()
+            if row is None:
+                return
+            row.display_name = name
+        self.cal_metadata_changed.emit(calendar_id)
+
     def set_calendar_color(self, calendar_id: str, color: str) -> None:
         """User-set color. Fires events_changed so views re-render with the new tint."""
         from lilical.models.calendar import Calendar

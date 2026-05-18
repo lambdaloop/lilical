@@ -997,6 +997,12 @@ class GraphBackend:
         return out
 
     @_classify_errors
+    async def rename_calendar(self, calendar_id: str, new_name: str) -> None:
+        await self._request(
+            "PATCH", f"/me/calendars/{calendar_id}", json_body={"name": new_name}
+        )
+
+    @_classify_errors
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:

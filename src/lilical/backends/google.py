@@ -627,6 +627,13 @@ class GoogleBackend:
         return out
 
     @_classify_errors
+    async def rename_calendar(self, calendar_id: str, new_name: str) -> None:
+        encoded = urllib.parse.quote(calendar_id, safe="")
+        await self._request(
+            "PATCH", f"/calendars/{encoded}", json_body={"summary": new_name}
+        )
+
+    @_classify_errors
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:

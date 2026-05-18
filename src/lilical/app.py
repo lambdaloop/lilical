@@ -65,6 +65,7 @@ def main() -> int:
         sync_engine=sync_engine,
         recurrence=recurrence,
         secrets=secrets,
+        backend_factory=backend_factory,
     )
     window.show()
 
