@@ -46,12 +46,52 @@ jobs:
       - name: Smoke test
         run: make -C appimage run VERSION=${{ env.VERSION }}
 
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          current="${GITHUB_REF_NAME}"
+          prev="$(git describe --abbrev=0 --tags --match='v*' "${current}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then
+            range="${prev}..${current}"
+            footer="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${current}"
+          else
+            range="${current}"
+            footer="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${current}"
+          fi
+
+          feats=""; fixes=""; other=""
+          while IFS=$'\t' read -r sha subject; do
+            case "$subject" in
+              feat:*|feat\(*\):*)
+                msg="${subject#feat*:}"
+                feats+="- ${msg# } (${sha})"$'\n' ;;
+              fix:*|fix\(*\):*|revert:*|revert\(*\):*)
+                msg="${subject#*:}"
+                fixes+="- ${msg# } (${sha})"$'\n' ;;
+              *)
+                other+="- ${subject} (${sha})"$'\n' ;;
+            esac
+          done < <(git log --reverse --pretty=tformat:'%h%x09%s' "$range")
+
+          {
+            echo "## What's Changed in ${current}"
+            echo
+            if [ -n "$feats" ]; then echo "### Features"; printf '%s\n' "$feats"; fi
+            if [ -n "$fixes" ]; then echo "### Fixes";    printf '%s\n' "$fixes"; fi
+            if [ -n "$other" ]; then echo "### Other";    printf '%s\n' "$other"; fi
+            echo "$footer"
+          } > RELEASE_NOTES.md
+
+          echo "--- RELEASE_NOTES.md ---"
+          cat RELEASE_NOTES.md
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: lilical ${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             appimage/lilical-${{ env.VERSION }}-x86_64.AppImage
