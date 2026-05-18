@@ -26,15 +26,35 @@ from lilical.ui.widgets.event_chip import ChipMode, EventChip
 
 log = logging.getLogger(__name__)
 
-CELL_W = 140
-CELL_H = 100
-HEADER_H = 24
 COLS = 7
 ROWS = 6
-PAD = 4
-CHIP_H = 16
-CHIP_GAP = 2
-TODAY_RING_RADIUS = 11
+
+_BASE_CELL_W = 140
+_BASE_CELL_H = 100
+_BASE_HEADER_H = 24
+_BASE_PAD = 4
+_BASE_CHIP_H = 16
+_BASE_CHIP_GAP = 2
+_BASE_TODAY_RING_RADIUS = 11
+
+CELL_W = _BASE_CELL_W
+CELL_H = _BASE_CELL_H
+HEADER_H = _BASE_HEADER_H
+PAD = _BASE_PAD
+CHIP_H = _BASE_CHIP_H
+CHIP_GAP = _BASE_CHIP_GAP
+TODAY_RING_RADIUS = _BASE_TODAY_RING_RADIUS
+
+
+def apply_scale(factor: float) -> None:
+    g = globals()
+    g["CELL_W"] = max(1, round(_BASE_CELL_W * factor))
+    g["CELL_H"] = max(1, round(_BASE_CELL_H * factor))
+    g["HEADER_H"] = max(1, round(_BASE_HEADER_H * factor))
+    g["PAD"] = max(1, round(_BASE_PAD * factor))
+    g["CHIP_H"] = max(1, round(_BASE_CHIP_H * factor))
+    g["CHIP_GAP"] = max(1, round(_BASE_CHIP_GAP * factor))
+    g["TODAY_RING_RADIUS"] = max(1, round(_BASE_TODAY_RING_RADIUS * factor))
 
 
 def _local_midnight(d: date) -> datetime:

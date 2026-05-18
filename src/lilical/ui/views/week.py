@@ -22,15 +22,35 @@ from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
 
-TIME_AXIS_WIDTH = 60
-DAY_HEADER_H = 32
-ALL_DAY_ROW_H = 22  # one row inside the all-day band
-ALL_DAY_BAND_MIN = 28  # always-reserved minimum band height
 ALL_DAY_MAX_ROWS = 4  # spec §4: max 4 rows before scrolling
-DEFAULT_PX_PER_HOUR = 48
-PX_PER_HOUR_MIN = 20
-PX_PER_HOUR_MAX = 96
 HOURS = 24
+
+_BASE_TIME_AXIS_WIDTH = 60
+_BASE_DAY_HEADER_H = 32
+_BASE_ALL_DAY_ROW_H = 22
+_BASE_ALL_DAY_BAND_MIN = 28
+_BASE_DEFAULT_PX_PER_HOUR = 48
+_BASE_PX_PER_HOUR_MIN = 20
+_BASE_PX_PER_HOUR_MAX = 96
+
+TIME_AXIS_WIDTH = _BASE_TIME_AXIS_WIDTH
+DAY_HEADER_H = _BASE_DAY_HEADER_H
+ALL_DAY_ROW_H = _BASE_ALL_DAY_ROW_H
+ALL_DAY_BAND_MIN = _BASE_ALL_DAY_BAND_MIN
+DEFAULT_PX_PER_HOUR = _BASE_DEFAULT_PX_PER_HOUR
+PX_PER_HOUR_MIN = _BASE_PX_PER_HOUR_MIN
+PX_PER_HOUR_MAX = _BASE_PX_PER_HOUR_MAX
+
+
+def apply_scale(factor: float) -> None:
+    g = globals()
+    g["TIME_AXIS_WIDTH"] = max(1, round(_BASE_TIME_AXIS_WIDTH * factor))
+    g["DAY_HEADER_H"] = max(1, round(_BASE_DAY_HEADER_H * factor))
+    g["ALL_DAY_ROW_H"] = max(1, round(_BASE_ALL_DAY_ROW_H * factor))
+    g["ALL_DAY_BAND_MIN"] = max(1, round(_BASE_ALL_DAY_BAND_MIN * factor))
+    g["DEFAULT_PX_PER_HOUR"] = max(1, round(_BASE_DEFAULT_PX_PER_HOUR * factor))
+    g["PX_PER_HOUR_MIN"] = max(1, round(_BASE_PX_PER_HOUR_MIN * factor))
+    g["PX_PER_HOUR_MAX"] = max(1, round(_BASE_PX_PER_HOUR_MAX * factor))
 
 VALID_DAY_COUNTS = (1, 2, 3, 4, 5, 7, 10, 14)
 

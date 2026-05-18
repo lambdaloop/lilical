@@ -10,6 +10,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lilical.ui import theme as _theme
+
+_UI_SCALE_OPTIONS: list[tuple[str, float]] = [
+    (f"{round(v * 100)}%", v) for v in _theme.UI_SCALE_PRESETS
+]
+
 _SNAP_OPTIONS: list[tuple[str, int]] = [
     ("5 min", 5),
     ("10 min", 10),
@@ -41,6 +47,7 @@ class PreferencesDialog(QDialog):
         current_chip_mode: str = "bars",
         current_time_format: str = "24h",
         current_enable_completed_events: bool = False,
+        current_ui_scale: float = 1.0,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
@@ -53,6 +60,16 @@ class PreferencesDialog(QDialog):
         self._theme_combo.addItems(["dark", "light"])
         self._theme_combo.setCurrentText(current_theme)
         form.addRow("Theme:", self._theme_combo)
+
+        self._ui_scale_combo = QComboBox()
+        for label, _ in _UI_SCALE_OPTIONS:
+            self._ui_scale_combo.addItem(label)
+        scale_idx = next(
+            (i for i, (_, v) in enumerate(_UI_SCALE_OPTIONS) if v == current_ui_scale),
+            2,  # default to 100%
+        )
+        self._ui_scale_combo.setCurrentIndex(scale_idx)
+        form.addRow("UI scale:", self._ui_scale_combo)
 
         self._week_start_combo = QComboBox()
         self._week_start_combo.addItems(["monday", "sunday", "saturday"])
@@ -151,3 +168,10 @@ class PreferencesDialog(QDialog):
     @property
     def enable_completed_events(self) -> bool:
         return self._enable_completed_check.isChecked()
+
+    @property
+    def ui_scale(self) -> float:
+        idx = self._ui_scale_combo.currentIndex()
+        if 0 <= idx < len(_UI_SCALE_OPTIONS):
+            return _UI_SCALE_OPTIONS[idx][1]
+        return 1.0

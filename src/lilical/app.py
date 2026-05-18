@@ -44,6 +44,18 @@ def main() -> int:
     qt_app.setOrganizationName("lilical")
     qt_app.setDesktopFileName("org.lilical.Lilical")
 
+    # Apply UI scale before any widgets are created so every widget (including
+    # those built inside MainWindow.__init__) starts with the right font.
+    from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QFont
+    from lilical.ui import theme as _ui_theme
+
+    _s = QSettings()
+    _raw = float(_s.value("ui_scale", 1.0) or 1.0)  # type: ignore[reportArgumentType]
+    _scale = _raw if _raw in _ui_theme.UI_SCALE_PRESETS else 1.0
+    _ui_theme.apply_all_scales(_scale)
+    qt_app.setFont(QFont(_ui_theme.FONT_FAMILY, _ui_theme.ui_base_font_pt()))
+
     loop = qasync.QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
 

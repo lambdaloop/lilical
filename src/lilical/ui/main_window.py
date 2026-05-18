@@ -4,6 +4,7 @@ import asyncio
 import calendar
 import dataclasses
 import logging
+import re
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -206,6 +207,10 @@ class MainWindow(QMainWindow):
             if week_start_raw in ("monday", "sunday", "saturday")
             else "monday"
         )
+        _raw_scale = float(self._settings.value("ui_scale", 1.0) or 1.0)  # type: ignore[reportArgumentType]
+        self._ui_scale: float = (
+            _raw_scale if _raw_scale in _theme_module.UI_SCALE_PRESETS else 1.0
+        )
 
         self.setWindowTitle("lilical")
         self.resize(1200, 800)
@@ -287,7 +292,8 @@ class MainWindow(QMainWindow):
         if _app is not None and _app.property("__tray_available") is not False:
             self._tray.show()
 
-        # ── Theme ──────────────────────────────────────────────────────────
+        # ── Scale + Theme ─────────────────────────────────────────────────
+        self._apply_ui_scale_globals(self._ui_scale)
         self._apply_theme(self._theme)
 
         # ── Signal wiring ──────────────────────────────────────────────────
@@ -746,6 +752,7 @@ class MainWindow(QMainWindow):
             current_time_format=current_time_format,
             current_week_start=self._week_start,
             current_enable_completed_events=current_enable_completed,
+            current_ui_scale=self._ui_scale,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:  # type: ignore[reportAttributeAccessIssue]
             if dlg.theme != self._theme:
@@ -795,6 +802,31 @@ class MainWindow(QMainWindow):
                 for v in self._views.values():
                     if hasattr(v, "set_completed_events_enabled"):
                         v.set_completed_events_enabled(dlg.enable_completed_events)  # type: ignore[reportAttributeAccessIssue]
+            if dlg.ui_scale != self._ui_scale:
+                self._ui_scale = dlg.ui_scale
+                self._settings.setValue("ui_scale", self._ui_scale)
+                self._apply_ui_scale_globals(self._ui_scale)
+                self._theme_qss_cache.clear()
+                self._apply_theme(self._theme)
+                # Discard all cached views — they hold layout constants baked at
+                # construction time (scene rects, fixed heights, zoom limits).
+                for v in list(self._views.values()):
+                    self._view_stack_layout.removeWidget(v)
+                    v.deleteLater()
+                self._views.clear()
+                self._current_view = None
+                # Rebuild the mini-month so its setFixedHeight uses the new constants.
+                self._sidebar._mini_month.reset_scale()  # type: ignore[reportPrivateUsage]
+                self._switch_view(self._current_view_name)
+
+    def _apply_ui_scale_globals(self, scale: float) -> None:
+        _theme_module.apply_all_scales(scale)
+        app = QApplication.instance()
+        if app is not None:
+            _pt = _theme_module.ui_base_font_pt()
+            f = app.font()
+            f.setPointSize(_pt)
+            app.setFont(f)
 
     def _apply_theme(self, name: str) -> None:
         _theme_module.apply(name)
@@ -808,6 +840,13 @@ class MainWindow(QMainWindow):
                     # (e.g. SVG checkmarks) load correctly regardless of cwd.
                     styles_dir = theme_path.parent.as_posix()
                     qss = qss.replace("url(./", f"url({styles_dir}/")
+                    # Scale all font-size: Npt; values proportionally with UI scale.
+                    scale = _theme_module.UI_SCALE
+
+                    def _scale_pt(m: re.Match) -> str:  # type: ignore[type-arg]
+                        return f"font-size: {max(1, round(float(m.group(1)) * scale))}pt;"
+
+                    qss = re.sub(r"font-size:\s*(\d+(?:\.\d+)?)pt;", _scale_pt, qss)
                     self._theme_qss_cache[name] = qss
                 else:
                     log.warning("Theme file not found: %s", theme_path)

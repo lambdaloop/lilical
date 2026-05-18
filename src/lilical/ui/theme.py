@@ -57,6 +57,64 @@ def apply(name: str) -> None:
         g[key] = value
 
 
+# ── Scale ─────────────────────────────────────────────────────────────────
+
+UI_SCALE_PRESETS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
+
+UI_SCALE: float = 1.0
+
+_BASE_FONT_BASE = 11
+_BASE_FONT_DAY_NUMBER = 14
+_BASE_FONT_DAY_HEADER = 14
+_BASE_FONT_TIME_AXIS = 10
+_BASE_FONT_CHIP_TITLE = 9
+_BASE_FONT_CHIP_PREFIX = 8
+_BASE_FONT_CHIP_LOCATION = 8
+_BASE_FONT_MONTH_HEADER = 10
+_BASE_CHIP_MIN_TITLE_H = 15
+_BASE_CHIP_MIN_INLINE_TIME_H = 18
+_BASE_CHIP_MIN_PREFIX_H = 26
+_BASE_CHIP_MIN_LOCATION_H = 38
+_BASE_CHIP_MIN_LOCATION_MULTILINE_H = 50
+
+
+def apply_scale(factor: float) -> None:
+    """Scale typography and chip-threshold constants. Call before a view repaint."""
+    g = globals()
+    g["UI_SCALE"] = factor
+    g["FONT_BASE"] = max(1, round(_BASE_FONT_BASE * factor))
+    g["FONT_DAY_NUMBER"] = max(1, round(_BASE_FONT_DAY_NUMBER * factor))
+    g["FONT_DAY_HEADER"] = max(1, round(_BASE_FONT_DAY_HEADER * factor))
+    g["FONT_TIME_AXIS"] = max(1, round(_BASE_FONT_TIME_AXIS * factor))
+    g["FONT_CHIP_TITLE"] = max(1, round(_BASE_FONT_CHIP_TITLE * factor))
+    g["FONT_CHIP_PREFIX"] = max(1, round(_BASE_FONT_CHIP_PREFIX * factor))
+    g["FONT_CHIP_LOCATION"] = max(1, round(_BASE_FONT_CHIP_LOCATION * factor))
+    g["FONT_MONTH_HEADER"] = max(1, round(_BASE_FONT_MONTH_HEADER * factor))
+    g["CHIP_MIN_TITLE_H"] = max(1, round(_BASE_CHIP_MIN_TITLE_H * factor))
+    g["CHIP_MIN_INLINE_TIME_H"] = max(1, round(_BASE_CHIP_MIN_INLINE_TIME_H * factor))
+    g["CHIP_MIN_PREFIX_H"] = max(1, round(_BASE_CHIP_MIN_PREFIX_H * factor))
+    g["CHIP_MIN_LOCATION_H"] = max(1, round(_BASE_CHIP_MIN_LOCATION_H * factor))
+    g["CHIP_MIN_LOCATION_MULTILINE_H"] = max(
+        1, round(_BASE_CHIP_MIN_LOCATION_MULTILINE_H * factor)
+    )
+
+
+def ui_base_font_pt() -> int:
+    return max(1, round(_BASE_FONT_BASE * UI_SCALE))
+
+
+def apply_all_scales(factor: float) -> None:
+    """Scale theme constants and all view/widget layout constants."""
+    apply_scale(factor)
+    from lilical.ui.views import month, week, day  # noqa: PLC0415
+    from lilical.ui.widgets import mini_month  # noqa: PLC0415
+
+    month.apply_scale(factor)
+    week.apply_scale(factor)
+    day.apply_scale(factor)
+    mini_month.apply_scale(factor)
+
+
 # Initialise with dark palette (same values as _DARK above).
 BG_BASE = _DARK["BG_BASE"]
 BG_SURFACE = _DARK["BG_SURFACE"]

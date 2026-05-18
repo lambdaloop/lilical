@@ -13,9 +13,18 @@ from PySide6.QtWidgets import (
 from lilical.ui import theme
 from lilical.ui.views._week_start import dow_labels_short, start_of_week
 
-_HEADER_H = 20
-_CELL_H = 24
+_BASE_HEADER_H = 20
+_BASE_CELL_H = 24
 _VIEWPORT_PADDING = 4  # QGraphicsView frame border on each axis
+
+_HEADER_H = _BASE_HEADER_H
+_CELL_H = _BASE_CELL_H
+
+
+def apply_scale(factor: float) -> None:
+    g = globals()
+    g["_HEADER_H"] = max(1, round(_BASE_HEADER_H * factor))
+    g["_CELL_H"] = max(1, round(_BASE_CELL_H * factor))
 
 
 class MiniMonthGrid(QGraphicsView):
@@ -56,6 +65,11 @@ class MiniMonthGrid(QGraphicsView):
 
     def set_selected(self, d: date) -> None:
         self._selected = d
+        self.render()
+
+    def reset_scale(self) -> None:
+        """Re-apply fixed height after a global scale change, then re-render."""
+        self.setFixedHeight(_HEADER_H + 6 * _CELL_H + _VIEWPORT_PADDING)
         self.render()
 
     def set_active_range(self, start: date, end: date) -> None:
