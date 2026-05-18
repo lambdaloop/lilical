@@ -23,6 +23,7 @@ def _project_root() -> Path:
 
 
 def open_engine(db_path: str) -> Engine:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
