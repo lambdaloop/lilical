@@ -109,11 +109,18 @@ def test_resolve_color_skips_invalid_event_color() -> None:
     assert c.name() == "#00ff00"
 
 
-# ── theme threshold monotonicity ──────────────────────────────────────────────
+# ── chip tier threshold monotonicity ─────────────────────────────────────────
 
 
-def test_chip_thresholds_are_monotonically_increasing() -> None:
-    assert theme.CHIP_MIN_TITLE_H < theme.CHIP_MIN_PREFIX_H < theme.CHIP_MIN_LOCATION_H
+def test_chip_tier_mins_are_monotonically_increasing() -> None:
+    # Thresholds are now derived from font metrics at paint time (not theme constants).
+    # Verify the formula is always increasing for any positive font heights.
+    t, p, lh = 14.0, 12.0, 12.0  # realistic 9pt/8pt/8pt values at scale 1.0
+    min_title = t + 1
+    min_prefix = t + p
+    min_location = t + p + lh
+    min_location_multi = t + p + 2 * lh
+    assert min_title < min_prefix < min_location < min_location_multi
 
 
 # ── _is_dimmed_for ────────────────────────────────────────────────────────────

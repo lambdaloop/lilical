@@ -71,15 +71,10 @@ _BASE_FONT_CHIP_TITLE = 9
 _BASE_FONT_CHIP_PREFIX = 8
 _BASE_FONT_CHIP_LOCATION = 8
 _BASE_FONT_MONTH_HEADER = 10
-_BASE_CHIP_MIN_TITLE_H = 15
-_BASE_CHIP_MIN_INLINE_TIME_H = 18
-_BASE_CHIP_MIN_PREFIX_H = 26
-_BASE_CHIP_MIN_LOCATION_H = 38
-_BASE_CHIP_MIN_LOCATION_MULTILINE_H = 50
 
 
 def apply_scale(factor: float) -> None:
-    """Scale typography and chip-threshold constants. Call before a view repaint."""
+    """Scale typography constants. Call before a view repaint."""
     g = globals()
     g["UI_SCALE"] = factor
     g["FONT_BASE"] = max(1, round(_BASE_FONT_BASE * factor))
@@ -90,13 +85,6 @@ def apply_scale(factor: float) -> None:
     g["FONT_CHIP_PREFIX"] = max(1, round(_BASE_FONT_CHIP_PREFIX * factor))
     g["FONT_CHIP_LOCATION"] = max(1, round(_BASE_FONT_CHIP_LOCATION * factor))
     g["FONT_MONTH_HEADER"] = max(1, round(_BASE_FONT_MONTH_HEADER * factor))
-    g["CHIP_MIN_TITLE_H"] = max(1, round(_BASE_CHIP_MIN_TITLE_H * factor))
-    g["CHIP_MIN_INLINE_TIME_H"] = max(1, round(_BASE_CHIP_MIN_INLINE_TIME_H * factor))
-    g["CHIP_MIN_PREFIX_H"] = max(1, round(_BASE_CHIP_MIN_PREFIX_H * factor))
-    g["CHIP_MIN_LOCATION_H"] = max(1, round(_BASE_CHIP_MIN_LOCATION_H * factor))
-    g["CHIP_MIN_LOCATION_MULTILINE_H"] = max(
-        1, round(_BASE_CHIP_MIN_LOCATION_MULTILINE_H * factor)
-    )
 
 
 def ui_base_font_pt() -> int:
@@ -147,14 +135,6 @@ FONT_CHIP_TITLE = 9  # event chip title
 FONT_CHIP_PREFIX = 8  # event chip time prefix
 FONT_CHIP_LOCATION = 8  # event chip location line
 FONT_MONTH_HEADER = 10  # day-of-week strip above month grid
-
-# ── Chip layout thresholds (pixels) ──────────────────────────────────────
-# Calibrated for 8 pt prefix (~12 px) + 9 pt title (~14 px), tight inner padding.
-CHIP_MIN_TITLE_H = 15  # below this, chip is solid color (tooltip only)
-CHIP_MIN_INLINE_TIME_H = 18  # below this (≥15): title only; at/above: time+title inline
-CHIP_MIN_PREFIX_H = 26  # at/above: time on its own row above title
-CHIP_MIN_LOCATION_H = 38  # below this, location is suppressed
-CHIP_MIN_LOCATION_MULTILINE_H = 50  # at/above: location wraps to up to 2 lines
 
 # ── Multi-day continuation glyphs ────────────────────────────────────────
 GLYPH_CONTINUES_RIGHT = "→"
