@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import override
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsScene,
@@ -52,7 +53,10 @@ def apply_scale(factor: float) -> None:
     g["CELL_H"] = max(1, round(_BASE_CELL_H * factor))
     g["HEADER_H"] = max(1, round(_BASE_HEADER_H * factor))
     g["PAD"] = max(1, round(_BASE_PAD * factor))
-    g["CHIP_H"] = max(1, round(_BASE_CHIP_H * factor))
+    # Chip height must clear `min_title = title_fm.height() + 1` from
+    # EventChip._tier_mins; otherwise the title is silently skipped (tier 0).
+    title_fm = QFontMetricsF(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE))
+    g["CHIP_H"] = max(round(_BASE_CHIP_H * factor), math.ceil(title_fm.height()) + 2)
     g["CHIP_GAP"] = max(1, round(_BASE_CHIP_GAP * factor))
     g["TODAY_RING_RADIUS"] = max(1, round(_BASE_TODAY_RING_RADIUS * factor))
 
