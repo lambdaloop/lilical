@@ -238,6 +238,8 @@ class MainWindow(QMainWindow):
         self._sidebar.calendar_color_changed.connect(self._on_calendar_color_changed)
         self._sidebar.rename_calendar_requested.connect(self._on_rename_calendar)
         self._sidebar.change_color_requested.connect(self._on_change_calendar_color)
+        self._sidebar.new_calendar_requested.connect(self._on_new_calendar)
+        self._sidebar.delete_calendar_requested.connect(self._on_delete_calendar)
         self._sidebar.account_order_changed.connect(self._on_account_order_changed)
         self._sidebar.calendar_order_changed.connect(self._on_calendar_order_changed)
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
@@ -1202,6 +1204,97 @@ class MainWindow(QMainWindow):
         await asyncio.to_thread(
             self._store.set_calendar_display_name, calendar_id, new_name
         )
+
+    def _on_new_calendar(self, account_id: str) -> None:
+        name, ok = QInputDialog.getText(
+            self,
+            "New calendar",
+            "Calendar name:",
+            QLineEdit.EchoMode.Normal,
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        self._fire_async(
+            self._create_calendar_async(account_id, name),
+            f"create_calendar/{account_id}",
+        )
+
+    async def _create_calendar_async(self, account_id: str, name: str) -> None:
+        from lilical.backends.base import AuthExpired, PermanentError, TransientError
+
+        acc = await asyncio.to_thread(self._store.get_account, account_id)
+        if acc is None:
+            return
+        backend = await asyncio.to_thread(lambda: self._backend_factory(acc))
+        try:
+            new_cal = await backend.create_calendar(name)
+        except (AuthExpired, PermanentError, TransientError) as exc:
+            msg = str(exc) or repr(exc)
+            QMessageBox.warning(
+                self, "Create calendar failed", f"Could not create calendar:\n\n{msg}"
+            )
+            return
+        await asyncio.to_thread(
+            self._store.upsert_calendars, account_id, [new_cal]
+        )
+        await self._rebuild_cal_info_for_account_async(account_id)
+        self._sync.force_refresh(account_id)
+
+    def _on_delete_calendar(self, calendar_id: str) -> None:
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        if cal.is_primary:
+            QMessageBox.information(
+                self,
+                "Cannot delete calendar",
+                "The primary calendar for an account cannot be deleted.",
+            )
+            return
+        confirm = QMessageBox(self)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle("Delete calendar?")
+        confirm.setText(f'Delete calendar "{cal.display_name}"?')
+        confirm.setInformativeText(
+            "This will remove all locally-cached events for this calendar. "
+            "Events stored on the provider's servers will not be affected."
+        )
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes
+        )
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+        self._fire_async(
+            self._delete_calendar_async(cal.id, cal.account_id, cal.provider_id),
+            f"delete_calendar/{calendar_id}",
+        )
+
+    async def _delete_calendar_async(
+        self, calendar_id: str, account_id: str, provider_id: str
+    ) -> None:
+        from lilical.backends.base import AuthExpired, PermanentError, TransientError
+
+        acc = await asyncio.to_thread(self._store.get_account, account_id)
+        if acc is None:
+            return
+        backend = await asyncio.to_thread(lambda: self._backend_factory(acc))
+        try:
+            await backend.delete_calendar(provider_id)
+        except (AuthExpired, PermanentError, TransientError) as exc:
+            msg = str(exc) or repr(exc)
+            QMessageBox.warning(
+                self, "Delete failed", f"Could not delete calendar:\n\n{msg}"
+            )
+            return
+        await asyncio.to_thread(self._store.delete_calendar, calendar_id)
+        self._cal_info.pop(calendar_id, None)
+        await self._rebuild_cal_info_for_account_async(account_id)
+        if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 
     def _on_change_calendar_color(self, calendar_id: str) -> None:
         cal = self._store.get_calendar(calendar_id)

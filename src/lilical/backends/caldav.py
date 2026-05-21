@@ -625,6 +625,32 @@ class CalDavBackend:
 
         await self._run(_do)
 
+    @_classify_errors
+    async def create_calendar(self, name: str) -> dict[str, object]:
+        client = await self._get_client()
+
+        def _do() -> dict[str, object]:
+            principal = client.principal()
+            cal = principal.make_calendar(name=name)
+            url = str(cal.url)
+            return {
+                "provider_id": url,
+                "display_name": name,
+                "color": None,
+            }
+
+        return await self._run(_do)  # type: ignore[return-value]
+
+    @_classify_errors
+    async def delete_calendar(self, calendar_id: str) -> None:
+        client = await self._get_client()
+
+        def _do() -> None:
+            cal = client.calendar(url=calendar_id)
+            cal.delete()
+
+        await self._run(_do)
+
     def _events_to_changes(self, events, calendar_id: str) -> list[EventChange]:
         changes: list[EventChange] = []
         for ev in events:

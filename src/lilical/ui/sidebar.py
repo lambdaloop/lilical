@@ -209,12 +209,14 @@ class Sidebar(QWidget):
     rename_account_requested = Signal(str)
     reauth_account_requested = Signal(str)
     choose_calendars_requested = Signal(str)  # account_id
+    new_calendar_requested = Signal(str)  # account_id
     sync_now_requested = Signal(str)
     delete_account_requested = Signal(str)
     calendar_visibility_changed = Signal(str, bool)
     calendar_color_changed = Signal(str, str)  # calendar_id, new_hex
     rename_calendar_requested = Signal(str)  # calendar_id
     change_color_requested = Signal(str)  # calendar_id
+    delete_calendar_requested = Signal(str)  # calendar_id
     account_order_changed = Signal()
     calendar_order_changed = Signal(str)  # account_id
     date_selected = Signal(date)  # from mini-month
@@ -474,6 +476,10 @@ class Sidebar(QWidget):
         act_calendars.triggered.connect(_on(self.choose_calendars_requested))
         menu.addAction(act_calendars)
 
+        act_new_cal = QAction("New calendar…", menu)
+        act_new_cal.triggered.connect(_on(self.new_calendar_requested))
+        menu.addAction(act_new_cal)
+
         act_sync = QAction("Sync now", menu)
         act_sync.triggered.connect(_on(self.sync_now_requested))
         menu.addAction(act_sync)
@@ -522,6 +528,12 @@ class Sidebar(QWidget):
                         lambda: self.change_color_requested.emit(cid)
                     )
                     menu.addAction(act_color)
+                    menu.addSeparator()
+                    act_delete = QAction("Delete calendar…", menu)
+                    act_delete.triggered.connect(
+                        lambda: self.delete_calendar_requested.emit(cid)
+                    )
+                    menu.addAction(act_delete)
                     menu.exec(QCursor.pos())
                 return _show_menu
 

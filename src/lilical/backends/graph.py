@@ -1017,6 +1017,20 @@ class GraphBackend:
         )
 
     @_classify_errors
+    async def create_calendar(self, name: str) -> dict[str, object]:
+        resp = await self._request("POST", "/me/calendars", json_body={"name": name})
+        data = resp.json()
+        return {
+            "provider_id": data["id"],
+            "display_name": data.get("name", name),
+            "color": None,
+        }
+
+    @_classify_errors
+    async def delete_calendar(self, calendar_id: str) -> None:
+        await self._request("DELETE", f"/me/calendars/{calendar_id}")
+
+    @_classify_errors
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:

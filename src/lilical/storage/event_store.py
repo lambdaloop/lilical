@@ -980,6 +980,26 @@ class EventStore(QObject):
                 synchronize_session=False
             )
 
+    def delete_calendar(self, calendar_id: str) -> None:
+        from lilical.models.calendar import Calendar
+
+        with self._write_session() as s:
+            s.query(EventInstanceRow).filter(
+                EventInstanceRow.calendar_id == calendar_id
+            ).delete(synchronize_session=False)
+            s.query(EventCompletionRow).filter(
+                EventCompletionRow.calendar_id == calendar_id
+            ).delete(synchronize_session=False)
+            s.query(EventRow).filter(EventRow.calendar_id == calendar_id).delete(
+                synchronize_session=False
+            )
+            s.query(PendingOpRow).filter(
+                PendingOpRow.calendar_id == calendar_id
+            ).delete(synchronize_session=False)
+            s.query(Calendar).filter(Calendar.id == calendar_id).delete(
+                synchronize_session=False
+            )
+
     def reset_sync_cursors(self, account_id: str) -> None:
         """Clear sync_cursor on all calendars so the next sync does a full resync."""
         from lilical.models.calendar import Calendar

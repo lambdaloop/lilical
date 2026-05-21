@@ -58,6 +58,24 @@ class Backend(Protocol):
         """
         ...
 
+    async def create_calendar(self, name: str) -> dict[str, object]:
+        """Create a new calendar on the provider server.
+
+        Returns a dict in the same shape as ``list_calendars()`` items
+        (keys: ``provider_id``, ``display_name``, ``color``).
+        Raises PermanentError, AuthExpired, or TransientError on failure.
+        """
+        ...
+
+    async def delete_calendar(self, calendar_id: str) -> None:
+        """Delete *calendar_id* from the provider server.
+
+        Raises PermanentError for permission-denied / primary-calendar.
+        Raises AuthExpired if the session needs re-authentication.
+        Raises TransientError for recoverable network/server issues.
+        """
+        ...
+
     def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]: ...

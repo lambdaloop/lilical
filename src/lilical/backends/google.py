@@ -646,6 +646,21 @@ class GoogleBackend:
         )
 
     @_classify_errors
+    async def create_calendar(self, name: str) -> dict[str, object]:
+        resp = await self._request("POST", "/calendars", json_body={"summary": name})
+        data = resp.json()
+        return {
+            "provider_id": data["id"],
+            "display_name": data.get("summary", name),
+            "color": None,
+        }
+
+    @_classify_errors
+    async def delete_calendar(self, calendar_id: str) -> None:
+        encoded = urllib.parse.quote(calendar_id, safe="")
+        await self._request("DELETE", f"/calendars/{encoded}")
+
+    @_classify_errors
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
