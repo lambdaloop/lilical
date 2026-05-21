@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from html import escape
+from html import escape, unescape
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSettings, Qt
@@ -46,6 +46,11 @@ _FONT_COLOR_ATTR_RE = re.compile(
 _BGCOLOR_ATTR_RE = re.compile(
     r"""\s+bgcolor\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
 )
+_EXCHANGE_PLAINTEXT_RE = re.compile(
+    r'<div\s+class\s*=\s*["\']?PlainText["\']?[^>]*>(.*?)</div>',
+    re.IGNORECASE | re.DOTALL,
+)
+_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 
 if TYPE_CHECKING:
     from lilical.models.event import Event
@@ -162,10 +167,9 @@ class EventDetailsDialog(QDialog):
 
         # ── Notes ─────────────────────────────────────────────────────────────
         if event.description:
+            src = _unwrap_exchange_plaintext(event.description) or event.description
             notes_text = (
-                _strip_colors(event.description)
-                if _is_html(event.description)
-                else _linkify(event.description)
+                _strip_colors(src) if _is_html(src) else _linkify(src)
             )
             notes_lbl = QLabel(notes_text)
             notes_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -432,6 +436,22 @@ def _strip_colors(html: str) -> str:
     html = _STYLE_ATTR_RE.sub(_scrub_style, html)
     html = _FONT_OPEN_TAG_RE.sub(_scrub_font, html)
     return _BGCOLOR_ATTR_RE.sub("", html)
+
+
+def _unwrap_exchange_plaintext(html: str) -> str | None:
+    """Unwrap an Exchange "converted from text" HTML body.
+
+    Exchange wraps plain-text invite bodies by escaping < / > as entities,
+    converting newlines to <br>, and placing everything in
+    <div class="PlainText">. Returns the decoded inner content, or None if
+    the input is not such a wrapper.
+    """
+    if "converted from text" not in html:
+        return None
+    m = _EXCHANGE_PLAINTEXT_RE.search(html)
+    if not m:
+        return None
+    return unescape(_BR_RE.sub("\n", m.group(1)))
 
 
 def _linkify(text: str) -> str:
