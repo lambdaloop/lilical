@@ -25,11 +25,26 @@ from lilical.ui.widgets.event_chip import _readable_text_color, _resolve_color
 from lilical.utils.names import format_display_name
 
 _URL_RE = re.compile(r"(https?://[^\s<>\"{}|\\^`\[\]]+)", re.IGNORECASE)
-# Conservative HTML detection: look for common block/inline tags used by calendar systems.  # noqa: E501
 _HTML_TAG_RE = re.compile(
-    r"<(?:html|body|p|br|div|span|a|b|i|em|strong|ul|ol|li|h[1-6]|table|tr|td|pre|img)"
+    r"<(?:html|body|head|meta|style|p|br|div|span|a|b|i|em|strong|ul|ol|li|"
+    r"h[1-6]|table|tr|td|pre|img|font|o:p)"
     r"[\s/>]",
     re.IGNORECASE,
+)
+_HTML_ENTITY_RE = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,5});")
+_STYLE_ATTR_RE = re.compile(
+    r'(style\s*=\s*)(["' + r"'])(.*?)\2", re.IGNORECASE | re.DOTALL
+)
+_STYLE_COLOR_DECL_RE = re.compile(
+    r"(?:(?:^|(?<=;))\s*(?:color|background-color|background)\s*:[^;]*)",
+    re.IGNORECASE,
+)
+_FONT_OPEN_TAG_RE = re.compile(r"<font\b([^>]*)>", re.IGNORECASE)
+_FONT_COLOR_ATTR_RE = re.compile(
+    r"""\s+color\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
+)
+_BGCOLOR_ATTR_RE = re.compile(
+    r"""\s+bgcolor\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE
 )
 
 if TYPE_CHECKING:
@@ -148,7 +163,7 @@ class EventDetailsDialog(QDialog):
         # ── Notes ─────────────────────────────────────────────────────────────
         if event.description:
             notes_text = (
-                event.description
+                _strip_colors(event.description)
                 if _is_html(event.description)
                 else _linkify(event.description)
             )
@@ -397,7 +412,26 @@ def _format_recurrence(event: "Event") -> str:
 def _is_html(text: str) -> bool:
     """Return True if text appears to contain HTML markup."""
     stripped = text.lstrip()
-    return stripped.startswith("<!DOCTYPE") or bool(_HTML_TAG_RE.search(text))
+    if stripped.startswith(("<!DOCTYPE", "<!--[if", "<![if")):
+        return True
+    return bool(_HTML_TAG_RE.search(text) or _HTML_ENTITY_RE.search(text))
+
+
+def _strip_colors(html: str) -> str:
+    """Strip inline color/background-color so the system palette wins."""
+
+    def _scrub_style(m: re.Match[str]) -> str:
+        cleaned = _STYLE_COLOR_DECL_RE.sub("", m.group(3)).strip(" ;")
+        if not cleaned:
+            return ""
+        return f"{m.group(1)}{m.group(2)}{cleaned}{m.group(2)}"
+
+    def _scrub_font(m: re.Match[str]) -> str:
+        return f"<font{_FONT_COLOR_ATTR_RE.sub('', m.group(1))}>"
+
+    html = _STYLE_ATTR_RE.sub(_scrub_style, html)
+    html = _FONT_OPEN_TAG_RE.sub(_scrub_font, html)
+    return _BGCOLOR_ATTR_RE.sub("", html)
 
 
 def _linkify(text: str) -> str:
