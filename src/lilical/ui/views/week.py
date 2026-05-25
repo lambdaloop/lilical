@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
@@ -16,19 +16,21 @@ from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping
 from lilical.ui.views._week_start import start_of_week
+from lilical.ui.widgets.day_events_popover import DayEventsPopover, PopoverEvent
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
 
-ALL_DAY_MAX_ROWS = 4  # spec §4: max 4 rows before scrolling
 HOURS = 24
 
 _BASE_TIME_AXIS_WIDTH = 60
 _BASE_DAY_HEADER_H = 32
 _BASE_ALL_DAY_ROW_H = 22
+_BASE_MIN_ALL_DAY_ROW_H = 6
 _BASE_ALL_DAY_BAND_MIN = 28
+_BASE_ALL_DAY_BAND_MAX = 4 * _BASE_ALL_DAY_ROW_H + 4  # 92 px — budget for ~4 full rows
 _BASE_DEFAULT_PX_PER_HOUR = 48
 _BASE_PX_PER_HOUR_MIN = 20
 _BASE_PX_PER_HOUR_MAX = 96
@@ -36,7 +38,9 @@ _BASE_PX_PER_HOUR_MAX = 96
 TIME_AXIS_WIDTH = _BASE_TIME_AXIS_WIDTH
 DAY_HEADER_H = _BASE_DAY_HEADER_H
 ALL_DAY_ROW_H = _BASE_ALL_DAY_ROW_H
+MIN_ALL_DAY_ROW_H = _BASE_MIN_ALL_DAY_ROW_H
 ALL_DAY_BAND_MIN = _BASE_ALL_DAY_BAND_MIN
+ALL_DAY_BAND_MAX = _BASE_ALL_DAY_BAND_MAX
 DEFAULT_PX_PER_HOUR = _BASE_DEFAULT_PX_PER_HOUR
 PX_PER_HOUR_MIN = _BASE_PX_PER_HOUR_MIN
 PX_PER_HOUR_MAX = _BASE_PX_PER_HOUR_MAX
@@ -47,7 +51,9 @@ def apply_scale(factor: float) -> None:
     g["TIME_AXIS_WIDTH"] = max(1, round(_BASE_TIME_AXIS_WIDTH * factor))
     g["DAY_HEADER_H"] = max(1, round(_BASE_DAY_HEADER_H * factor))
     g["ALL_DAY_ROW_H"] = max(1, round(_BASE_ALL_DAY_ROW_H * factor))
+    g["MIN_ALL_DAY_ROW_H"] = max(2, round(_BASE_MIN_ALL_DAY_ROW_H * factor))
     g["ALL_DAY_BAND_MIN"] = max(1, round(_BASE_ALL_DAY_BAND_MIN * factor))
+    g["ALL_DAY_BAND_MAX"] = max(1, round(_BASE_ALL_DAY_BAND_MAX * factor))
     g["DEFAULT_PX_PER_HOUR"] = max(1, round(_BASE_DEFAULT_PX_PER_HOUR * factor))
     g["PX_PER_HOUR_MIN"] = max(1, round(_BASE_PX_PER_HOUR_MIN * factor))
     g["PX_PER_HOUR_MAX"] = max(1, round(_BASE_PX_PER_HOUR_MAX * factor))
@@ -477,20 +483,40 @@ def _compute_week_placements(
 
     max_rows = max(all_day_rows_per_col, default=0)
     if max_rows == 0:
-        band_h = ALL_DAY_BAND_MIN
+        band_h = float(ALL_DAY_BAND_MIN)
+        band_row_h = float(ALL_DAY_ROW_H)
+        rows_shown = 0
     else:
-        rows_shown = min(max_rows, ALL_DAY_MAX_ROWS)
-        band_h = 4 + rows_shown * ALL_DAY_ROW_H
+        available = float(ALL_DAY_BAND_MAX - 4)
+        row_h_ideal = available / max_rows
+        band_row_h = max(
+            float(MIN_ALL_DAY_ROW_H), min(float(ALL_DAY_ROW_H), row_h_ideal)
+        )
+        rows_shown = min(max_rows, int(available / band_row_h))
+        band_h = 4.0 + rows_shown * band_row_h
     body_top = DAY_HEADER_H + band_h
+
+    # Popover data: one list of PopoverEvent per day-column.
+    band_popover_events: dict[int, list[PopoverEvent]] = {}
+    band_dense_cols: set[int] = set()
 
     new_placements: dict[tuple, dict] = {}
 
     # Render band items.
     for i, (start_col, end_col, inst, inst_t, span) in enumerate(band_items):
         track_idx = item_track[i]
-        if track_idx >= ALL_DAY_MAX_ROWS:
-            continue
         event = events.get(id(inst))
+        # Collect popover data for every event regardless of visibility.
+        pev = PopoverEvent(
+            time_str="All day",
+            title=event.summary if event else "",
+            location=event.location if event else None,
+            calendar_color=cal_color.get(inst.calendar_id),  # type: ignore[reportAttributeAccessIssue]
+        )
+        for col in range(start_col, end_col + 1):
+            band_popover_events.setdefault(col, []).append(pev)
+        if track_idx >= rows_shown:
+            continue
         if event is None:
             continue
         if span:
@@ -508,9 +534,9 @@ def _compute_week_placements(
             continues_left = continues_right = False
             key = (inst.calendar_id, inst.uid, inst.dtstart_local)
         x = TIME_AXIS_WIDTH + start_col * col_w
-        y = DAY_HEADER_H + 2 + track_idx * ALL_DAY_ROW_H
+        y = DAY_HEADER_H + 2 + track_idx * band_row_h
         w = (end_col - start_col + 1) * col_w - 2
-        h = ALL_DAY_ROW_H - 2
+        h = band_row_h - 2
         new_placements[key] = {
             "rect": QRectF(x + 1, y, w, h),
             "calendar_color": cal_color.get(inst.calendar_id),
@@ -584,22 +610,18 @@ def _compute_week_placements(
                 "inst_key": payload["inst_key"],
             }
 
-    more_markers: dict[int, tuple[QRectF, str]] = {}
-    for col, count in enumerate(all_day_rows_per_col):
-        hidden = count - ALL_DAY_MAX_ROWS
-        if hidden <= 0:
-            continue
-        x = TIME_AXIS_WIDTH + col * col_w
-        y = DAY_HEADER_H + 2 + (ALL_DAY_MAX_ROWS - 1) * ALL_DAY_ROW_H
-        more_markers[col] = (
-            QRectF(x + 1, y, col_w - 2, ALL_DAY_ROW_H - 2),
-            f"+{hidden} more",
-        )
+    # Mark columns as dense when band shrank or any events were truncated.
+    for col in range(day_count):
+        if all_day_rows_per_col[col] > 0 and (
+            band_row_h < ALL_DAY_ROW_H or all_day_rows_per_col[col] > rows_shown
+        ):
+            band_dense_cols.add(col)
 
     return {
         "new_placements": new_placements,
         "band_h": float(band_h),
-        "more_markers": more_markers,
+        "band_popover_events": band_popover_events,
+        "band_dense_cols": band_dense_cols,
         "first_event_minutes": first_event_minutes,
         "completions": completions,
     }
@@ -619,8 +641,17 @@ class WeekView(QGraphicsView):
         self._time_format: str = "24h"
         self._week_start_pref: str = "monday"
         self._chips: dict[tuple[str, str, str], EventChip] = {}
-        self._more_markers: dict[int, _MoreMarker] = {}
         self._refresh_task: asyncio.Task | None = None
+        # Hover-popover state for the all-day band.
+        self._band_popover_events: dict[int, list[PopoverEvent]] = {}
+        self._band_dense_cols: set[int] = set()
+        self._current_band_h: float = float(ALL_DAY_BAND_MIN)
+        self._hovered_band_col: int | None = None
+        self._pending_band_col: int | None = None
+        self._popover = DayEventsPopover()
+        self._band_show_timer = QTimer(self)
+        self._band_show_timer.setSingleShot(True)
+        self._band_show_timer.timeout.connect(self._show_band_popover)
         self._rendered_start: date | None = None
         self._needs_scroll: bool = True
         self._completed_enabled: bool = False
@@ -657,6 +688,8 @@ class WeekView(QGraphicsView):
         # always tracks viewport width, so contributing a wide minimum-size
         # hint here would needlessly push the main window wider.
         self.setMinimumWidth(0)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
         today = date.today()
         week_start = start_of_week(today, self._week_start_pref)
@@ -980,21 +1013,9 @@ class WeekView(QGraphicsView):
             new_chips[key] = chip
         self._chips = new_chips
 
-        plan_markers: dict[int, tuple[QRectF, str]] = plan["more_markers"]
-        old_markers = self._more_markers
-        new_markers: dict[int, _MoreMarker] = {}
-        for col, marker in old_markers.items():
-            if col not in plan_markers:
-                marker.setParentItem(None)  # type: ignore[reportArgumentType]
-        for col, (rect, label) in plan_markers.items():
-            if col in old_markers:
-                old_markers[col].update_data(rect, label)
-                new_markers[col] = old_markers[col]
-            else:
-                m = _MoreMarker(rect, label)
-                m.setParentItem(self._sticky)
-                new_markers[col] = m
-        self._more_markers = new_markers
+        self._band_popover_events = plan.get("band_popover_events", {})
+        self._band_dense_cols = plan.get("band_dense_cols", set())
+        self._current_band_h = plan.get("band_h", float(ALL_DAY_BAND_MIN))
 
         if self._needs_scroll:
             self._needs_scroll = False
@@ -1043,6 +1064,50 @@ class WeekView(QGraphicsView):
     ) -> None:
         cal_id, uid, dtstart_utc = inst_key
         self._store.set_completed(cal_id, uid, dtstart_utc, completed)
+
+    # ── Band hover popover ───────────────────────────────────────────────
+
+    def _band_col_at_vp(self, vp_pos: "QPoint") -> int | None:
+        """Return the all-day band column under viewport position, or None."""
+        vp_y = vp_pos.y()
+        header_h = self._sticky.header_h()
+        if not (DAY_HEADER_H <= vp_y < header_h):
+            return None
+        col_w = max(
+            1.0,
+            (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count,
+        )
+        col = int((vp_pos.x() - TIME_AXIS_WIDTH) / col_w)
+        if col < 0 or col >= self._day_count:
+            return None
+        return col
+
+    def _update_band_hover(self, vp_pos: "QPoint") -> None:
+        col = self._band_col_at_vp(vp_pos)
+        if col != self._hovered_band_col:
+            self._hovered_band_col = col
+            self._band_show_timer.stop()
+            self._popover.hide()
+            if col is not None and col in self._band_dense_cols:
+                self._pending_band_col = col
+                self._band_show_timer.start(280)
+
+    def _show_band_popover(self) -> None:
+        col = self._pending_band_col
+        if col is None or col != self._hovered_band_col:
+            return
+        events = self._band_popover_events.get(col)
+        if not events:
+            return
+        day = self._start + timedelta(days=col)
+        col_w = max(
+            1.0,
+            (self._grid.boundingRect().width() - TIME_AXIS_WIDTH) / self._day_count,
+        )
+        vp_x = int(TIME_AXIS_WIDTH + (col + 1) * col_w)
+        vp_y = int(DAY_HEADER_H)
+        global_pt: QPoint = self.viewport().mapToGlobal(QPoint(vp_x, vp_y))
+        self._popover.show_for_day(day, events, global_pt)
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 
@@ -1165,7 +1230,16 @@ class WeekView(QGraphicsView):
         event.accept()
 
     @override
+    def leaveEvent(self, event) -> None:  # noqa: ANN001
+        super().leaveEvent(event)
+        self._hovered_band_col = None
+        self._pending_band_col = None
+        self._band_show_timer.stop()
+        self._popover.hide()
+
+    @override
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
+        self._update_band_hover(event.pos())
         if self._drag_kind is None:
             super().mouseMoveEvent(event)
             return
@@ -1531,34 +1605,3 @@ class WeekView(QGraphicsView):
             self._store.queue_create(new_event)
 
 
-class _MoreMarker(QGraphicsItem):
-    """Tiny "+N more" pill drawn in the all-day overflow position."""
-
-    def __init__(self, rect: QRectF, label: str) -> None:
-        super().__init__()
-        self._rect = rect
-        self._label = label
-
-    def update_data(self, rect: QRectF, label: str) -> None:
-        self.prepareGeometryChange()
-        self._rect = rect
-        self._label = label
-        self.update()
-
-    @override
-    def boundingRect(self) -> QRectF:
-        return self._rect
-
-    @override
-    def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor(theme.BG_SURFACE_3))
-        painter.setPen(QPen(QColor(theme.BORDER), 0))
-        painter.drawRoundedRect(self._rect, 2, 2)
-        painter.setPen(QColor(theme.TEXT_SECONDARY))
-        painter.setFont(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX))
-        painter.drawText(
-            self._rect,
-            Qt.AlignmentFlag.AlignCenter,
-            self._label,
-        )
