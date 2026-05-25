@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsObject
 
@@ -43,7 +43,7 @@ def _resolve_cluster_geometry(
 
     chip_y_local = (dom_start - cluster_start_min) * px_per_min
     chip_h = max(14.0, (dom_end - dom_start) * px_per_min)
-    chip_rect = QRectF(rect.x(), rect.y() + chip_y_local, chip_total_w, chip_h)
+    chip_rect = QRectF(0.0, chip_y_local, chip_total_w, chip_h)
 
     _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
     dom_time_prefix = (
@@ -152,6 +152,8 @@ class LineCluster(QGraphicsObject):
         self._chip.setParentItem(self)
 
         self.setAcceptHoverEvents(True)
+        self.setFiltersChildEvents(True)
+        self._hovered: bool = False
 
     @property
     def chip(self) -> EventChip:
@@ -221,12 +223,30 @@ class LineCluster(QGraphicsObject):
             painter.setBrush(color)
             painter.drawRect(bar_rect)
 
+    def sceneEventFilter(self, watched, event) -> bool:  # noqa: ANN001, N802
+        t = event.type()
+        if t == QEvent.Type.GraphicsSceneHoverEnter:
+            if not self._hovered:
+                self._hovered = True
+                self.hovered.emit(self._cluster_data["events"])
+        elif t == QEvent.Type.GraphicsSceneHoverLeave:
+            pos = event.scenePos()
+            if not self.sceneBoundingRect().contains(pos):
+                self._hovered = False
+                self.hover_left.emit()
+        return False
+
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
-        self.hovered.emit(self._cluster_data["events"])
+        if not self._hovered:
+            self._hovered = True
+            self.hovered.emit(self._cluster_data["events"])
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
-        self.hover_left.emit()
+        pos = event.scenePos()
+        if not self.sceneBoundingRect().contains(pos):
+            self._hovered = False
+            self.hover_left.emit()
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802

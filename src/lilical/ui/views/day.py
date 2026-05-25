@@ -889,10 +889,11 @@ class _DayCanvas(QGraphicsView):
             if key not in new_cluster_placements and cluster.scene() is self._scene:
                 self._scene.removeItem(cluster)
         for key, cpl in new_cluster_placements.items():
+            rect = cpl["rect"]
             if key in old_clusters:
                 cluster = old_clusters[key]
                 cluster.update_layout(
-                    cpl["rect"],
+                    rect,
                     cpl["cluster_data"],
                     cpl["px_per_hour"],
                     calendar_color_map=cpl["calendar_color_map"],
@@ -901,7 +902,7 @@ class _DayCanvas(QGraphicsView):
                 )
             else:
                 cluster = LineCluster(
-                    cpl["rect"],
+                    rect,
                     cpl["cluster_data"],
                     cpl["px_per_hour"],
                     calendar_color_map=cpl["calendar_color_map"],
@@ -910,6 +911,7 @@ class _DayCanvas(QGraphicsView):
                 )
                 self._wire_cluster_signals(cluster)
                 self._scene.addItem(cluster)
+            cluster.setPos(rect.x(), rect.y())
             new_clusters[key] = cluster
         self._clusters = new_clusters
 
