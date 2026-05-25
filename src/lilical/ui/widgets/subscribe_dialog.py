@@ -242,18 +242,24 @@ class SubscribeDialog(QDialog):
         worker = _FetchWorker(canon)
         worker.moveToThread(worker_thread)
         worker_thread.started.connect(worker.run)
-        worker.finished.connect(self._on_fetch_done)
+        # quit() must be queued before _on_fetch_done: the worker thread's
+        # exec() loop needs to receive the quit event and exit while the GUI
+        # thread is processing the result. If _on_fetch_done came first and
+        # called wait(), the GUI thread would block before quit was delivered,
+        # causing a deadlock.
         worker.finished.connect(worker_thread.quit)
+        worker.finished.connect(self._on_fetch_done)
+        worker.finished.connect(worker.deleteLater)
+        worker_thread.finished.connect(worker_thread.deleteLater)
         self._worker_thread = worker_thread
         self._worker = worker
         worker_thread.start()
 
     def _on_fetch_done(self, result: object) -> None:
-        # Tear down the worker thread before doing anything else.
-        if self._worker_thread is not None:
-            self._worker_thread.wait()
-            self._worker_thread.deleteLater()
-            self._worker_thread = None
+        # Worker + thread clean themselves up via the deleteLater chain wired
+        # in _on_subscribe. Don't call wait() here — it would deadlock because
+        # the queued quit() event can't be delivered while this slot runs.
+        self._worker_thread = None
         self._worker = None
 
         if not isinstance(result, tuple) or len(result) != 5:
