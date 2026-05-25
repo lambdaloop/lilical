@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm
+from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._week_start import (
     dow_labels,
     start_of_week,
@@ -446,17 +447,16 @@ class MonthView(QGraphicsView):
             except (ValueError, TypeError):
                 continue
 
-            start_day = t.date()
-            end_day_inclusive = et.date()
-            # Half-open: event ending at 00:00 of day N actually ends day N-1.
-            ends_at_midnight = et.time().hour == 0 and et.time().minute == 0
-            if ends_at_midnight and end_day_inclusive > start_day:
-                end_day_inclusive = end_day_inclusive - timedelta(days=1)
-
-            if end_day_inclusive > start_day:
-                multi_spans.append((start_day, end_day_inclusive, inst))
+            span = multi_day_span(inst)
+            if span is not None:
+                multi_spans.append((span[0], span[1], inst))
             else:
+                start_day = t.date()
                 single_by_day.setdefault(start_day, []).append((t, inst))
+                # Short cross-midnight event: also show on the end day.
+                end_day = et.date()
+                if end_day > start_day and (et.hour != 0 or et.minute != 0):
+                    single_by_day.setdefault(end_day, []).append((t, inst))
 
         # ── Layout pass 1: place multi-day spans in row slots ────────────
         # Pack spans into row "tracks" so they don't visually overlap.

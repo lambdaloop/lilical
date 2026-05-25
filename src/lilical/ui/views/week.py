@@ -454,6 +454,17 @@ def _compute_week_placements(
                 if first_event_minutes is None or m < first_event_minutes:
                     first_event_minutes = m
                 timed_instances.append((inst, t))
+            elif day_offset == -1:
+                # Event started yesterday; check for a short cross-midnight tail
+                # that bleeds into day 0 of this week.
+                try:
+                    _end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
+                except (ValueError, TypeError):
+                    continue
+                if _end_t.date() == start and (
+                    _end_t.hour != 0 or _end_t.minute != 0
+                ):
+                    timed_instances.append((inst, t))
 
     # Greedy track assignment — longer spans get lower tracks so they don't overlap.
     order = sorted(
@@ -551,36 +562,67 @@ def _compute_week_placements(
             "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
         }
 
-    # Render single-day timed events.
+    # Render timed events (single-day or cross-midnight short splits).
     timed_by_day: list[list[tuple]] = [[] for _ in range(day_count)]
     for inst, t in timed_instances:
         event = events.get(id(inst))
         if event is None:
             continue
-        day_offset = (t.date() - start).days
         try:
             end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
         except (ValueError, TypeError):
             end_t = t
-        start_min = t.hour * 60 + t.minute
-        end_min = end_t.hour * 60 + end_t.minute
-        if end_min <= start_min:
-            end_min = start_min + 15
-        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
-        timed_by_day[day_offset].append(
-            (
-                float(start_min),
-                float(end_min),
-                {
-                    "event": event,
-                    "start_dt": t,
-                    "cal_color": cal_color.get(inst.calendar_id),
-                    "instance_dtstart": t,
-                    "key": key,
-                    "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
-                },
-            )
+        start_day = t.date()
+        end_day = end_t.date()
+        # True cross-midnight: end is a later date AND not exactly 00:00
+        # (midnight-ending events are single-day chips per half-open convention).
+        crosses_midnight = end_day > start_day and (
+            end_t.hour != 0 or end_t.minute != 0
         )
+        start_offset = (start_day - start).days
+        start_min = t.hour * 60 + t.minute
+
+        # Build per-day segments: (day_off, s_min, e_min, c_left, c_right, show_pfx)
+        segments: list[tuple[int, int, int, bool, bool, bool]] = []
+        if not crosses_midnight:
+            if end_day > start_day:
+                # Midnight-ending: show full 8 PM → midnight on start day.
+                e_min = 1440
+            else:
+                e_min = end_t.hour * 60 + end_t.minute
+                if e_min <= start_min:
+                    e_min = start_min + 15
+            if 0 <= start_offset < day_count:
+                segments.append((start_offset, start_min, e_min, False, False, True))
+        else:
+            # Day 1 (or tail only if start was before week boundary).
+            if 0 <= start_offset < day_count:
+                segments.append((start_offset, start_min, 1440, False, True, True))
+            # Day 2 tail: 00:00 → end_min.
+            end_offset = start_offset + 1
+            e_min_day2 = end_t.hour * 60 + end_t.minute
+            if 0 <= end_offset < day_count and e_min_day2 > 0:
+                segments.append((end_offset, 0, e_min_day2, True, False, False))
+
+        for day_off, s_min, e_min, c_left, c_right, show_pfx in segments:
+            key = (inst.calendar_id, inst.uid, inst.dtstart_local, day_off)
+            timed_by_day[day_off].append(
+                (
+                    float(s_min),
+                    float(e_min),
+                    {
+                        "event": event,
+                        "start_dt": t,
+                        "cal_color": cal_color.get(inst.calendar_id),
+                        "instance_dtstart": t,
+                        "key": key,
+                        "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
+                        "continues_left": c_left,
+                        "continues_right": c_right,
+                        "show_time_prefix": show_pfx,
+                    },
+                )
+            )
 
     _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
     for day_offset, bucket in enumerate(timed_by_day):
@@ -596,13 +638,14 @@ def _compute_week_placements(
             chip_w = max(8.0, xspan * sub_w)
             chip_y = body_top + start_min * px_per_hour / 60
             chip_h = max(14.0, (end_min - start_min) * px_per_hour / 60)
+            show_pfx = payload["show_time_prefix"]
             new_placements[payload["key"]] = {
                 "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
                 "calendar_color": payload["cal_color"],
-                "show_time_prefix": True,
-                "time_prefix": payload["start_dt"].strftime(_tfmt),
-                "continues_left": False,
-                "continues_right": False,
+                "show_time_prefix": show_pfx,
+                "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
+                "continues_left": payload["continues_left"],
+                "continues_right": payload["continues_right"],
                 "overlap_cols": cols,
                 "instance_dtstart": payload["instance_dtstart"],
                 "is_sticky": False,
@@ -640,7 +683,7 @@ class WeekView(QGraphicsView):
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
         self._week_start_pref: str = "monday"
-        self._chips: dict[tuple[str, str, str], EventChip] = {}
+        self._chips: dict[tuple, EventChip] = {}
         self._refresh_task: asyncio.Task | None = None
         # Hover-popover state for the all-day band.
         self._band_popover_events: dict[int, list[PopoverEvent]] = {}

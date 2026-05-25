@@ -431,24 +431,47 @@ def _compute_day_placements(
             all_day_idx += 1
             continue
 
-        # Single-day timed event.
-        if t.date() != day:
-            continue
-        key = (inst.calendar_id, inst.uid, inst.dtstart_local)
+        # Timed event: single-day, or cross-midnight split (slice visible today).
         try:
             end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
         except (ValueError, TypeError):
             end_t = t
-        start_min = t.hour * 60 + t.minute
-        end_min = end_t.hour * 60 + end_t.minute
-        if end_min <= start_min:
-            end_min = start_min + 15
-        if first_event_minutes is None or start_min < first_event_minutes:
-            first_event_minutes = start_min
+        start_day = t.date()
+        end_day = end_t.date()
+        crosses_midnight = end_day > start_day and (
+            end_t.hour != 0 or end_t.minute != 0
+        )
+        if start_day == day:
+            # Event starts today.
+            s_min = t.hour * 60 + t.minute
+            if not crosses_midnight:
+                e_min = (
+                    1440 if end_day > start_day else end_t.hour * 60 + end_t.minute
+                )
+                if e_min <= s_min:
+                    e_min = s_min + 15
+                c_left, c_right, show_pfx = False, False, True
+            else:
+                e_min = 1440
+                c_left, c_right, show_pfx = False, True, True
+            day_off = 0
+        elif crosses_midnight and end_day == day:
+            # Tail: event started yesterday, ends today.
+            s_min = 0
+            e_min = end_t.hour * 60 + end_t.minute
+            if e_min == 0:
+                continue  # ends exactly at midnight — no tail chip needed
+            c_left, c_right, show_pfx = True, False, False
+            day_off = 1
+        else:
+            continue
+        if first_event_minutes is None or s_min < first_event_minutes:
+            first_event_minutes = s_min
+        key = (inst.calendar_id, inst.uid, inst.dtstart_local, day_off)
         timed_bucket.append(
             (
-                float(start_min),
-                float(end_min),
+                float(s_min),
+                float(e_min),
                 {
                     "event": event,
                     "start_dt": t,
@@ -456,6 +479,9 @@ def _compute_day_placements(
                     "instance_dtstart": t,
                     "key": key,
                     "inst_key": (inst.calendar_id, inst.uid, inst.dtstart_utc),
+                    "continues_left": c_left,
+                    "continues_right": c_right,
+                    "show_time_prefix": show_pfx,
                 },
             )
         )
@@ -471,13 +497,14 @@ def _compute_day_placements(
             chip_w = max(8.0, xspan * sub_w)
             chip_y = body_top + start_min * px_per_hour / 60
             chip_h = max(14.0, (end_min - start_min) * px_per_hour / 60)
+            show_pfx = payload["show_time_prefix"]
             new_placements[payload["key"]] = {
                 "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
                 "calendar_color": payload["cal_color"],
-                "show_time_prefix": True,
-                "time_prefix": payload["start_dt"].strftime(_tfmt),
-                "continues_left": False,
-                "continues_right": False,
+                "show_time_prefix": show_pfx,
+                "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
+                "continues_left": payload["continues_left"],
+                "continues_right": payload["continues_right"],
                 "overlap_cols": cols,
                 "instance_dtstart": payload["instance_dtstart"],
                 "is_sticky": False,
@@ -553,7 +580,7 @@ class _DayCanvas(QGraphicsView):
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
-        self._chips: dict[tuple[str, str, str], EventChip] = {}
+        self._chips: dict[tuple, EventChip] = {}
         self._refresh_task: asyncio.Task | None = None
         self._rendered_day: date | None = None
         self._needs_scroll: bool = True
