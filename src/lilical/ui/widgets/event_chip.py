@@ -151,10 +151,6 @@ def _format_time_prefix_from(event: "Event", time_format: str = "24h") -> str | 
     return start.astimezone().strftime(fmt)
 
 
-# Width below which the overlap badge is shown.
-_BADGE_CHIP_MAX_W = 44
-
-
 class EventChip(QGraphicsObject):
     """Colored rectangle representing one calendar event in a graphics view.
 
@@ -200,7 +196,6 @@ class EventChip(QGraphicsObject):
         time_format: str = "24h",
         continues_left: bool = False,
         continues_right: bool = False,
-        overlap_cols: int = 1,
         instance_dtstart: datetime | None = None,
         completed: bool = False,
         inst_key: tuple[str, str, int] | None = None,
@@ -216,7 +211,6 @@ class EventChip(QGraphicsObject):
         self._time_format = time_format
         self._continues_left = continues_left
         self._continues_right = continues_right
-        self._overlap_cols = overlap_cols
         self._hovered = False
         self._instance_dtstart = instance_dtstart
         self._completed: bool = completed
@@ -302,7 +296,6 @@ class EventChip(QGraphicsObject):
         show_time_prefix: bool,
         continues_left: bool = False,
         continues_right: bool = False,
-        overlap_cols: int = 1,
         instance_dtstart: datetime | None,
     ) -> None:
         """Update geometry and layout properties in place — avoids chip reallocation."""
@@ -314,7 +307,6 @@ class EventChip(QGraphicsObject):
         self._show_time_prefix = show_time_prefix
         self._continues_left = continues_left
         self._continues_right = continues_right
-        self._overlap_cols = overlap_cols
         self._instance_dtstart = instance_dtstart
         self.setToolTip(self._build_tooltip())
         self.update()
@@ -470,7 +462,6 @@ class EventChip(QGraphicsObject):
         if h < min_title:
             # Tier 0: no text. Tooltip carries info.
             self._draw_continuation_glyphs(painter, text_color)
-            self._draw_overlap_badge(painter)
             return
 
         pad_l = 3 if not self._continues_left else 10
@@ -599,7 +590,6 @@ class EventChip(QGraphicsObject):
 
         painter.setClipping(False)
         self._draw_recurrence_glyph(painter, text_color, min_title)
-        self._draw_overlap_badge(painter)
         self._draw_continuation_glyphs(painter, text_color)
 
     # ── Text mode ─────────────────────────────────────────────────────────
@@ -637,7 +627,6 @@ class EventChip(QGraphicsObject):
 
         h = self._rect.height()
         if h < min_title:
-            self._draw_overlap_badge(painter)
             return
 
         pad_l = _bar_w + 5  # bar + 2 px gap + 3 px body pad
@@ -764,7 +753,6 @@ class EventChip(QGraphicsObject):
 
         painter.setClipping(False)
         self._draw_recurrence_glyph(painter, text_color, min_title)
-        self._draw_overlap_badge(painter)
 
     # ── Dot mode (Agenda children, very dense rows) ──────────────────────
     def _paint_dot(self, painter: QPainter, base: QColor) -> None:
@@ -839,29 +827,6 @@ class EventChip(QGraphicsObject):
             QRectF(gx, gy, gw + 1, fm.height()),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
             glyph,
-        )
-
-    # ── Overlap density badge ─────────────────────────────────────────────
-    def _draw_overlap_badge(self, painter: QPainter) -> None:
-        if self._overlap_cols <= 1 or self._rect.width() >= _BADGE_CHIP_MAX_W:
-            return
-        badge_text = f"+{self._overlap_cols - 1}"
-        badge_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_PREFIX, QFont.Weight.Bold)
-        painter.setFont(badge_font)
-        fm = QFontMetricsF(badge_font)
-        bw = fm.horizontalAdvance(badge_text) + 4
-        bh = fm.height() + 2
-        bx = self._rect.right() - bw - 1
-        by = self._rect.y() + 1
-        painter.setClipping(False)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 120))
-        painter.drawRoundedRect(QRectF(bx, by, bw, bh), 2, 2)
-        painter.setPen(QColor("#ffffff"))
-        painter.drawText(
-            QRectF(bx + 2, by + 1, bw - 4, bh - 2),
-            Qt.AlignmentFlag.AlignCenter,
-            badge_text,
         )
 
     # ── Interactivity ────────────────────────────────────────────────────

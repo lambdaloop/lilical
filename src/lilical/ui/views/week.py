@@ -980,7 +980,6 @@ class WeekView(QGraphicsView):
                     calendar_color=pl["calendar_color"],
                     time_prefix=pl["time_prefix"],
                     show_time_prefix=pl["show_time_prefix"],
-                    overlap_cols=pl["overlap_cols"],
                     instance_dtstart=pl["instance_dtstart"],
                 )
                 if is_sticky and chip.scene() is self._scene:
@@ -998,7 +997,6 @@ class WeekView(QGraphicsView):
                     show_time_prefix=pl["show_time_prefix"],
                     time_prefix=pl["time_prefix"],
                     time_format=self._time_format,
-                    overlap_cols=pl["overlap_cols"],
                     instance_dtstart=pl["instance_dtstart"],
                     completed=is_comp,
                     inst_key=inst_key,

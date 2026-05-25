@@ -328,7 +328,7 @@ class MonthView(QGraphicsView):
             return
         scene_pt = QPointF(cell_rect.right(), cell_rect.top())
         vp_pt = self.mapFromScene(scene_pt)
-        global_pt: QPoint = self.viewport().mapToGlobal(vp_pt.toPoint())
+        global_pt: QPoint = self.viewport().mapToGlobal(vp_pt)
         self._popover.show_for_day(day, events, global_pt)
 
     def _rebuild_grid(self) -> None:
