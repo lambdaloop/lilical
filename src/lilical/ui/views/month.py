@@ -710,6 +710,11 @@ class MonthView(QGraphicsView):
             if chip.scene() is not self._scene:
                 self._scene.addItem(chip)
         else:
+            read_only_cal_ids = {
+                cid
+                for cid, ci in self._cal_info_provider().items()
+                if getattr(ci, "read_only", False)
+            }
             chip = EventChip(
                 event,
                 rect,
@@ -722,6 +727,7 @@ class MonthView(QGraphicsView):
                 instance_dtstart=instance_dtstart,
                 completed=completed,
                 inst_key=inst_key,
+                read_only=event.calendar_id in read_only_cal_ids,
             )
             chip.details_requested.connect(
                 lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)

@@ -56,6 +56,17 @@ _VIEW_NAMES = ["Month", "Week", "Day", "Agenda"]
 _DEFAULT_VIEW = "Week"
 
 
+def _is_read_only_cal(cal) -> bool:  # noqa: ANN001
+    """A calendar is read-only when its access_role is reader-tier.
+
+    Currently catches both subscription calendars (access_role='reader',
+    set when the subscription is created) and any Google/Graph calendar
+    the user only has read access to.
+    """
+    role = (getattr(cal, "access_role", "") or "").lower()
+    return role in ("reader", "freebusyreader")
+
+
 @dataclasses.dataclass(frozen=True)
 class CalInfo:
     """Immutable snapshot of a calendar's metadata for use in view builders."""
@@ -65,6 +76,7 @@ class CalInfo:
     color: str | None
     account_id: str
     visible: bool
+    read_only: bool = False
 
 
 class _ElidingLabel(QLabel):
@@ -187,6 +199,7 @@ class MainWindow(QMainWindow):
                     color=cal.color,
                     account_id=acc.id,
                     visible=bool(cal.is_visible),
+                    read_only=_is_read_only_cal(cal),
                 )
         self._theme_qss_cache: dict[str, str] = {}
 
@@ -226,6 +239,7 @@ class MainWindow(QMainWindow):
             add_account_callback=self._add_account,
             cal_info_provider=self._cal_info_provider,
             account_meta_provider=self._account_meta_provider,
+            subscribe_callback=self._subscribe,
         )
         self._sidebar.rename_account_requested.connect(self._on_rename_account)
         self._sidebar.reauth_account_requested.connect(self._on_reauth_account)
@@ -240,6 +254,8 @@ class MainWindow(QMainWindow):
         self._sidebar.change_color_requested.connect(self._on_change_calendar_color)
         self._sidebar.new_calendar_requested.connect(self._on_new_calendar)
         self._sidebar.delete_calendar_requested.connect(self._on_delete_calendar)
+        self._sidebar.refresh_calendar_requested.connect(self._on_refresh_calendar)
+        self._sidebar.unsubscribe_requested.connect(self._on_unsubscribe)
         self._sidebar.account_order_changed.connect(self._on_account_order_changed)
         self._sidebar.calendar_order_changed.connect(self._on_calendar_order_changed)
         self._sidebar.date_selected.connect(self._on_sidebar_date_selected)
@@ -968,6 +984,7 @@ class MainWindow(QMainWindow):
                 color=cal.color,
                 account_id=account_id,
                 visible=bool(cal.is_visible),
+                read_only=_is_read_only_cal(cal),
             )
             for cal in cals
         }
@@ -1021,6 +1038,7 @@ class MainWindow(QMainWindow):
                     color=cal.color,
                     account_id=cal.account_id,
                     visible=bool(cal.is_visible),
+                    read_only=_is_read_only_cal(cal),
                 ),
             }
             self._sidebar.refresh_for_account(cal.account_id)
@@ -1036,6 +1054,7 @@ class MainWindow(QMainWindow):
             color=cal.color,
             account_id=old.account_id,
             visible=bool(cal.is_visible),
+            read_only=_is_read_only_cal(cal),
         )
         self._cal_info = {**self._cal_info, calendar_id: new_ci}
         if new_ci.display_name != old.display_name:
@@ -1108,6 +1127,101 @@ class MainWindow(QMainWindow):
                     break
 
     # ── Account management ────────────────────────────────────────────────
+
+    def _subscribe(self) -> None:
+        from lilical.backends.subscription import (
+            SUBSCRIPTION_ACCOUNT_ID,
+            SUBSCRIPTION_ACCOUNT_NAME,
+        )
+        from lilical.ui.widgets.subscribe_dialog import SubscribeDialog
+
+        dlg = SubscribeDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._store.create_subscription(
+                canonical_source=dlg.canonical_source,
+                display_name=dlg.display_name,
+                color=dlg.color,
+                events=dlg.events,
+                content_sha256=dlg.content_sha256,
+            )
+        except Exception:
+            log.exception("failed to create subscription")
+            QMessageBox.critical(
+                self, "Subscription failed", "Could not save subscription."
+            )
+            return
+        # Subscriptions account may have just been created — refresh metadata.
+        if SUBSCRIPTION_ACCOUNT_ID not in self._account_meta:
+            self._account_display_names[SUBSCRIPTION_ACCOUNT_ID] = (
+                SUBSCRIPTION_ACCOUNT_NAME
+            )
+            self._account_meta[SUBSCRIPTION_ACCOUNT_ID] = (
+                SUBSCRIPTION_ACCOUNT_NAME,
+                "",
+                "subscription",
+            )
+            self._fire_async(
+                self._sync.start_account(SUBSCRIPTION_ACCOUNT_ID),
+                f"start_account/{SUBSCRIPTION_ACCOUNT_ID}",
+            )
+        self._fire_async(
+            self._rebuild_cal_info_for_account_async(SUBSCRIPTION_ACCOUNT_ID),
+            f"rebuild_cal_info/{SUBSCRIPTION_ACCOUNT_ID}",
+        )
+
+    def _on_refresh_calendar(self, calendar_id: str) -> None:
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        self._sync.force_refresh(cal.account_id)
+        self._sync_status.set_syncing(self._account_label(cal.account_id))
+
+    def _on_unsubscribe(self, calendar_id: str) -> None:
+        from lilical.backends.subscription import SUBSCRIPTION_ACCOUNT_ID
+
+        cal = self._store.get_calendar(calendar_id)
+        if cal is None:
+            return
+        confirm = QMessageBox(self)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle("Unsubscribe?")
+        confirm.setText(f'Unsubscribe from "{cal.display_name}"?')
+        confirm.setInformativeText(
+            "All locally-cached events for this subscription will be removed. "
+            "The source itself is not affected."
+        )
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes
+        )
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            account_gone = self._store.delete_subscription(calendar_id)
+        except Exception:
+            log.exception("failed to delete subscription")
+            QMessageBox.critical(
+                self, "Unsubscribe failed", "Could not remove subscription."
+            )
+            return
+        self._cal_info.pop(calendar_id, None)
+        if account_gone:
+            self._fire_async(
+                self._sync.stop_account(SUBSCRIPTION_ACCOUNT_ID),
+                f"stop_account/{SUBSCRIPTION_ACCOUNT_ID}",
+            )
+            self._account_display_names.pop(SUBSCRIPTION_ACCOUNT_ID, None)
+            self._account_meta.pop(SUBSCRIPTION_ACCOUNT_ID, None)
+            self._sidebar.refresh()
+        else:
+            self._fire_async(
+                self._rebuild_cal_info_for_account_async(SUBSCRIPTION_ACCOUNT_ID),
+                f"rebuild_cal_info/{SUBSCRIPTION_ACCOUNT_ID}",
+            )
+        if self._current_view is not None and hasattr(self._current_view, "refresh"):
+            self._current_view.refresh()  # type: ignore[reportAttributeAccessIssue]
 
     def _add_account(self) -> None:
         dlg = AccountSetupDialog(self)

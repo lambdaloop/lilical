@@ -212,6 +212,8 @@ class EventDialog(QDialog):
         for acc in accs:
             cals = store.list_calendars(acc.id, included_only=True)
             for cal in cals:
+                if (cal.access_role or "").lower() in ("reader", "freebusyreader"):
+                    continue
                 self._cal_combo.addItem(
                     f"{acc.display_name} / {cal.display_name}", cal.id
                 )

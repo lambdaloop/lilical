@@ -1233,6 +1233,99 @@ class EventStore(QObject):
                     )
                     next_order += 1
 
+    def create_subscription(
+        self,
+        *,
+        canonical_source: str,
+        display_name: str,
+        color: str,
+        events: list[Event],
+        content_sha256: str,
+    ) -> str:
+        """Create one Calendar row (read-only) under the singleton Subscriptions
+        account, persisting *events* atomically. Returns the new calendar id.
+
+        Auto-creates the Subscriptions account on first use.
+        """
+        import uuid
+
+        from lilical.backends.subscription import (
+            SUBSCRIPTION_ACCOUNT_ID,
+            SUBSCRIPTION_ACCOUNT_NAME,
+            SubscriptionCursor,
+        )
+        from lilical.models.account import Account
+
+        calendar_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._write_session() as s:
+            acc = (
+                s.query(Account)
+                .filter(Account.id == SUBSCRIPTION_ACCOUNT_ID)
+                .first()
+            )
+            if acc is None:
+                s.add(
+                    Account(
+                        id=SUBSCRIPTION_ACCOUNT_ID,
+                        kind="subscription",
+                        display_name=SUBSCRIPTION_ACCOUNT_NAME,
+                        identity="",
+                        server_url=None,
+                        secret_ref="",
+                        created_at=now,
+                        enabled=1,
+                        include_contacts=0,
+                    )
+                )
+            s.add(
+                Calendar(
+                    id=calendar_id,
+                    account_id=SUBSCRIPTION_ACCOUNT_ID,
+                    provider_id=canonical_source,
+                    display_name=display_name,
+                    color=color,
+                    is_primary=0,
+                    is_visible=1,
+                    is_included=1,
+                    access_role="reader",
+                )
+            )
+
+        # Persist the events using the same path the sync engine uses.
+        # apply_remote_changes manages its own write session.
+        from lilical.backends.base import EventChange
+
+        changes = [EventChange(kind="upsert", event=e, uid=e.uid) for e in events]
+        cursor = SubscriptionCursor(
+            etag=None, last_modified=None, content_sha256=content_sha256
+        )
+        self.apply_remote_changes(
+            calendar_id, changes, json.dumps(cursor.to_json())
+        )
+        return calendar_id
+
+    def delete_subscription(self, calendar_id: str) -> bool:
+        """Delete a subscription. Returns True if the Subscriptions account was
+        also removed (i.e., this was the last subscription)."""
+        from lilical.backends.subscription import SUBSCRIPTION_ACCOUNT_ID
+        from lilical.models.account import Account
+
+        self.delete_calendar(calendar_id)
+        with self._write_session() as s:
+            remaining = (
+                s.query(Calendar)
+                .filter(Calendar.account_id == SUBSCRIPTION_ACCOUNT_ID)
+                .count()
+            )
+            if remaining == 0:
+                s.query(Account).filter(
+                    Account.id == SUBSCRIPTION_ACCOUNT_ID
+                ).delete(synchronize_session=False)
+                return True
+        return False
+
     def list_pending_ops(self, account_id: str) -> list[Any]:
         from lilical.models.pending_op import PendingOpRow
 

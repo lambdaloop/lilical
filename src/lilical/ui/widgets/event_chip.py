@@ -204,6 +204,7 @@ class EventChip(QGraphicsObject):
         instance_dtstart: datetime | None = None,
         completed: bool = False,
         inst_key: tuple[str, str, int] | None = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self._event = event
@@ -221,6 +222,7 @@ class EventChip(QGraphicsObject):
         self._completed: bool = completed
         self._inst_key: tuple[str, str, int] | None = inst_key
         self._completed_display_enabled: bool = False
+        self._read_only: bool = read_only
         # Drag state
         self._drag_mode: str | None = None
         self._press_scene_pos: QPointF | None = None
@@ -906,6 +908,13 @@ class EventChip(QGraphicsObject):
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
+        if self._read_only:
+            # Treat the whole chip as a click target — no drag-to-move/resize
+            # on subscription / reader-tier calendars.
+            self._drag_mode = "pending"
+            self._press_scene_pos = QPointF(event.scenePos())
+            event.accept()
+            return
         # Decide initial drag mode based on which edge zone the press lands
         # in. We start "pending" for body presses — only convert to "move"
         # once the user moves past MOVE_THRESHOLD_PX.
@@ -925,6 +934,10 @@ class EventChip(QGraphicsObject):
     def mouseMoveEvent(self, event) -> None:  # noqa: ANN001, N802
         if self._drag_mode is None or self._press_scene_pos is None:
             super().mouseMoveEvent(event)
+            return
+        if self._read_only:
+            # Swallow movement — no drag preview, no commit.
+            event.accept()
             return
         scene_pos = event.scenePos()
         # Promote a pending press to a real move once the cursor crosses
@@ -977,13 +990,18 @@ class EventChip(QGraphicsObject):
             label = "Mark incomplete" if self._completed else "Mark complete"
             toggle_act = menu.addAction(label)
             menu.addSeparator()
-        edit_act = menu.addAction("Edit…")
-        menu.addSeparator()
-        del_act = menu.addAction("Delete…")
+        edit_act = None
+        del_act = None
+        if not self._read_only:
+            edit_act = menu.addAction("Edit…")
+            menu.addSeparator()
+            del_act = menu.addAction("Delete…")
+        if menu.isEmpty():
+            return
         chosen = menu.exec(event.screenPos())
         if toggle_act is not None and chosen is toggle_act:
             self.toggle_complete_requested.emit(self._inst_key, not self._completed)
-        elif chosen is edit_act:
+        elif edit_act is not None and chosen is edit_act:
             self.edit_requested.emit(self._event)
-        elif chosen is del_act:
+        elif del_act is not None and chosen is del_act:
             self.delete_requested.emit(self._event)

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from lilical.backends.base import Backend
 from lilical.models.account import Account
+from lilical.storage.event_store import EventStore
 from lilical.storage.secrets import SecretsStore
 
 
-def build_backend_factory(secrets: SecretsStore):
+def build_backend_factory(secrets: SecretsStore, store: EventStore | None = None):
     def factory(account: Account) -> Backend:
         secret = secrets.get(account.id) or {}
 
@@ -44,6 +45,15 @@ def build_backend_factory(secrets: SecretsStore):
                 on_token_refreshed=_save_graph_cache,
                 include_contacts=bool(account.include_contacts),
             )
+        if account.kind == "subscription":
+            if store is None:
+                raise RuntimeError(
+                    "subscription backend requires an EventStore; "
+                    "pass `store=` to build_backend_factory"
+                )
+            from lilical.backends.subscription import SubscriptionBackend
+
+            return SubscriptionBackend(account_id=account.id, store=store)  # type: ignore[reportReturnType]
         raise NotImplementedError(f"Backend for {account.kind} not yet implemented")
 
     return factory

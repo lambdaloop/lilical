@@ -217,6 +217,8 @@ class Sidebar(QWidget):
     rename_calendar_requested = Signal(str)  # calendar_id
     change_color_requested = Signal(str)  # calendar_id
     delete_calendar_requested = Signal(str)  # calendar_id
+    refresh_calendar_requested = Signal(str)  # calendar_id (read-only subscriptions)
+    unsubscribe_requested = Signal(str)  # calendar_id (read-only subscriptions)
     account_order_changed = Signal()
     calendar_order_changed = Signal(str)  # account_id
     date_selected = Signal(date)  # from mini-month
@@ -227,10 +229,12 @@ class Sidebar(QWidget):
         add_account_callback=None,
         cal_info_provider=None,
         account_meta_provider=None,
+        subscribe_callback=None,
     ) -> None:
         super().__init__()
         self._store = store
         self._add_account_callback = add_account_callback
+        self._subscribe_callback = subscribe_callback
         self._cal_info_provider = cal_info_provider or (lambda: {})
         self._account_meta_provider = account_meta_provider or (lambda: {})
         self.setObjectName("sidebar")
@@ -292,6 +296,12 @@ class Sidebar(QWidget):
         if add_account_callback is not None:
             add_btn.clicked.connect(add_account_callback)
         layout.addWidget(add_btn)
+
+        sub_btn = QPushButton("+ Subscribe to calendar…")
+        sub_btn.setObjectName("add-account")
+        if subscribe_callback is not None:
+            sub_btn.clicked.connect(subscribe_callback)
+        layout.addWidget(sub_btn)
 
         self._chips: dict[str, _CalendarChip] = {}
         self._account_widgets: list[QWidget] = []
@@ -514,26 +524,45 @@ class Sidebar(QWidget):
             row_h.addWidget(name_label, 1)
 
             calendar_id = ci.id
+            read_only = bool(getattr(ci, "read_only", False))
 
-            def _make_row_menu(cid=calendar_id):
+            def _make_row_menu(cid=calendar_id, ro=read_only):
                 def _show_menu(pos) -> None:
                     menu = QMenu()
-                    act_rename = QAction("Rename…", menu)
-                    act_rename.triggered.connect(
-                        lambda: self.rename_calendar_requested.emit(cid)
-                    )
-                    menu.addAction(act_rename)
-                    act_color = QAction("Change color…", menu)
-                    act_color.triggered.connect(
-                        lambda: self.change_color_requested.emit(cid)
-                    )
-                    menu.addAction(act_color)
-                    menu.addSeparator()
-                    act_delete = QAction("Delete calendar…", menu)
-                    act_delete.triggered.connect(
-                        lambda: self.delete_calendar_requested.emit(cid)
-                    )
-                    menu.addAction(act_delete)
+                    if ro:
+                        act_refresh = QAction("Refresh now", menu)
+                        act_refresh.triggered.connect(
+                            lambda: self.refresh_calendar_requested.emit(cid)
+                        )
+                        menu.addAction(act_refresh)
+                        act_color = QAction("Change color…", menu)
+                        act_color.triggered.connect(
+                            lambda: self.change_color_requested.emit(cid)
+                        )
+                        menu.addAction(act_color)
+                        menu.addSeparator()
+                        act_unsub = QAction("Unsubscribe…", menu)
+                        act_unsub.triggered.connect(
+                            lambda: self.unsubscribe_requested.emit(cid)
+                        )
+                        menu.addAction(act_unsub)
+                    else:
+                        act_rename = QAction("Rename…", menu)
+                        act_rename.triggered.connect(
+                            lambda: self.rename_calendar_requested.emit(cid)
+                        )
+                        menu.addAction(act_rename)
+                        act_color = QAction("Change color…", menu)
+                        act_color.triggered.connect(
+                            lambda: self.change_color_requested.emit(cid)
+                        )
+                        menu.addAction(act_color)
+                        menu.addSeparator()
+                        act_delete = QAction("Delete calendar…", menu)
+                        act_delete.triggered.connect(
+                            lambda: self.delete_calendar_requested.emit(cid)
+                        )
+                        menu.addAction(act_delete)
                     menu.exec(QCursor.pos())
                 return _show_menu
 

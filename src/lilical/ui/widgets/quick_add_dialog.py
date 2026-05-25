@@ -73,12 +73,15 @@ class QuickAddDialog(QDialog):
         self._preview.setText("Start typing to preview...")
         layout.addWidget(self._preview)
 
-        # Calendar picker
+        # Calendar picker — read-only (subscription / shared-reader) calendars
+        # are excluded since we can't write to them.
         self._cal_combo = QComboBox()
         accs = store.list_accounts()
         for acc in accs:
             cals = store.list_calendars(acc.id, included_only=True)
             for cal in cals:
+                if (cal.access_role or "").lower() in ("reader", "freebusyreader"):
+                    continue
                 self._cal_combo.addItem(
                     f"{acc.display_name} / {cal.display_name}", cal.id
                 )

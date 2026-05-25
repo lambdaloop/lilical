@@ -276,19 +276,23 @@ class EventDetailsDialog(QDialog):
             sep2.setFrameShadow(QFrame.Shadow.Sunken)
             btn_bar_layout.addWidget(sep2)
 
-        edit_btn = QPushButton("Edit")
-        delete_btn = QPushButton("Delete")
+        is_read_only_cal = bool(
+            cal and (cal.access_role or "").lower() in ("reader", "freebusyreader")
+        )
+
         close_btn = QPushButton("Close")
-
-        edit_btn.setDefault(False)
         close_btn.setDefault(True)
-
-        edit_btn.clicked.connect(self._on_edit)
-        delete_btn.clicked.connect(self._on_delete)
         close_btn.clicked.connect(self.reject)
 
-        btn_bar_layout.addWidget(edit_btn)
-        btn_bar_layout.addWidget(delete_btn)
+        if not is_read_only_cal:
+            edit_btn = QPushButton("Edit")
+            delete_btn = QPushButton("Delete")
+            edit_btn.setDefault(False)
+            edit_btn.clicked.connect(self._on_edit)
+            delete_btn.clicked.connect(self._on_delete)
+            btn_bar_layout.addWidget(edit_btn)
+            btn_bar_layout.addWidget(delete_btn)
+
         btn_bar_layout.addWidget(close_btn)
         outer.addWidget(btn_bar)
 

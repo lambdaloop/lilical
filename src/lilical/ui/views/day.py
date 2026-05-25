@@ -747,6 +747,11 @@ class _DayCanvas(QGraphicsView):
             self._sticky.set_all_day_band_h(band_h)
 
         completions: frozenset = plan.get("completions", frozenset())
+        read_only_cal_ids = {
+            cid
+            for cid, ci in self._cal_info_provider().items()
+            if getattr(ci, "read_only", False)
+        }
         old_chips = self._chips
         new_chips: dict[tuple[str, str, str], EventChip] = {}
         for key, chip in old_chips.items():
@@ -792,6 +797,7 @@ class _DayCanvas(QGraphicsView):
                     instance_dtstart=pl["instance_dtstart"],
                     completed=is_comp,
                     inst_key=inst_key,
+                    read_only=pl["event"].calendar_id in read_only_cal_ids,
                 )
                 self._wire_chip_signals(chip)
                 if is_sticky:

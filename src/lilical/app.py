@@ -68,7 +68,7 @@ def main() -> int:
     contact_store = ContactStore(db_engine)
     event_store.contacts = contact_store
     recurrence = RecurrenceExpander(event_store)
-    backend_factory = build_backend_factory(secrets)
+    backend_factory = build_backend_factory(secrets, event_store)
     sync_engine = SyncEngine(event_store, secrets, backend_factory)
     notifier = NotificationScheduler(event_store, recurrence)
 

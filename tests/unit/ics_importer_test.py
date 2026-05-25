@@ -28,11 +28,12 @@ def test_parse_multiple_vevents() -> None:
     assert "Second meeting" in summaries
 
 
-def test_parse_event_with_no_uid_yields_empty_uid() -> None:
+def test_parse_event_with_no_uid_is_skipped() -> None:
+    # RFC 5545 makes UID required; the new parser skips malformed VEVENTs
+    # rather than emitting an Event with uid="" that would collide with
+    # other UID-less events in the same feed.
     events = parse_ics_file(FIXTURES / "no_uid.ics")
-    assert len(events) == 1
-    assert events[0].uid == ""
-    assert events[0].summary == "Event without UID"
+    assert events == []
 
 
 def test_parse_missing_summary_yields_empty_string(tmp_path: Path) -> None:

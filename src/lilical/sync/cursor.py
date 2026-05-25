@@ -6,11 +6,13 @@ from lilical.backends.base import SyncCursor
 from lilical.backends.caldav import CalDavCursor
 from lilical.backends.google import GoogleCursor
 from lilical.backends.graph import GraphCursor
+from lilical.backends.subscription import SubscriptionCursor
 
 _CURSORS: dict[str, type[SyncCursor]] = {
     GraphCursor._TYPE: GraphCursor,  # type: ignore[reportPrivateUsage]
     GoogleCursor._TYPE: GoogleCursor,  # type: ignore[reportPrivateUsage]
     CalDavCursor._TYPE: CalDavCursor,  # type: ignore[reportPrivateUsage]
+    SubscriptionCursor._TYPE: SubscriptionCursor,  # type: ignore[reportPrivateUsage]
 }
 
 
