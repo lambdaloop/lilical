@@ -1,0 +1,27 @@
+<svg viewBox="0 0 280 360" xmlns="http://www.w3.org/2000/svg" style="background:#0e0e0e">
+  <text x="5" y="20" fill="#888" font-size="9">5 PM</text>
+  <text x="5" y="90" fill="#888" font-size="9">6 PM</text>
+  <text x="5" y="160" fill="#888" font-size="9">7 PM</text>
+  <text x="5" y="230" fill="#888" font-size="9">8 PM</text>
+  <text x="5" y="300" fill="#888" font-size="9">9 PM</text>
+  <line x1="35" y1="15" x2="275" y2="15" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="85" x2="275" y2="85" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="155" x2="275" y2="155" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="225" x2="275" y2="225" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="295" x2="275" y2="295" stroke="#2a2a2a" stroke-width="0.5"/>
+
+  <!-- Main chip (Yoga, dominant) -->
+  <rect x="38" y="18" width="190" height="88" rx="3" fill="#ec4899" fill-opacity="0.92"/>
+  <text x="48" y="38" fill="#fff" font-size="11" font-weight="600">Yoga · Heated Vinyasa</text>
+  <text x="48" y="52" fill="#fff" font-size="9" opacity="0.85">5:00 – 6:15 PM</text>
+  <text x="48" y="66" fill="#fff" font-size="9" opacity="0.7">Mission Studios</text>
+
+  <!-- Spine separator -->
+  <line x1="232" y1="18" x2="232" y2="263" stroke="#3a3a3a" stroke-width="0.5"/>
+
+  <!-- Thin spine lines (4 px wide, 2 px gap = 6 px center-to-center → 6 events fit in ~36 px) -->
+  <rect x="236" y="53" width="4" height="70" rx="1" fill="#f97316"/>
+  <rect x="242" y="88" width="4" height="105" rx="1" fill="#a855f7"/>
+  <rect x="248" y="123" width="4" height="70" rx="1" fill="#06b6d4"/>
+  <rect x="254" y="158" width="4" height="105" rx="1" fill="#84cc16"/>
+</svg>

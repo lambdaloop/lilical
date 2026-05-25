@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -24,9 +24,12 @@ from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
-from lilical.ui.views._overlap import pack_overlapping
+from lilical.ui.views._overlap import pack_overlapping_lanes
+from lilical.ui.widgets._popover_rows import PopoverEvent
+from lilical.ui.widgets.cluster_popover import ClusterPopover
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
@@ -328,10 +331,14 @@ def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
     cal_color: dict[str, str | None] = {
         ci.id: ci.color for ci in cal_info_snap.values()
     }
+    read_only_cal_ids: set[str] = {
+        ci.id for ci in cal_info_snap.values() if getattr(ci, "read_only", False)
+    }
     return {
         "instances": instances,
         "events": events,
         "cal_color": cal_color,
+        "read_only_cal_ids": read_only_cal_ids,
         "day": day,
         "completions": completions,
     }
@@ -344,6 +351,7 @@ def _compute_day_placements(
     instances = data["instances"]
     events = data["events"]
     cal_color = data["cal_color"]
+    read_only_cal_ids: set[str] = data.get("read_only_cal_ids", set())
     day = data["day"]
     completions: frozenset = data.get("completions", frozenset())
 
@@ -364,7 +372,7 @@ def _compute_day_placements(
 
     first_event_minutes: int | None = None
     all_day_idx = 0
-    timed_bucket: list[tuple[float, float, dict]] = []
+    timed_bucket: list[tuple[float, float, str, dict]] = []
     new_placements: dict[tuple, dict] = {}
 
     for inst in instances:
@@ -472,6 +480,7 @@ def _compute_day_placements(
             (
                 float(s_min),
                 float(e_min),
+                inst.calendar_id,
                 {
                     "event": event,
                     "start_dt": t,
@@ -486,34 +495,62 @@ def _compute_day_placements(
             )
         )
 
+    new_cluster_placements: dict = {}
     if timed_bucket:
-        packed = pack_overlapping(timed_bucket)
+        is_own_fn = (
+            (lambda c: c not in read_only_cal_ids) if read_only_cal_ids else None
+        )
+        packed = pack_overlapping_lanes(timed_bucket, col_w, is_own_calendar_fn=is_own_fn)  # noqa: E501
         _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
-        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(
-            packed, timed_bucket, strict=True
-        ):
-            sub_w = (col_w - 2) / cols
-            chip_x = TIME_AXIS_WIDTH + 1 + col_i * sub_w
-            chip_w = max(8.0, xspan * sub_w)
-            chip_y = body_top + start_min * px_per_hour / 60
-            chip_h = max(14.0, (end_min - start_min) * px_per_hour / 60)
-            show_pfx = payload["show_time_prefix"]
-            new_placements[payload["key"]] = {
-                "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
-                "calendar_color": payload["cal_color"],
-                "show_time_prefix": show_pfx,
-                "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
-                "continues_left": payload["continues_left"],
-                "continues_right": payload["continues_right"],
-                "overlap_cols": cols,
-                "instance_dtstart": payload["instance_dtstart"],
-                "is_sticky": False,
-                "event": payload["event"],
-                "inst_key": payload["inst_key"],
-            }
+        for x_off, chip_w, mode, payload_or_cluster in packed:
+            if mode == "normal":
+                payload = payload_or_cluster
+                bucket_entry = next(
+                    (b for b in timed_bucket if b[3] is payload), None
+                )
+                if bucket_entry is None:
+                    continue
+                start_min_f, end_min_f = bucket_entry[0], bucket_entry[1]
+                chip_x = TIME_AXIS_WIDTH + x_off
+                chip_y = body_top + start_min_f * px_per_hour / 60
+                chip_h = max(14.0, (end_min_f - start_min_f) * px_per_hour / 60)
+                show_pfx = payload["show_time_prefix"]
+                new_placements[payload["key"]] = {
+                    "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
+                    "calendar_color": payload["cal_color"],
+                    "show_time_prefix": show_pfx,
+                    "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
+                    "continues_left": payload["continues_left"],
+                    "continues_right": payload["continues_right"],
+                    "overlap_cols": 1,
+                    "instance_dtstart": payload["instance_dtstart"],
+                    "is_sticky": False,
+                    "event": payload["event"],
+                    "inst_key": payload["inst_key"],
+                }
+            else:
+                cluster_data = payload_or_cluster
+                cluster_start_min = cluster_data["cluster_start_min"]
+                cluster_end_min = cluster_data["cluster_end_min"]
+                cluster_x = TIME_AXIS_WIDTH + x_off
+                cluster_y = body_top + cluster_start_min * px_per_hour / 60
+                cluster_h = max(14.0, (cluster_end_min - cluster_start_min) * px_per_hour / 60)  # noqa: E501
+                cluster_rect = QRectF(cluster_x, cluster_y, chip_w, cluster_h)
+                cluster_key = tuple(
+                    sorted(ev["payload"]["key"] for ev in cluster_data["events"])
+                )
+                new_cluster_placements[cluster_key] = {
+                    "rect": cluster_rect,
+                    "cluster_data": cluster_data,
+                    "px_per_hour": px_per_hour,
+                    "calendar_color_map": cal_color,
+                    "time_format": time_format,
+                    "read_only_cal_ids": read_only_cal_ids,
+                }
 
     return {
         "new_placements": new_placements,
+        "new_cluster_placements": new_cluster_placements,
         "band_h": band_h,
         "first_event_minutes": first_event_minutes,
         "completions": completions,
@@ -581,6 +618,7 @@ class _DayCanvas(QGraphicsView):
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
         self._chips: dict[tuple, EventChip] = {}
+        self._clusters: dict[tuple, LineCluster] = {}
         self._refresh_task: asyncio.Task | None = None
         self._rendered_day: date | None = None
         self._needs_scroll: bool = True
@@ -625,6 +663,15 @@ class _DayCanvas(QGraphicsView):
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
 
         store.instance_completion_changed.connect(self._on_completion_changed)
+
+        # Cluster hover-popover state.
+        self._cluster_popover = ClusterPopover()
+        self._cluster_show_timer = QTimer(self)
+        self._cluster_show_timer.setSingleShot(True)
+        self._cluster_show_timer.setInterval(280)
+        self._cluster_show_timer.timeout.connect(self._show_cluster_popover)
+        self._pending_cluster: LineCluster | None = None
+        self._pending_cluster_events: list[dict] = []
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -774,6 +821,7 @@ class _DayCanvas(QGraphicsView):
             self._sticky.set_all_day_band_h(band_h)
 
         completions: frozenset = plan.get("completions", frozenset())
+        new_cluster_placements = plan.get("new_cluster_placements", {})
         read_only_cal_ids = {
             cid
             for cid, ci in self._cal_info_provider().items()
@@ -803,6 +851,7 @@ class _DayCanvas(QGraphicsView):
                     time_prefix=pl["time_prefix"],
                     show_time_prefix=pl["show_time_prefix"],
                     instance_dtstart=pl["instance_dtstart"],
+                    mode=self._chip_mode,
                 )
                 if is_sticky and chip.scene() is self._scene:
                     self._scene.removeItem(chip)
@@ -832,6 +881,37 @@ class _DayCanvas(QGraphicsView):
             chip.set_completed_display(self._completed_enabled)
             new_chips[key] = chip
         self._chips = new_chips
+
+        # Cluster placement (dense-overlap groups).
+        old_clusters = self._clusters
+        new_clusters: dict[tuple, LineCluster] = {}
+        for key, cluster in old_clusters.items():
+            if key not in new_cluster_placements and cluster.scene() is self._scene:
+                self._scene.removeItem(cluster)
+        for key, cpl in new_cluster_placements.items():
+            if key in old_clusters:
+                cluster = old_clusters[key]
+                cluster.update_layout(
+                    cpl["rect"],
+                    cpl["cluster_data"],
+                    cpl["px_per_hour"],
+                    calendar_color_map=cpl["calendar_color_map"],
+                    time_format=cpl["time_format"],
+                    read_only_cal_ids=cpl["read_only_cal_ids"],
+                )
+            else:
+                cluster = LineCluster(
+                    cpl["rect"],
+                    cpl["cluster_data"],
+                    cpl["px_per_hour"],
+                    calendar_color_map=cpl["calendar_color_map"],
+                    time_format=cpl["time_format"],
+                    read_only_cal_ids=cpl["read_only_cal_ids"],
+                )
+                self._wire_cluster_signals(cluster)
+                self._scene.addItem(cluster)
+            new_clusters[key] = cluster
+        self._clusters = new_clusters
 
         if self._needs_scroll:
             self._needs_scroll = False
@@ -881,6 +961,99 @@ class _DayCanvas(QGraphicsView):
         chip.drag_progress.connect(self._on_chip_drag_progress)
         chip.drag_committed.connect(self._on_chip_drag_committed)
         chip.drag_cancelled.connect(self._on_chip_drag_cancelled)
+
+    def _wire_cluster_signals(self, cluster: "LineCluster") -> None:
+        chip = cluster.chip
+        chip.details_requested.connect(
+            lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
+        )
+        chip.edit_requested.connect(
+            lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+        )
+        chip.delete_requested.connect(
+            lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+        )
+        chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
+        cluster.hovered.connect(
+            lambda evs, cl=cluster: self._on_cluster_hovered(evs, cl)
+        )
+        cluster.hover_left.connect(self._on_cluster_hover_left)
+        cluster.spine_clicked.connect(
+            lambda evs, cl=cluster: self._on_cluster_spine_clicked(evs, cl)
+        )
+        self._cluster_popover.event_activated.connect(self._on_cluster_event_activated)
+
+    def _on_cluster_hovered(self, events: list, cluster: "LineCluster") -> None:
+        self._cluster_show_timer.stop()
+        if self._cluster_popover.isVisible():
+            self._cluster_popover.schedule_hide()
+        self._pending_cluster = cluster
+        self._pending_cluster_events = list(events)
+        self._cluster_show_timer.start()
+
+    def _on_cluster_hover_left(self) -> None:
+        self._cluster_show_timer.stop()
+        if self._cluster_popover.isVisible():
+            self._cluster_popover.schedule_hide()
+
+    def _on_cluster_spine_clicked(self, events: list, cluster: "LineCluster") -> None:
+        self._cluster_show_timer.stop()
+        self._pending_cluster = cluster
+        self._pending_cluster_events = list(events)
+        self._show_cluster_popover()
+
+    def _show_cluster_popover(self) -> None:
+        cluster = self._pending_cluster
+        if cluster is None:
+            return
+        events = self._pending_cluster_events
+
+        popover_events: list[PopoverEvent] = []
+        for ev in sorted(events, key=lambda e: e["start_min"]):
+            payload = ev["payload"]
+            event = payload["event"]
+            s = int(ev["start_min"])
+            e = int(ev["end_min"])
+            s_str = f"{s // 60:02d}:{s % 60:02d}"
+            e_str = f"{e // 60:02d}:{e % 60:02d}"
+            if self._time_format == "12h":
+                from lilical.ui._time_fmt import fmt_hm
+                s_str = fmt_hm(s // 60, s % 60, time_format="12h")
+                e_str = fmt_hm(e // 60, e % 60, time_format="12h")
+            time_str = f"{s_str} – {e_str}"
+            popover_events.append(
+                PopoverEvent(
+                    time_str=time_str,
+                    title=event.summary or "(no title)",
+                    location=event.location or None,
+                    calendar_color=payload.get("cal_color"),
+                    uid=event.uid or None,
+                )
+            )
+
+        cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
+        vp_tl = self.mapFromScene(cluster_scene_rect.topLeft()).toPoint()
+        vp_br = self.mapFromScene(cluster_scene_rect.topRight()).toPoint()
+        anchor_global = self.viewport().mapToGlobal(vp_tl)
+        column_right_global = self.viewport().mapToGlobal(vp_br).x()
+        view_right_edge_global = self.viewport().mapToGlobal(
+            QPoint(self.viewport().width(), 0)
+        ).x()
+
+        self._cluster_popover.show_for_cluster(
+            popover_events,
+            anchor_global,
+            column_right_global,
+            view_right_edge_global,
+        )
+
+    def _on_cluster_event_activated(self, uid: str) -> None:
+        for cluster in self._clusters.values():
+            for ev in cluster.cluster_events:
+                event = ev["payload"]["event"]
+                if (event.uid or "") == uid:
+                    self._on_details_requested(event, ev["payload"].get("instance_dtstart"))  # noqa: E501
+                    return
 
     def _on_toggle_complete_requested(
         self, inst_key: tuple[str, str, int], completed: bool

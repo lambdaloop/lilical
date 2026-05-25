@@ -297,6 +297,7 @@ class EventChip(QGraphicsObject):
         continues_left: bool = False,
         continues_right: bool = False,
         instance_dtstart: datetime | None,
+        mode: ChipMode | None = None,
     ) -> None:
         """Update geometry and layout properties in place — avoids chip reallocation."""
         if rect != self._rect:
@@ -308,6 +309,8 @@ class EventChip(QGraphicsObject):
         self._continues_left = continues_left
         self._continues_right = continues_right
         self._instance_dtstart = instance_dtstart
+        if mode is not None:
+            self._mode = mode
         self.setToolTip(self._build_tooltip())
         self.update()
 

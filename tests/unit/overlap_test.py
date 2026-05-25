@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from lilical.ui.views._overlap import pack_overlapping
+from lilical.ui.views._overlap import (
+    pack_overlapping,
+    pack_overlapping_lanes,
+    pick_dominant_event,
+)
 
 
 def test_empty_input_returns_empty() -> None:
@@ -102,3 +106,65 @@ def test_placed_into_existing_column() -> None:
     assert by_payload["a"] == 0
     assert by_payload["b"] == 1
     assert by_payload["c"] == 2
+
+
+# ── pick_dominant_event tests ─────────────────────────────────────────────────
+
+
+def test_pick_dominant_prefers_own_calendar() -> None:
+    items = [
+        (0, 60, "foreign", "ev_a"),
+        (0, 60, "own", "ev_b"),
+    ]
+    idx = pick_dominant_event(items, is_own_calendar_fn=lambda c: c == "own")
+    assert items[idx][3] == "ev_b"
+
+
+def test_pick_dominant_falls_back_to_longest() -> None:
+    items = [
+        (0, 60, "cal", "short"),
+        (0, 120, "cal", "long"),
+    ]
+    idx = pick_dominant_event(items, is_own_calendar_fn=None)
+    assert items[idx][3] == "long"
+
+
+def test_pick_dominant_falls_back_to_earliest() -> None:
+    items = [
+        (30, 90, "cal", "later"),
+        (0, 60, "cal", "earlier"),
+    ]
+    idx = pick_dominant_event(items, is_own_calendar_fn=None)
+    assert items[idx][3] == "earlier"
+
+
+# ── pack_overlapping_lanes tests ──────────────────────────────────────────────
+
+
+def test_pack_overlapping_lanes_dense_emits_one_cluster() -> None:
+    # 5 events all overlapping in a narrow column → one cluster entry.
+    col_w = 80.0  # inner_w = 78, per_chip = 78/5 = 15.6 < MIN_NORMAL_CHIP_W (60)
+    items = [
+        (0, 60, "cal", {"key": ("cal", f"ev{i}", 0)}) for i in range(5)
+    ]
+    result = pack_overlapping_lanes(items, col_w)
+    assert len(result) == 1
+    x_off, w, mode, data = result[0]
+    assert mode == "cluster"
+    assert len(data["events"]) == 5
+    assert "dominant_index" in data
+    assert "cluster_start_min" in data
+    assert "cluster_end_min" in data
+
+
+def test_pack_overlapping_lanes_sparse_unchanged() -> None:
+    # 2 events overlapping but column wide enough for both → 2 normal entries.
+    col_w = 200.0  # inner_w = 198, per_chip = 99 > MIN_NORMAL_CHIP_W (60)
+    items = [
+        (0, 60, "cal", {"key": ("cal", "ev1", 0)}),
+        (30, 90, "cal", {"key": ("cal", "ev2", 0)}),
+    ]
+    result = pack_overlapping_lanes(items, col_w)
+    assert len(result) == 2
+    for _x, _w, mode, _data in result:
+        assert mode == "normal"

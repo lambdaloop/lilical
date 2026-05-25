@@ -14,11 +14,14 @@ from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
-from lilical.ui.views._overlap import pack_overlapping
+from lilical.ui.views._overlap import pack_overlapping_lanes
 from lilical.ui.views._week_start import start_of_week
-from lilical.ui.widgets.day_events_popover import DayEventsPopover, PopoverEvent
+from lilical.ui.widgets._popover_rows import PopoverEvent
+from lilical.ui.widgets.cluster_popover import ClusterPopover
+from lilical.ui.widgets.day_events_popover import DayEventsPopover
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
 log = logging.getLogger(__name__)
@@ -398,10 +401,14 @@ def _query_week_data(
     cal_color: dict[str, str | None] = {
         ci.id: ci.color for ci in cal_info_snap.values()
     }
+    read_only_cal_ids: set[str] = {
+        ci.id for ci in cal_info_snap.values() if getattr(ci, "read_only", False)
+    }
     return {
         "instances": instances,
         "events": events,
         "cal_color": cal_color,
+        "read_only_cal_ids": read_only_cal_ids,
         "start": start,
         "day_count": day_count,
         "completions": completions,
@@ -415,6 +422,7 @@ def _compute_week_placements(
     instances = data["instances"]
     events = data["events"]
     cal_color = data["cal_color"]
+    read_only_cal_ids: set[str] = data.get("read_only_cal_ids", set())
     start = data["start"]
     day_count = data["day_count"]
     completions: frozenset = data.get("completions", frozenset())
@@ -610,6 +618,7 @@ def _compute_week_placements(
                 (
                     float(s_min),
                     float(e_min),
+                    inst.calendar_id,
                     {
                         "event": event,
                         "start_dt": t,
@@ -625,33 +634,66 @@ def _compute_week_placements(
             )
 
     _tfmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
+    is_own_fn = (
+        (lambda c: c not in read_only_cal_ids)  # noqa: E501
+        if read_only_cal_ids is not None
+        else None
+    )
+    new_cluster_placements: dict = {}
     for day_offset, bucket in enumerate(timed_by_day):
         if not bucket:
             continue
-        packed = pack_overlapping(bucket)
+        packed = pack_overlapping_lanes(bucket, col_w, is_own_calendar_fn=is_own_fn)
         day_x = TIME_AXIS_WIDTH + day_offset * col_w
-        for (col_i, cols, xspan, payload), (start_min, end_min, _) in zip(
-            packed, bucket, strict=True
-        ):
-            sub_w = (col_w - 2) / cols
-            chip_x = day_x + 1 + col_i * sub_w
-            chip_w = max(8.0, xspan * sub_w)
-            chip_y = body_top + start_min * px_per_hour / 60
-            chip_h = max(14.0, (end_min - start_min) * px_per_hour / 60)
-            show_pfx = payload["show_time_prefix"]
-            new_placements[payload["key"]] = {
-                "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
-                "calendar_color": payload["cal_color"],
-                "show_time_prefix": show_pfx,
-                "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
-                "continues_left": payload["continues_left"],
-                "continues_right": payload["continues_right"],
-                "overlap_cols": cols,
-                "instance_dtstart": payload["instance_dtstart"],
-                "is_sticky": False,
-                "event": payload["event"],
-                "inst_key": payload["inst_key"],
-            }
+        for x_off, chip_w, mode, payload_or_cluster in packed:
+            if mode == "normal":
+                payload = payload_or_cluster
+                # end_min stored in bucket — find corresponding bucket entry
+                # (match by key since pack preserves payload identity)
+                bucket_entry = next(
+                    (b for b in bucket if b[3] is payload), None
+                )
+                if bucket_entry is None:
+                    continue
+                start_min_f, end_min_f = bucket_entry[0], bucket_entry[1]
+                chip_x = day_x + x_off
+                chip_y = body_top + start_min_f * px_per_hour / 60
+                chip_h = max(14.0, (end_min_f - start_min_f) * px_per_hour / 60)
+                show_pfx = payload["show_time_prefix"]
+                new_placements[payload["key"]] = {
+                    "rect": QRectF(chip_x, chip_y, chip_w, chip_h),
+                    "calendar_color": payload["cal_color"],
+                    "show_time_prefix": show_pfx,
+                    "time_prefix": payload["start_dt"].strftime(_tfmt) if show_pfx else None,  # noqa: E501
+                    "continues_left": payload["continues_left"],
+                    "continues_right": payload["continues_right"],
+                    "overlap_cols": 1,
+                    "instance_dtstart": payload["instance_dtstart"],
+                    "is_sticky": False,
+                    "event": payload["event"],
+                    "inst_key": payload["inst_key"],
+                }
+            else:
+                # Dense cluster: one entry covering all events.
+                cluster_data = payload_or_cluster
+                cluster_start_min = cluster_data["cluster_start_min"]
+                cluster_end_min = cluster_data["cluster_end_min"]
+                cluster_x = day_x + x_off
+                cluster_y = body_top + cluster_start_min * px_per_hour / 60
+                cluster_h = max(14.0, (cluster_end_min - cluster_start_min) * px_per_hour / 60)  # noqa: E501
+                cluster_rect = QRectF(cluster_x, cluster_y, chip_w, cluster_h)
+                cluster_key = tuple(
+                    sorted(ev["payload"]["key"] for ev in cluster_data["events"])
+                )
+                new_cluster_placements[cluster_key] = {
+                    "rect": cluster_rect,
+                    "cluster_data": cluster_data,
+                    "px_per_hour": px_per_hour,
+                    "calendar_color_map": cal_color,
+                    "time_format": time_format,
+                    "read_only_cal_ids": read_only_cal_ids,
+                    "day_offset": day_offset,
+                }
 
     # Mark columns as dense when band shrank or any events were truncated.
     for col in range(day_count):
@@ -662,6 +704,7 @@ def _compute_week_placements(
 
     return {
         "new_placements": new_placements,
+        "new_cluster_placements": new_cluster_placements,
         "band_h": float(band_h),
         "band_popover_events": band_popover_events,
         "band_dense_cols": band_dense_cols,
@@ -684,6 +727,7 @@ class WeekView(QGraphicsView):
         self._time_format: str = "24h"
         self._week_start_pref: str = "monday"
         self._chips: dict[tuple, EventChip] = {}
+        self._clusters: dict[tuple, LineCluster] = {}
         self._refresh_task: asyncio.Task | None = None
         # Hover-popover state for the all-day band.
         self._band_popover_events: dict[int, list[PopoverEvent]] = {}
@@ -695,6 +739,14 @@ class WeekView(QGraphicsView):
         self._band_show_timer = QTimer(self)
         self._band_show_timer.setSingleShot(True)
         self._band_show_timer.timeout.connect(self._show_band_popover)
+        # Cluster hover-popover state.
+        self._cluster_popover = ClusterPopover()
+        self._cluster_show_timer = QTimer(self)
+        self._cluster_show_timer.setSingleShot(True)
+        self._cluster_show_timer.setInterval(280)
+        self._cluster_show_timer.timeout.connect(self._show_cluster_popover)
+        self._pending_cluster: LineCluster | None = None
+        self._pending_cluster_events: list[dict] = []
         self._rendered_start: date | None = None
         self._needs_scroll: bool = True
         self._completed_enabled: bool = False
@@ -995,6 +1047,7 @@ class WeekView(QGraphicsView):
 
         completions: frozenset = plan.get("completions", frozenset())
         new_placements = plan["new_placements"]
+        new_cluster_placements = plan.get("new_cluster_placements", {})
         read_only_cal_ids = {
             cid
             for cid, ci in self._cal_info_provider().items()
@@ -1024,6 +1077,7 @@ class WeekView(QGraphicsView):
                     time_prefix=pl["time_prefix"],
                     show_time_prefix=pl["show_time_prefix"],
                     instance_dtstart=pl["instance_dtstart"],
+                    mode=self._chip_mode,
                 )
                 if is_sticky and chip.scene() is self._scene:
                     self._scene.removeItem(chip)
@@ -1053,6 +1107,37 @@ class WeekView(QGraphicsView):
             chip.set_completed_display(self._completed_enabled)
             new_chips[key] = chip
         self._chips = new_chips
+
+        # Cluster placement (dense-overlap groups).
+        old_clusters = self._clusters
+        new_clusters: dict[tuple, LineCluster] = {}
+        for key, cluster in old_clusters.items():
+            if key not in new_cluster_placements and cluster.scene() is self._scene:
+                self._scene.removeItem(cluster)
+        for key, cpl in new_cluster_placements.items():
+            if key in old_clusters:
+                cluster = old_clusters[key]
+                cluster.update_layout(
+                    cpl["rect"],
+                    cpl["cluster_data"],
+                    cpl["px_per_hour"],
+                    calendar_color_map=cpl["calendar_color_map"],
+                    time_format=cpl["time_format"],
+                    read_only_cal_ids=cpl["read_only_cal_ids"],
+                )
+            else:
+                cluster = LineCluster(
+                    cpl["rect"],
+                    cpl["cluster_data"],
+                    cpl["px_per_hour"],
+                    calendar_color_map=cpl["calendar_color_map"],
+                    time_format=cpl["time_format"],
+                    read_only_cal_ids=cpl["read_only_cal_ids"],
+                )
+                self._wire_cluster_signals(cluster)
+                self._scene.addItem(cluster)
+            new_clusters[key] = cluster
+        self._clusters = new_clusters
 
         self._band_popover_events = plan.get("band_popover_events", {})
         self._band_dense_cols = plan.get("band_dense_cols", set())
@@ -1099,6 +1184,33 @@ class WeekView(QGraphicsView):
         chip.drag_progress.connect(self._on_chip_drag_progress)
         chip.drag_committed.connect(self._on_chip_drag_committed)
         chip.drag_cancelled.connect(self._on_chip_drag_cancelled)
+
+    def _wire_cluster_signals(self, cluster: "LineCluster") -> None:
+        # Wire the embedded dominant chip's signals exactly like a regular chip.
+        chip = cluster.chip
+        chip.details_requested.connect(
+            lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
+        )
+        chip.edit_requested.connect(
+            lambda ev, c=chip: self._on_edit_requested(ev, c.instance_dtstart)
+        )
+        chip.delete_requested.connect(
+            lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+        )
+        chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
+        # Cluster hover → delayed popover.
+        cluster.hovered.connect(
+            lambda evs, cl=cluster: self._on_cluster_hovered(evs, cl)
+        )
+        cluster.hover_left.connect(self._on_cluster_hover_left)
+        # Spine click → immediate popover.
+        cluster.spine_clicked.connect(
+            lambda evs, cl=cluster: self._on_cluster_spine_clicked(evs, cl)
+        )
+        # Cluster popover row click → open editor.
+        self._cluster_popover.event_activated.connect(
+            self._on_cluster_event_activated
+        )
 
     def _on_toggle_complete_requested(
         self, inst_key: tuple[str, str, int], completed: bool
@@ -1149,6 +1261,85 @@ class WeekView(QGraphicsView):
         vp_y = int(DAY_HEADER_H)
         global_pt: QPoint = self.viewport().mapToGlobal(QPoint(vp_x, vp_y))
         self._popover.show_for_day(day, events, global_pt)
+
+    # ── Cluster hover popover ─────────────────────────────────────────────
+
+    def _on_cluster_hovered(self, events: list, cluster: "LineCluster") -> None:
+        self._cluster_show_timer.stop()
+        if self._cluster_popover.isVisible():
+            self._cluster_popover.schedule_hide()
+        self._pending_cluster = cluster
+        self._pending_cluster_events = list(events)
+        self._cluster_show_timer.start()
+
+    def _on_cluster_hover_left(self) -> None:
+        self._cluster_show_timer.stop()
+        if self._cluster_popover.isVisible():
+            self._cluster_popover.schedule_hide()
+
+    def _on_cluster_spine_clicked(self, events: list, cluster: "LineCluster") -> None:
+        self._cluster_show_timer.stop()
+        self._pending_cluster = cluster
+        self._pending_cluster_events = list(events)
+        self._show_cluster_popover()
+
+    def _show_cluster_popover(self) -> None:
+        cluster = self._pending_cluster
+        if cluster is None:
+            return
+        events = self._pending_cluster_events
+
+        # Build PopoverEvent list sorted by start time.
+        _tfmt = "%-I:%M %p" if self._time_format == "12h" else "%H:%M"
+        popover_events: list[PopoverEvent] = []
+        for ev in sorted(events, key=lambda e: e["start_min"]):
+            payload = ev["payload"]
+            event = payload["event"]
+            # Reconstruct time string from start_min / end_min.
+            s = int(ev["start_min"])
+            e = int(ev["end_min"])
+            s_str = f"{s // 60:02d}:{s % 60:02d}"
+            e_str = f"{e // 60:02d}:{e % 60:02d}"
+            if self._time_format == "12h":
+                from lilical.ui._time_fmt import fmt_hm
+                s_str = fmt_hm(s // 60, s % 60, time_format="12h")
+                e_str = fmt_hm(e // 60, e % 60, time_format="12h")
+            time_str = f"{s_str} – {e_str}"
+            popover_events.append(
+                PopoverEvent(
+                    time_str=time_str,
+                    title=event.summary or "(no title)",
+                    location=event.location or None,
+                    calendar_color=payload.get("cal_color"),
+                    uid=event.uid or None,
+                )
+            )
+
+        # Compute global anchor positions.
+        cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
+        vp_tl = self.mapFromScene(cluster_scene_rect.topLeft()).toPoint()
+        vp_br = self.mapFromScene(cluster_scene_rect.topRight()).toPoint()
+        anchor_global = self.viewport().mapToGlobal(vp_tl)
+        column_right_global = self.viewport().mapToGlobal(vp_br).x()
+        view_right_edge_global = self.viewport().mapToGlobal(
+            QPoint(self.viewport().width(), 0)
+        ).x()
+
+        self._cluster_popover.show_for_cluster(
+            popover_events,
+            anchor_global,
+            column_right_global,
+            view_right_edge_global,
+        )
+
+    def _on_cluster_event_activated(self, uid: str) -> None:
+        # Find the event with this uid across all clusters and open its editor.
+        for cluster in self._clusters.values():
+            for ev in cluster.cluster_events:
+                event = ev["payload"]["event"]
+                if (event.uid or "") == uid:
+                    self._on_details_requested(event, ev["payload"].get("instance_dtstart"))  # noqa: E501
+                    return
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 
