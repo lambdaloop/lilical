@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -23,7 +23,6 @@ from lilical.ui.views._week_start import (
     start_of_week,
     weekend_columns,
 )
-from lilical.ui.widgets.day_events_popover import DayEventsPopover, PopoverEvent
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 
 log = logging.getLogger(__name__)
@@ -37,7 +36,6 @@ _BASE_HEADER_H = 24
 _BASE_PAD = 4
 _BASE_CHIP_H = 16
 _BASE_CHIP_GAP = 2
-_BASE_MIN_CHIP_H = 4
 _BASE_TODAY_RING_RADIUS = 11
 
 CELL_W = _BASE_CELL_W
@@ -46,7 +44,6 @@ HEADER_H = _BASE_HEADER_H
 PAD = _BASE_PAD
 CHIP_H = _BASE_CHIP_H
 CHIP_GAP = _BASE_CHIP_GAP
-MIN_CHIP_H = _BASE_MIN_CHIP_H
 TODAY_RING_RADIUS = _BASE_TODAY_RING_RADIUS
 
 
@@ -61,7 +58,6 @@ def apply_scale(factor: float) -> None:
     title_fm = QFontMetricsF(QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE))
     g["CHIP_H"] = max(round(_BASE_CHIP_H * factor), math.ceil(title_fm.height()) + 2)
     g["CHIP_GAP"] = max(1, round(_BASE_CHIP_GAP * factor))
-    g["MIN_CHIP_H"] = max(2, round(_BASE_MIN_CHIP_H * factor))
     g["TODAY_RING_RADIUS"] = max(1, round(_BASE_TODAY_RING_RADIUS * factor))
 
 
@@ -180,6 +176,48 @@ class MonthGrid(QGraphicsItem):
                 cur += timedelta(days=1)
 
 
+class _OverflowChip(QGraphicsItem):
+    """'+N more' indicator. Click switches view to the Day view of `for_day`."""
+
+    def __init__(
+        self,
+        rect: QRectF,
+        label: str,
+        for_day: date,
+        click_callback,
+    ) -> None:
+        super().__init__()
+        self._rect = rect
+        self._label = label
+        self._for_day = for_day
+        self._cb = click_callback
+        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
+
+    @override
+    def boundingRect(self) -> QRectF:
+        return self._rect
+
+    @override
+    def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor(theme.TEXT_SECONDARY))
+        painter.setFont(
+            QFont(theme.FONT_FAMILY, theme.FONT_CHIP_LOCATION, QFont.Weight.Medium)
+        )
+        painter.drawText(
+            self._rect.adjusted(4, 0, -4, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self._label,
+        )
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
+        if event.button() == Qt.MouseButton.LeftButton and self._cb is not None:
+            self._cb(self._for_day)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+
 def _query_month_data(
     store, grid_start: date, end_day: date, cal_info_snap: dict
 ) -> dict | None:
@@ -220,24 +258,11 @@ class MonthView(QGraphicsView):
         self._event_chips: dict[tuple, EventChip] = {}
         self._refresh_task: asyncio.Task | None = None
         self._rendered_month: tuple[int, int] | None = None
-
-        # Hover-popover state
-        self._cell_dense: set[date] = set()
-        self._cell_popover_events: dict[date, list[PopoverEvent]] = {}
-        self._hovered_day: date | None = None
-        self._pending_day: date | None = None
-        self._popover = DayEventsPopover()
-        self._show_timer = QTimer(self)
-        self._show_timer.setSingleShot(True)
-        self._show_timer.timeout.connect(self._show_popover)
-
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setMouseTracking(True)
-        self.viewport().setMouseTracking(True)
 
         now = date.today()
         self._year = now.year
@@ -284,52 +309,6 @@ class MonthView(QGraphicsView):
         d = self._grid.grid_start + timedelta(days=offset)
         self.new_event_requested.emit(d)
         event.accept()
-
-    @override
-    def mouseMoveEvent(self, event) -> None:  # noqa: ANN001
-        super().mouseMoveEvent(event)
-        scene_pos = self.mapToScene(event.position().toPoint())
-        day = self._day_at_scene(scene_pos)
-        if day != self._hovered_day:
-            self._hovered_day = day
-            self._show_timer.stop()
-            self._popover.hide()
-            if day is not None and day in self._cell_dense:
-                self._pending_day = day
-                self._show_timer.start(280)
-
-    @override
-    def leaveEvent(self, event) -> None:  # noqa: ANN001
-        super().leaveEvent(event)
-        self._hovered_day = None
-        self._pending_day = None
-        self._show_timer.stop()
-        self._popover.hide()
-
-    def _day_at_scene(self, pos: QPointF) -> date | None:
-        if pos.y() < HEADER_H:
-            return None
-        col = int(pos.x() // CELL_W)
-        row = int((pos.y() - HEADER_H) // CELL_H)
-        if col < 0 or col >= COLS or row < 0 or row >= ROWS:
-            return None
-        offset = row * COLS + col
-        return self._grid.grid_start + timedelta(days=offset)
-
-    def _show_popover(self) -> None:
-        day = self._pending_day
-        if day is None or day != self._hovered_day:
-            return
-        events = self._cell_popover_events.get(day)
-        if not events:
-            return
-        cell_rect = self._grid.cell_rect(day)
-        if cell_rect is None:
-            return
-        scene_pt = QPointF(cell_rect.right(), cell_rect.top())
-        vp_pt = self.mapFromScene(scene_pt)
-        global_pt: QPoint = self.viewport().mapToGlobal(vp_pt)
-        self._popover.show_for_day(day, events, global_pt)
 
     def _rebuild_grid(self) -> None:
         self._scene.removeItem(self._grid)
@@ -442,7 +421,8 @@ class MonthView(QGraphicsView):
         grid_start: date = plan["grid_start"]
         completions: frozenset = plan.get("completions", frozenset())
 
-        # Remove non-EventChip overlay items (rebuilt every refresh).
+        # Remove only _OverflowChip items (rebuilt every refresh); EventChip
+        # items are diffed below via self._event_chips so they survive unchanged.
         for item in self._chips:
             if not isinstance(item, EventChip):
                 self._scene.removeItem(item)
@@ -452,13 +432,13 @@ class MonthView(QGraphicsView):
         old_event_chips = self._event_chips
         new_event_chips: dict[tuple, EventChip] = {}
 
-        # Per-cell popover data (rebuilt each refresh).
-        cell_popover: dict[date, list[PopoverEvent]] = {}
-        cell_dense: set[date] = set()
-
         # Build per-day buckets, distinguishing multi-day from single-day.
+        # An instance is "multi-day" when its end-date (exclusive at midnight)
+        # is on a strictly later local date than its start.
         single_by_day: dict[date, list[tuple[datetime, object]]] = {}
-        multi_spans: list[tuple[date, date, object]] = []
+        multi_spans: list[
+            tuple[date, date, object]
+        ] = []  # (start, end_inclusive, inst)
         for inst in instances:
             try:
                 t = datetime.fromisoformat(inst.dtstart_local).astimezone()
@@ -468,6 +448,7 @@ class MonthView(QGraphicsView):
 
             start_day = t.date()
             end_day_inclusive = et.date()
+            # Half-open: event ending at 00:00 of day N actually ends day N-1.
             ends_at_midnight = et.time().hour == 0 and et.time().minute == 0
             if ends_at_midnight and end_day_inclusive > start_day:
                 end_day_inclusive = end_day_inclusive - timedelta(days=1)
@@ -478,7 +459,11 @@ class MonthView(QGraphicsView):
                 single_by_day.setdefault(start_day, []).append((t, inst))
 
         # ── Layout pass 1: place multi-day spans in row slots ────────────
+        # Pack spans into row "tracks" so they don't visually overlap.
+        # Maximum tracks per row equals max_chips_per_cell; spillover counts as
+        # hidden and contributes to the cell's +N more.
         row_slots_used: dict[int, list[list[tuple[int, int]]]] = {}
+        # row_slots_used[row_idx][track] = list of (start_col, end_col) spans
 
         def _row_for_date(d: date) -> int | None:  # noqa: ARG001  # type: ignore[reportUnusedFunction]
             offset = (d - grid_start).days
@@ -494,10 +479,14 @@ class MonthView(QGraphicsView):
 
         max_chips_per_cell = max(1, int((CELL_H - 22) / (CHIP_H + CHIP_GAP)))
 
-        # Track which multi-day track is the highest occupied per cell, so
-        # single-day events can stack below them.
-        per_cell_max_multi_track: dict[tuple[int, int], int] = {}
+        # Track which span occupies which row+track, so single-day chips can
+        # avoid colliding.
+        per_row_track_occupied: dict[tuple[int, int], list[tuple[int, int]]] = {}
 
+        # Hidden span count contributed to (row, col) cells, for +N more.
+        hidden_per_cell: dict[tuple[int, int], int] = {}
+
+        # Stable order: longer spans first so they get prime tracks.
         multi_spans.sort(key=lambda x: ((x[1] - x[0]).days, x[0]), reverse=True)
 
         for s_day, e_day, inst in multi_spans:
@@ -508,11 +497,13 @@ class MonthView(QGraphicsView):
                 inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
             except (ValueError, TypeError):
                 inst_t = None
+            # Clip span to visible grid.
             visible_start = max(s_day, grid_start)
             visible_end = min(e_day, grid_start + timedelta(days=41))
             if visible_end < visible_start:
                 continue
 
+            # Render one chip per week-row.
             d = visible_start
             while d <= visible_end:
                 rc = cell_row_col(d)
@@ -520,6 +511,7 @@ class MonthView(QGraphicsView):
                     d += timedelta(days=1)
                     continue
                 row, col = rc
+                # End of this week-row segment.
                 row_end_day = grid_start + timedelta(days=row * 7 + 6)
                 seg_end = min(visible_end, row_end_day)
                 _seg_rc = cell_row_col(seg_end)
@@ -540,20 +532,14 @@ class MonthView(QGraphicsView):
                     tracks.append([])
                 tracks[placed_track].append((col, seg_end_col))
 
-                if placed_track >= max_chips_per_cell:
-                    # No room: add to popover for every covered cell.
-                    time_str = "All day"
-                    pev = PopoverEvent(
-                        time_str=time_str,
-                        title=event.summary or "",
-                        location=event.location,
-                        calendar_color=cal_color.get(inst.calendar_id),  # type: ignore[reportAttributeAccessIssue]
-                    )
+                if placed_track >= max_chips_per_cell - 1:
+                    # No room: count as overflow contribution per covered cell.
                     for cc in range(col, seg_end_col + 1):
-                        day_key = grid_start + timedelta(days=row * 7 + cc)
-                        cell_popover.setdefault(day_key, []).append(pev)
-                        cell_dense.add(day_key)
+                        hidden_per_cell[(row, cc)] = (
+                            hidden_per_cell.get((row, cc), 0) + 1
+                        )
                 else:
+                    # Render the span chip (reuse if key matches).
                     cell = self._grid.cell_rect(d)
                     if cell is None:
                         d = seg_end + timedelta(days=1)
@@ -595,70 +581,41 @@ class MonthView(QGraphicsView):
                         new_chips=new_event_chips,
                     )
 
-                    # Track highest occupied multi-day track per cell.
+                    # Mark these cells as occupied at this track.
                     for cc in range(col, seg_end_col + 1):
-                        key_rc = (row, cc)
-                        prev = per_cell_max_multi_track.get(key_rc, -1)
-                        if placed_track > prev:
-                            per_cell_max_multi_track[key_rc] = placed_track
+                        per_row_track_occupied.setdefault((row, cc), []).append(
+                            (placed_track, placed_track)
+                        )
 
                 d = seg_end + timedelta(days=1)
 
-        # ── Layout pass 2: single-day events fill remaining space ────────
+        # ── Layout pass 2: single-day events fill remaining tracks ───────
         for day, items in single_by_day.items():
             rc = cell_row_col(day)
             if rc is None:
                 continue
             row, col = rc
 
-            # Start Y below all multi-day tracks in this cell.
-            max_multi_track = per_cell_max_multi_track.get((row, col), -1)
-            top_y_in_cell = 22 + (max_multi_track + 1) * (CHIP_H + CHIP_GAP)
-            avail_h = max(0.0, float(CELL_H) - top_y_in_cell)
+            # Available tracks: those not occupied by multi-day spans in this cell.
+            occupied_tracks = {
+                t for (t, _t2) in per_row_track_occupied.get((row, col), [])
+            }
+            free_tracks = [
+                t for t in range(max_chips_per_cell) if t not in occupied_tracks
+            ]
 
             items.sort(key=lambda x: (not x[1].all_day, x[0]))
-            n_single = len(items)
-
-            # Compute adaptive slot height.
-            if n_single > 0 and avail_h > 0:
-                gaps = max(0, n_single - 1) * CHIP_GAP
-                slot_h_ideal = (avail_h - gaps) / n_single
-                slot_h = max(float(MIN_CHIP_H), min(float(CHIP_H), slot_h_ideal))
-                # How many fit at the minimum height?
-                n_fit = min(
-                    n_single,
-                    int((avail_h + CHIP_GAP) / (MIN_CHIP_H + CHIP_GAP)),
-                )
-            else:
-                slot_h = float(CHIP_H)
-                n_fit = 0
-
-            is_shrunk = slot_h < CHIP_H and n_fit > 0
-
-            for i, (start_dt2, inst) in enumerate(items):
+            shown = 0
+            for _i, (start_dt2, inst) in enumerate(items):
+                if shown >= len(free_tracks):
+                    break
+                track = free_tracks[shown]
+                shown += 1
                 event = events.get(id(inst))
                 if event is None:
                     continue
-                time_str_for_popover = (
-                    "All day"
-                    if inst.all_day
-                    else fmt_hm(start_dt2.hour, start_dt2.minute, self._time_format)
-                )
-                pev = PopoverEvent(
-                    time_str=time_str_for_popover,
-                    title=event.summary or "",
-                    location=event.location,
-                    calendar_color=cal_color.get(inst.calendar_id),
-                )
-                cell_popover.setdefault(day, []).append(pev)
-
-                if i >= n_fit:
-                    # Truncated — mark dense but don't render chip.
-                    cell_dense.add(day)
-                    continue
-
                 x = col * CELL_W + 2
-                y = HEADER_H + row * CELL_H + top_y_in_cell + i * (slot_h + CHIP_GAP)
+                y = HEADER_H + row * CELL_H + 22 + track * (CHIP_H + CHIP_GAP)
                 time_prefix = None
                 if not inst.all_day:
                     time_prefix = fmt_hm(
@@ -669,7 +626,7 @@ class MonthView(QGraphicsView):
                 self._place_event_chip(
                     _chip_key,
                     event,
-                    QRectF(x, y, CELL_W - 4, slot_h),
+                    QRectF(x, y, CELL_W - 4, CHIP_H),
                     calendar_color=cal_color.get(inst.calendar_id),
                     show_time_prefix=not inst.all_day,
                     time_prefix=time_prefix,
@@ -680,12 +637,40 @@ class MonthView(QGraphicsView):
                     new_chips=new_event_chips,
                 )
 
-            if is_shrunk or n_fit < n_single:
-                cell_dense.add(day)
+            hidden_singles = max(0, len(items) - shown)
+            total_hidden = hidden_singles + hidden_per_cell.get((row, col), 0)
+            if total_hidden > 0:
+                # Bottom row of the cell: +N more.
+                y = HEADER_H + row * CELL_H + CELL_H - CHIP_H - 1
+                x = col * CELL_W + 2
+                marker = _OverflowChip(
+                    QRectF(x, y, CELL_W - 4, CHIP_H),
+                    f"+{total_hidden} more",
+                    day,
+                    self._emit_day_activated,
+                )
+                self._scene.addItem(marker)
+                self._chips.append(marker)
 
-        # Persist popover data.
-        self._cell_dense = cell_dense
-        self._cell_popover_events = cell_popover
+        # Also create +N markers for cells that have only multi-day overflow.
+        for (row, col), n in hidden_per_cell.items():
+            if any(
+                self._cell_of(it._rect) == (row, col)  # type: ignore[reportPrivateUsage]
+                for it in self._chips
+                if isinstance(it, _OverflowChip)
+            ):
+                continue
+            d = grid_start + timedelta(days=row * 7 + col)
+            y = HEADER_H + row * CELL_H + CELL_H - CHIP_H - 1
+            x = col * CELL_W + 2
+            marker = _OverflowChip(
+                QRectF(x, y, CELL_W - 4, CHIP_H),
+                f"+{n} more",
+                d,
+                self._emit_day_activated,
+            )
+            self._scene.addItem(marker)
+            self._chips.append(marker)
 
         # Remove event chips that no longer appear in the layout.
         for key, chip in old_event_chips.items():
@@ -770,6 +755,9 @@ class MonthView(QGraphicsView):
         col = int(rect.x() // CELL_W)
         row = int((rect.y() - HEADER_H) // CELL_H)
         return row, col
+
+    def _emit_day_activated(self, d: date) -> None:
+        self.day_activated.emit(d)
 
     def _on_details_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_details_dialog
