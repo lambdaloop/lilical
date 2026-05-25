@@ -409,7 +409,8 @@ class Sidebar(QWidget):
         new_snapshot = self._build_snapshot()
         if new_snapshot == self._cal_snapshot:
             return
-        self._cal_snapshot = new_snapshot
+        # Don't update _cal_snapshot yet: if we need to fall back to refresh(),
+        # it must see the pending change and set the snapshot itself.
 
         account_meta = self._account_meta_provider()
         acc_meta = account_meta.get(account_id)
@@ -418,6 +419,7 @@ class Sidebar(QWidget):
             self.refresh()
             return
 
+        self._cal_snapshot = new_snapshot
         # Remove stale chips for this account.
         for cid in list(self._chips):
             if self._chips[cid].parent() is old_widget or _is_inside(
