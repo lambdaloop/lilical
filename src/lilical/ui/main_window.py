@@ -1138,38 +1138,54 @@ class MainWindow(QMainWindow):
         dlg = SubscribeDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            self._store.create_subscription(
-                canonical_source=dlg.canonical_source,
-                display_name=dlg.display_name,
-                color=dlg.color,
-                events=dlg.events,
-                content_sha256=dlg.content_sha256,
-            )
-        except Exception:
-            log.exception("failed to create subscription")
-            QMessageBox.critical(
-                self, "Subscription failed", "Could not save subscription."
-            )
-            return
-        # Subscriptions account may have just been created — refresh metadata.
-        if SUBSCRIPTION_ACCOUNT_ID not in self._account_meta:
-            self._account_display_names[SUBSCRIPTION_ACCOUNT_ID] = (
-                SUBSCRIPTION_ACCOUNT_NAME
-            )
-            self._account_meta[SUBSCRIPTION_ACCOUNT_ID] = (
-                SUBSCRIPTION_ACCOUNT_NAME,
-                "",
-                "subscription",
-            )
+
+        canonical_source = dlg.canonical_source
+        display_name = dlg.display_name
+        color = dlg.color
+        events = dlg.events
+        content_sha256 = dlg.content_sha256
+
+        self._sync_status.set_syncing("Importing subscription…")
+
+        async def _do_import() -> None:
+            try:
+                await asyncio.to_thread(
+                    self._store.create_subscription,
+                    canonical_source=canonical_source,
+                    display_name=display_name,
+                    color=color,
+                    events=events,
+                    content_sha256=content_sha256,
+                    rebuild_batch_size=0,
+                )
+            except Exception:
+                log.exception("failed to create subscription")
+                self._sync_status.set_ready()
+                QMessageBox.critical(
+                    self, "Subscription failed", "Could not save subscription."
+                )
+                return
+            self._sync_status.set_ready()
+            # Subscriptions account may have just been created — refresh metadata.
+            if SUBSCRIPTION_ACCOUNT_ID not in self._account_meta:
+                self._account_display_names[SUBSCRIPTION_ACCOUNT_ID] = (
+                    SUBSCRIPTION_ACCOUNT_NAME
+                )
+                self._account_meta[SUBSCRIPTION_ACCOUNT_ID] = (
+                    SUBSCRIPTION_ACCOUNT_NAME,
+                    "",
+                    "subscription",
+                )
+                self._fire_async(
+                    self._sync.start_account(SUBSCRIPTION_ACCOUNT_ID),
+                    f"start_account/{SUBSCRIPTION_ACCOUNT_ID}",
+                )
             self._fire_async(
-                self._sync.start_account(SUBSCRIPTION_ACCOUNT_ID),
-                f"start_account/{SUBSCRIPTION_ACCOUNT_ID}",
+                self._rebuild_cal_info_for_account_async(SUBSCRIPTION_ACCOUNT_ID),
+                f"rebuild_cal_info/{SUBSCRIPTION_ACCOUNT_ID}",
             )
-        self._fire_async(
-            self._rebuild_cal_info_for_account_async(SUBSCRIPTION_ACCOUNT_ID),
-            f"rebuild_cal_info/{SUBSCRIPTION_ACCOUNT_ID}",
-        )
+
+        self._fire_async(_do_import(), "subscribe/import")
 
     def _on_refresh_calendar(self, calendar_id: str) -> None:
         cal = self._store.get_calendar(calendar_id)

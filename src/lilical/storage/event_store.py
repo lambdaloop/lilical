@@ -792,6 +792,8 @@ class EventStore(QObject):
         calendar_id: str,
         changes: list[Any],
         new_cursor_json: str,
+        *,
+        rebuild_batch_size: int = 1,
     ) -> int:
         count = 0
         # Events whose instances need rebuilding after the main transaction commits.
@@ -873,12 +875,21 @@ class EventStore(QObject):
                 s.query(Calendar).filter(Calendar.id == calendar_id).update(
                     {"sync_cursor": new_cursor_json}
                 )
-        # EventRows are now committed. Rebuild event_instances one master at a
-        # time so the write lock is released between expansions — GUI writes can
-        # interleave between masters.
-        for event in masters_to_rebuild.values():
+        # EventRows are now committed. Rebuild event_instances for each master.
+        # rebuild_batch_size=1 (default): one session per master so GUI writes
+        # can interleave during incremental sync ticks.
+        # rebuild_batch_size=0: one session for all masters — faster for bulk
+        # imports where GUI interleaving is not needed (subscribe runs off-thread).
+        masters = list(masters_to_rebuild.values())
+        if rebuild_batch_size <= 0:
             with self._write_session() as s:
-                self._rebuild_instances_for(s, event)
+                for event in masters:
+                    self._rebuild_instances_for(s, event)
+        else:
+            for i in range(0, len(masters), rebuild_batch_size):
+                with self._write_session() as s:
+                    for event in masters[i : i + rebuild_batch_size]:
+                        self._rebuild_instances_for(s, event)
         changed_uids = {c.uid for c in changes if hasattr(c, "uid")}
         self.events_changed.emit(calendar_id, changed_uids)
         return count
@@ -1241,6 +1252,7 @@ class EventStore(QObject):
         color: str,
         events: list[Event],
         content_sha256: str,
+        rebuild_batch_size: int = 1,
     ) -> str:
         """Create one Calendar row (read-only) under the singleton Subscriptions
         account, persisting *events* atomically. Returns the new calendar id.
@@ -1302,7 +1314,10 @@ class EventStore(QObject):
             etag=None, last_modified=None, content_sha256=content_sha256
         )
         self.apply_remote_changes(
-            calendar_id, changes, json.dumps(cursor.to_json())
+            calendar_id,
+            changes,
+            json.dumps(cursor.to_json()),
+            rebuild_batch_size=rebuild_batch_size,
         )
         return calendar_id
 

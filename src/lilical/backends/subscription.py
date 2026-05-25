@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -52,6 +54,41 @@ class SubscriptionCursor(SyncCursor):
             last_modified=data.get("last_modified"),  # type: ignore[reportArgumentType]
             content_sha256=str(data.get("content_sha256", "")),
         )
+
+
+def _event_signature(event: Event) -> str:
+    """Stable SHA-256 hash of an event's user-visible content fields.
+
+    Used by incremental_sync to skip upserts for events whose content is
+    byte-identical to the already-stored version.
+    """
+    parts = {
+        "summary": event.summary,
+        "description": event.description,
+        "location": event.location,
+        "dtstart": event.dtstart.isoformat() if event.dtstart else None,
+        "dtend": event.dtend.isoformat() if event.dtend else None,
+        "tz": event.tz,
+        "all_day": event.all_day,
+        "url": event.url,
+        "rrule": event.rrule,
+        "recurrence_id": (
+            event.recurrence_id.isoformat() if event.recurrence_id else None
+        ),
+        "exdates": [dt.isoformat() for dt in event.exdates],
+        "rdates": [dt.isoformat() for dt in event.rdates],
+        "status": event.status,
+        "transparency": event.transparency,
+        "color": event.color,
+        "categories": sorted(event.categories),
+        "organizer": dataclasses.asdict(event.organizer) if event.organizer else None,
+        "attendees": sorted(
+            [dataclasses.asdict(a) for a in event.attendees],
+            key=lambda x: x.get("email", ""),
+        ),
+    }
+    blob = json.dumps(parts, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()
 
 
 def _read_only_error() -> PermanentError:
@@ -164,14 +201,17 @@ class SubscriptionBackend:
             return [], new_cursor
 
         new_uids = {e.uid for e in events}
-        existing_uids = (
-            await asyncio.to_thread(self._list_event_uids, local_cal)
+        existing_sigs: dict[tuple[str, str], str] = (
+            await asyncio.to_thread(self._list_event_signatures, local_cal)
             if local_cal
-            else set()
+            else {}
         )
-        changes: list[EventChange] = [
-            EventChange(kind="upsert", event=e, uid=e.uid) for e in events
-        ]
+        existing_uids = {k[0] for k in existing_sigs}
+        changes: list[EventChange] = []
+        for e in events:
+            rec_id = e.recurrence_id.isoformat() if e.recurrence_id else ""
+            if existing_sigs.get((e.uid, rec_id)) != _event_signature(e):
+                changes.append(EventChange(kind="upsert", event=e, uid=e.uid))
         for uid in existing_uids - new_uids:
             changes.append(EventChange(kind="delete", uid=uid))
         return changes, new_cursor
@@ -182,19 +222,47 @@ class SubscriptionBackend:
                 return cal.id
         return None
 
-    def _list_event_uids(self, calendar_id: str) -> set[str]:
+    def _list_event_signatures(
+        self, calendar_id: str
+    ) -> dict[tuple[str, str], str]:
         from sqlalchemy.orm import Session
 
         from lilical.models.event import EventRow
 
         with Session(self._store._engine) as s:  # type: ignore[reportPrivateUsage]
-            rows = (
-                s.query(EventRow.uid)
-                .filter(EventRow.calendar_id == calendar_id)
-                .distinct()
-                .all()
-            )
-            return {r[0] for r in rows}
+            rows = s.query(EventRow).filter(EventRow.calendar_id == calendar_id).all()
+
+        result: dict[tuple[str, str], str] = {}
+        for row in rows:
+            exdates = json.loads(row.exdates) if row.exdates else []
+            rdates = json.loads(row.rdates) if row.rdates else []
+            attendees = json.loads(row.attendees) if row.attendees else []
+            organizer = json.loads(row.organizer) if row.organizer else None
+            categories = json.loads(row.categories) if row.categories else []
+            parts = {
+                "summary": row.summary or "",
+                "description": row.description or "",
+                "location": row.location or "",
+                "dtstart": row.dtstart or None,
+                "dtend": row.dtend or None,
+                "tz": row.tz or "UTC",
+                "all_day": bool(row.all_day),
+                "url": row.url,
+                "rrule": row.rrule,
+                "recurrence_id": row.recurrence_id or None,
+                "exdates": exdates,
+                "rdates": rdates,
+                "status": row.status or "CONFIRMED",
+                "transparency": row.transparency or "OPAQUE",
+                "color": row.color,
+                "categories": sorted(categories),
+                "organizer": organizer,
+                "attendees": sorted(attendees, key=lambda x: x.get("email", "")),
+            }
+            blob = json.dumps(parts, sort_keys=True, default=str).encode()
+            sig = hashlib.sha256(blob).hexdigest()
+            result[(row.uid, row.recurrence_id or "")] = sig
+        return result
 
     # ── Write methods: all read-only ─────────────────────────────────────────
     async def rename_calendar(self, calendar_id: str, new_name: str) -> None:

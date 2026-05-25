@@ -232,8 +232,11 @@ def test_incremental_sync_emits_deletes_for_removed_uids(tmp_path: Path) -> None
 
     store = _store_with_calendar(src, cal_id="cal-sub")
     backend = SubscriptionBackend(account_id="subscriptions", store=store)
-    # Pretend existing local DB has uids {a, b}.
-    backend._list_event_uids = lambda cal_id: {"a@x", "b@x"}  # type: ignore[method-assign]
+    # Pretend existing local DB has a@x (with a stale sig) and b@x.
+    backend._list_event_signatures = lambda cal_id: {  # type: ignore[method-assign]
+        ("a@x", ""): "stale-sig",
+        ("b@x", ""): "stale-sig",
+    }
 
     cursor = SubscriptionCursor(etag=None, last_modified=None, content_sha256="old")
     # Force mtime mismatch by passing a fake prev_last_modified.
