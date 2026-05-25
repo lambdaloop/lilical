@@ -147,3 +147,38 @@ def test_save_graph_cache_creates_secrets_when_missing() -> None:
     secrets.set.assert_called_once()
     saved = secrets.set.call_args[0][1]
     assert saved["msal_cache"] == '{"AccessToken": {}}'
+
+
+def test_subscription_kind_returns_subscription_backend() -> None:
+    from lilical.backends.subscription import SubscriptionBackend
+
+    store = MagicMock()
+    factory = build_backend_factory(_secrets(), store=store)
+    backend = factory(_account("subscription"))
+    assert isinstance(backend, SubscriptionBackend)
+    assert backend.account_id == "acc-test"
+    assert backend._store is store
+
+
+def test_subscription_kind_without_store_raises() -> None:
+    factory = build_backend_factory(_secrets())  # no store=
+    with pytest.raises(RuntimeError, match="EventStore"):
+        factory(_account("subscription"))
+
+
+def test_non_subscription_kinds_still_work_without_store_kwarg() -> None:
+    """Regression guard: build_backend_factory(secrets) — no `store=` — must
+    keep working for the three non-subscription kinds."""
+    from lilical.backends.caldav import CalDavBackend
+    from lilical.backends.google import GoogleBackend
+    from lilical.backends.graph import GraphBackend
+
+    factory = build_backend_factory(
+        _secrets({"token": "{}", "msal_cache": "{}", "password": "p"})
+    )
+    assert isinstance(
+        factory(_account("caldav", server_url="https://dav.example.com")),
+        CalDavBackend,
+    )
+    assert isinstance(factory(_account("google")), GoogleBackend)
+    assert isinstance(factory(_account("graph")), GraphBackend)

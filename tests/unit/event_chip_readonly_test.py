@@ -107,71 +107,95 @@ def test_read_only_body_drag_emits_no_drag_committed(qapp):
     assert committed_calls == []
 
 
+class _StubAction:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def text(self) -> str:
+        return self._text
+
+
+class _StubMenu:
+    """Replaces QMenu in event_chip.py for tests: collects actions without
+    ever opening a real popup (which would block on QPA=offscreen).
+
+    Method names match the Qt API (camelCase) so the production code can
+    call them unmodified; the `noqa: N802` markers acknowledge the project
+    lint rule preferring snake_case for new method definitions.
+    """
+
+    instances: list["_StubMenu"] = []
+
+    def __init__(self) -> None:
+        self._actions: list[_StubAction] = []
+        self._exec_called = False
+        _StubMenu.instances.append(self)
+
+    def addAction(self, text: str) -> _StubAction:  # noqa: N802
+        action = _StubAction(text)
+        self._actions.append(action)
+        return action
+
+    def addSeparator(self) -> None:  # noqa: N802
+        pass
+
+    def actions(self) -> list[_StubAction]:
+        return list(self._actions)
+
+    def isEmpty(self) -> bool:  # noqa: N802
+        return not self._actions
+
+    def exec(self, _pos):
+        self._exec_called = True
+        return None
+
+
 def test_read_only_context_menu_omits_edit_and_delete(qapp, monkeypatch):
     """Right-click on a read-only chip builds a menu without Edit/Delete
     entries. When the menu would otherwise be empty (no completed toggle
-    available), the menu is never shown — verified by asserting QMenu.exec
-    is not called."""
-    from PySide6.QtGui import QAction
-    from PySide6.QtWidgets import QGraphicsSceneContextMenuEvent, QMenu
+    available), the menu is never shown — verified by asserting `exec` was
+    not invoked."""
+    from PySide6.QtWidgets import QGraphicsSceneContextMenuEvent
+
+    import lilical.ui.widgets.event_chip as event_chip_mod
+
+    _StubMenu.instances = []
+    monkeypatch.setattr(event_chip_mod, "QMenu", _StubMenu)
 
     chip = _make_chip(read_only=True)
-
-    actions_seen: list[list[str]] = []
-    exec_calls: list[QMenu] = []
-
-    real_add_action = QMenu.addAction
-
-    def _spy_add_action(self, text):
-        return real_add_action(self, text)
-
-    def _spy_exec(self, _pos):
-        actions_seen.append(
-            [a.text() for a in self.actions() if isinstance(a, QAction)]
-        )
-        exec_calls.append(self)
-        return None
-
-    monkeypatch.setattr(QMenu, "exec", _spy_exec)
-
     ev = QGraphicsSceneContextMenuEvent(
         QGraphicsSceneContextMenuEvent.Type.GraphicsSceneContextMenu
     )
     chip.contextMenuEvent(ev)
 
-    # The chip's _completed_display_enabled is False by default, so the menu
-    # would only contain Edit/Delete — but those are suppressed. The menu is
-    # empty, so exec is short-circuited.
-    assert exec_calls == []
-    assert actions_seen == []
+    assert len(_StubMenu.instances) == 1
+    menu = _StubMenu.instances[0]
+    assert menu.actions() == []
+    assert menu._exec_called is False
 
 
 def test_writable_chip_context_menu_has_edit_and_delete(qapp, monkeypatch):
     """Sanity-check the inverse: a writable chip's menu does contain Edit
     and Delete."""
-    from PySide6.QtGui import QAction
-    from PySide6.QtWidgets import QGraphicsSceneContextMenuEvent, QMenu
+    from PySide6.QtWidgets import QGraphicsSceneContextMenuEvent
+
+    import lilical.ui.widgets.event_chip as event_chip_mod
+
+    _StubMenu.instances = []
+    monkeypatch.setattr(event_chip_mod, "QMenu", _StubMenu)
 
     chip = _make_chip(read_only=False)
-    seen_actions: list[list[str]] = []
-
-    def _spy_exec(self, _pos):
-        seen_actions.append(
-            [a.text() for a in self.actions() if isinstance(a, QAction)]
-        )
-        return None
-
-    monkeypatch.setattr(QMenu, "exec", _spy_exec)
-
     ev = QGraphicsSceneContextMenuEvent(
         QGraphicsSceneContextMenuEvent.Type.GraphicsSceneContextMenu
     )
     chip.contextMenuEvent(ev)
 
-    assert seen_actions, "menu should be shown on a writable chip"
-    labels = seen_actions[0]
+    assert len(_StubMenu.instances) == 1
+    menu = _StubMenu.instances[0]
+    labels = [a.text() for a in menu.actions()]
     assert "Edit…" in labels
     assert "Delete…" in labels
+    assert menu._exec_called is True
 
 
 def test_writable_chip_body_drag_still_emits_signals(qapp):
