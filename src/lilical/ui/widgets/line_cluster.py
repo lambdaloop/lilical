@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QEvent, QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsObject
 
@@ -150,9 +150,9 @@ class LineCluster(QGraphicsObject):
             read_only=geo["dom_read_only"],
         )
         self._chip.setParentItem(self)
+        self._chip.setAcceptHoverEvents(False)
 
         self.setAcceptHoverEvents(True)
-        self.setFiltersChildEvents(True)
         self._hovered: bool = False
 
     @property
@@ -222,19 +222,6 @@ class LineCluster(QGraphicsObject):
         for bar_rect, color in self._bar_rects:
             painter.setBrush(color)
             painter.drawRect(bar_rect)
-
-    def sceneEventFilter(self, watched, event) -> bool:  # noqa: ANN001, N802
-        t = event.type()
-        if t == QEvent.Type.GraphicsSceneHoverEnter:
-            if not self._hovered:
-                self._hovered = True
-                self.hovered.emit(self._cluster_data["events"])
-        elif t == QEvent.Type.GraphicsSceneHoverLeave:
-            pos = event.scenePos()
-            if not self.sceneBoundingRect().contains(pos):
-                self._hovered = False
-                self.hover_left.emit()
-        return False
 
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         if not self._hovered:
