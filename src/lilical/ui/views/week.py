@@ -1319,8 +1319,8 @@ class WeekView(QGraphicsView):
 
         # Compute global anchor positions.
         cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
-        vp_tl = self.mapFromScene(cluster_scene_rect.topLeft()).toPoint()
-        vp_br = self.mapFromScene(cluster_scene_rect.topRight()).toPoint()
+        vp_tl = self.mapFromScene(cluster_scene_rect.topLeft())
+        vp_br = self.mapFromScene(cluster_scene_rect.topRight())
         anchor_global = self.viewport().mapToGlobal(vp_tl)
         column_right_global = self.viewport().mapToGlobal(vp_br).x()
         view_right_edge_global = self.viewport().mapToGlobal(

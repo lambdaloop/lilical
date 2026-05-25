@@ -230,8 +230,7 @@ class LineCluster(QGraphicsObject):
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
-        pos = event.scenePos()
-        if not self.sceneBoundingRect().contains(pos):
+        if not self.sceneBoundingRect().contains(event.scenePos()):
             self._hovered = False
             self.hover_left.emit()
         super().hoverLeaveEvent(event)
