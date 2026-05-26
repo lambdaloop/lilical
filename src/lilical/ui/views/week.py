@@ -1418,7 +1418,7 @@ class WeekView(QGraphicsView):
 
         # If the click landed on a chip, let Qt dispatch it to the chip.
         item = self._scene.itemAt(scene_pos, self.viewportTransform())
-        if isinstance(item, EventChip):
+        if isinstance(item, (EventChip, LineCluster)):
             super().mousePressEvent(event)
             return
 

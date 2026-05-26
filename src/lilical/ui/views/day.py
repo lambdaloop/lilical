@@ -1114,7 +1114,7 @@ class _DayCanvas(QGraphicsView):
         scene_pos = self.mapToScene(vp_pos)
 
         item = self._scene.itemAt(scene_pos, self.viewportTransform())
-        if isinstance(item, EventChip):
+        if isinstance(item, (EventChip, LineCluster)):
             super().mousePressEvent(event)
             return
 
