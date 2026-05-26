@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from typing import Any
 
 import httpx
 import pytest
@@ -7,7 +8,7 @@ from lilical.backends.google import GoogleBackend, GoogleCursor, _google_event_t
 
 
 def test_timed_event() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt123",
         "iCalUID": "uid-abc@google.com",
         "summary": "Lunch",
@@ -39,7 +40,7 @@ def test_timed_event() -> None:
 
 
 def test_cancelled_event() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt456",
         "iCalUID": "uid-xyz@google.com",
         "status": "cancelled",
@@ -51,7 +52,7 @@ def test_cancelled_event() -> None:
 
 
 def test_no_icaluid_falls_back_to_id() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt789",
         "status": "confirmed",
     }
@@ -61,7 +62,7 @@ def test_no_icaluid_falls_back_to_id() -> None:
 
 
 def test_all_day_event_uses_date_not_datetime() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-day",
         "iCalUID": "uid-day@google.com",
         "summary": "Holiday",
@@ -87,7 +88,7 @@ def test_recurring_master_extracts_rrule() -> None:
     """Google returns the recurring master with a `recurrence` array; we
     extract the RRULE value (without the `RRULE:` prefix) so RecurrenceExpander
     can feed it to icalendar/recurring_ical_events."""
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-rec",
         "iCalUID": "uid-rec@google.com",
         "summary": "Standup",
@@ -111,7 +112,7 @@ def test_recurring_override_is_stored_with_recurrence_id() -> None:
     """A modified instance of a recurring series carries `recurringEventId`.
     It is now stored as an override Event with recurrence_id set (from
     originalStartTime) and rrule=None, keyed under the master's iCalUID."""
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-override",
         "iCalUID": "uid-rec@google.com",
         "recurringEventId": "evt-rec",
@@ -130,7 +131,7 @@ def test_recurring_override_is_stored_with_recurrence_id() -> None:
 
 
 def test_transparent_event_maps_to_transparency() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-free",
         "iCalUID": "uid-free@google.com",
         "summary": "Free block",
@@ -146,7 +147,7 @@ def test_transparent_event_maps_to_transparency() -> None:
 
 
 def test_tentative_status() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-tent",
         "iCalUID": "uid-tent@google.com",
         "summary": "Maybe",
@@ -161,7 +162,7 @@ def test_tentative_status() -> None:
 
 
 def test_attendees_extracted() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-att",
         "iCalUID": "uid-att@google.com",
         "summary": "Meet",
@@ -221,7 +222,7 @@ def test_parsed_google_rrule_event_expands_into_instances(tmp_path) -> None:
             )
         )
 
-    data = {
+    data: dict[str, Any] = {
         "id": "evt-rec",
         "iCalUID": "uid-rec@google.com",
         "summary": "Weekly",

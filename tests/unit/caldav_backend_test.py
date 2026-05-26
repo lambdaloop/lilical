@@ -605,9 +605,12 @@ def test_events_to_changes_emits_master_and_override() -> None:
     )
     changes = backend._events_to_changes([ev], calendar_id="cal-1")
     assert len(changes) == 2
-    by_kind = {c.event.recurrence_id is None: c for c in changes}
+    for c in changes:
+        assert c.event is not None
+    by_kind = {c.event.recurrence_id is None: c for c in changes if c.event}
     master = by_kind[True]
     override = by_kind[False]
+    assert master.event is not None and override.event is not None
     assert master.event.rrule is not None
     assert "FREQ=WEEKLY" in master.event.rrule
     assert override.event.recurrence_id is not None
@@ -922,7 +925,7 @@ async def test_incremental_sync_falls_back_without_token() -> None:
         backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
 
         cursor = CalDavCursor(sync_token=None)
-        changes, new_cursor = await backend.incremental_sync("https://cal/1/", cursor)
+        changes, _new_cursor = await backend.incremental_sync("https://cal/1/", cursor)
     finally:
         _caldav.Calendar = original
 

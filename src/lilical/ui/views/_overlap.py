@@ -25,6 +25,7 @@ in a right-side gutter.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Callable
 
 # Tunables for pack_overlapping_lanes.
@@ -32,7 +33,7 @@ MIN_NORMAL_CHIP_W: float = 60.0   # column width below which cluster mode trigge
 
 
 def pack_overlapping(
-    items: list[tuple[float, float, Any]],
+    items: Sequence[tuple[float, float, Any]],
 ) -> list[tuple[int, int, int, Any]]:
     """Layout overlapping items into columns with cascade widths.
 
@@ -119,7 +120,7 @@ def pack_overlapping(
 
 
 def pick_dominant_event(
-    items: list[tuple[float, float, str, Any]],
+    items: Sequence[tuple[float, float, str, Any]],
     is_own_calendar_fn: Callable[[str], bool] | None = None,
 ) -> int:
     """Return index of dominant event in a cluster.
@@ -150,7 +151,7 @@ def pick_dominant_event(
 
 
 def pack_overlapping_lanes(
-    items: list[tuple[float, float, str, Any]],
+    items: Sequence[tuple[float, float, str, Any]],
     col_w: float,
     *,
     min_normal_chip_w: float = MIN_NORMAL_CHIP_W,

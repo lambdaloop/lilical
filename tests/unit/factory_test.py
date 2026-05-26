@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from lilical.backends.factory import build_backend_factory
+from lilical.models.account import Account
 
 
-def _account(kind: str, **extra) -> SimpleNamespace:
-    return SimpleNamespace(
-        id="acc-test",
-        kind=kind,
-        identity="user@example.com",
-        server_url=extra.get("server_url"),
-        include_contacts=extra.get("include_contacts", 0),
+def _account(kind: str, **extra: Any) -> Account:
+    return cast(
+        Account,
+        SimpleNamespace(
+            id="acc-test",
+            kind=kind,
+            identity="user@example.com",
+            server_url=extra.get("server_url"),
+            include_contacts=extra.get("include_contacts", 0),
+        ),
     )
 
 
@@ -114,6 +119,7 @@ def test_save_google_token_persists_to_secrets() -> None:
     from lilical.backends.google import GoogleBackend
 
     assert isinstance(backend, GoogleBackend)
+    assert backend._on_token_refreshed is not None
     backend._on_token_refreshed('{"access_token": "new-tok"}')
     secrets.set.assert_called_once_with(
         "acc-test", {"token": '{"access_token": "new-tok"}'}
@@ -129,6 +135,7 @@ def test_save_graph_cache_persists_to_secrets() -> None:
     from lilical.backends.graph import GraphBackend
 
     assert isinstance(backend, GraphBackend)
+    assert backend._on_token_refreshed is not None
     backend._on_token_refreshed('{"AccessToken": {}}')
     expected_cache = secrets.set.call_args[0][1]["msal_cache"]
     assert expected_cache == '{"AccessToken": {}}'
@@ -143,6 +150,7 @@ def test_save_graph_cache_creates_secrets_when_missing() -> None:
     from lilical.backends.graph import GraphBackend
 
     assert isinstance(backend, GraphBackend)
+    assert backend._on_token_refreshed is not None
     backend._on_token_refreshed('{"AccessToken": {}}')
     secrets.set.assert_called_once()
     saved = secrets.set.call_args[0][1]

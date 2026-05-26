@@ -50,7 +50,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.basedpyright]
-include = ["src"]
+include = ["src", "tests"]
 typeCheckingMode = "strict"
 reportUnknownMemberType = false
 reportUnknownVariableType = false
@@ -67,3 +67,8 @@ reportPrivateUsage = false
 reportGeneralTypeIssues = false
 reportMissingTypeArgument = false
 reportAttributeAccessIssue = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportUntypedFunctionDecorator = false
+reportUnusedFunction = false

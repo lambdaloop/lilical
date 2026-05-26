@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pytest
+
+from lilical.storage.event_store import EventStore
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,10 +32,10 @@ class _FakeStore:
         return []
 
 
-def _make_event(**kwargs):
+def _make_event(**kwargs: Any):
     from lilical.models.event import Event
 
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         uid="uid-test",
         calendar_id="cal-1",
         summary="Test event",
@@ -46,7 +49,7 @@ def _make_event(**kwargs):
 def _make_dialog(qapp, event=None):
     from lilical.ui.widgets.event_dialog import EventDialog
 
-    return EventDialog(store=_FakeStore(), event=event)
+    return EventDialog(store=cast(EventStore, _FakeStore()), event=event)
 
 
 def test_delete_button_hidden_for_new_event(qapp):
@@ -153,7 +156,7 @@ def test_event_dialog_picker_excludes_reader_and_freebusyreader(qapp):
             ("cal-shared", "Shared write", "writer"),
         ]
     )
-    dialog = EventDialog(store=store)
+    dialog = EventDialog(store=cast(EventStore, store))
     ids = _picker_ids(dialog)
     assert "cal-work" in ids
     assert "cal-shared" in ids
@@ -174,6 +177,6 @@ def test_event_dialog_picker_empty_when_only_read_only_calendars(qapp):
             ("cal-fb", "Free/busy", "freebusyreader"),
         ]
     )
-    dialog = EventDialog(store=store)
+    dialog = EventDialog(store=cast(EventStore, store))
     assert dialog._cal_combo.count() == 0
     dialog.deleteLater()

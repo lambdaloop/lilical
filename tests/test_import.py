@@ -1,2 +1,4 @@
 def test_import_lilical() -> None:
-    import lilical  # noqa: F401
+    import lilical
+
+    assert lilical is not None

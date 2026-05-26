@@ -104,7 +104,7 @@ def test_body_drag_emits_progress_and_committed(qapp):
     # Move 10 px right — crosses MOVE_THRESHOLD_PX (=4)
     _move(chip, center + QPointF(10, 0))
     assert len(progress_calls) == 1
-    ev, mode, _ = progress_calls[0]
+    _ev, mode, _ = progress_calls[0]
     assert mode == "move"
 
     # More moves keep emitting

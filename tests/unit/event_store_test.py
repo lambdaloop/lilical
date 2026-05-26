@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -183,8 +184,8 @@ def test_model_metadata_creates_sqlite_schema() -> None:
     Base.metadata.create_all(engine)
 
 
-def _event(**overrides) -> Event:
-    data = {
+def _event(**overrides: Any) -> Event:
+    data: dict[str, Any] = {
         "uid": "event-1",
         "calendar_id": "cal-1",
         "provider_event_id": "provider-event-1",
@@ -1276,8 +1277,8 @@ def test_apply_remote_changes_falls_back_to_provider_event_id(engine) -> None:
 # ── queue_split_series ────────────────────────────────────────────────────────
 
 
-def _recurring_event(**overrides) -> Event:
-    base = {
+def _recurring_event(**overrides: Any) -> Event:
+    base: dict[str, Any] = {
         "uid": "series-uid",
         "calendar_id": "cal-1",
         "provider_event_id": "pid-master",

@@ -5,8 +5,14 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+
+from lilical.storage.event_store import EventStore
+
+if TYPE_CHECKING:
+    from lilical.models.event import Event
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -49,14 +55,14 @@ class _FakeStore:
     def queue_delete_instance(self, uid, calendar_id, recurrence_id_dt):
         self.delete_instance_calls.append((uid, calendar_id, recurrence_id_dt))
 
-    def get_event(self, uid, calendar_id):
+    def get_event(self, uid: str, calendar_id: str) -> "Event | None":
         return None
 
 
-def _make_event(**kwargs):
+def _make_event(**kwargs: Any):
     from lilical.models.event import Event
 
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         uid="uid-series",
         calendar_id="cal-1",
         summary="Recurring Meeting",
@@ -71,7 +77,7 @@ def test_dispatch_edit_occurrence(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     instance_dt = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
     event = _make_event()
@@ -80,7 +86,7 @@ def test_dispatch_edit_occurrence(qapp):
     _dispatch_edit(parent, store, event, instance_dt, edited, "occurrence")
 
     assert len(store.update_instance_calls) == 1
-    uid, cal_id, rid, ed = store.update_instance_calls[0]
+    uid, _cal_id, rid, _ed = store.update_instance_calls[0]
     assert uid == "uid-series"
     assert rid == instance_dt
 
@@ -92,7 +98,7 @@ def test_dispatch_edit_following_calls_split_series(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     instance_dt = datetime(2026, 5, 25, 9, 0, tzinfo=timezone.utc)
     event = _make_event()
@@ -101,7 +107,7 @@ def test_dispatch_edit_following_calls_split_series(qapp):
     _dispatch_edit(parent, store, event, instance_dt, edited, "following")
 
     assert len(store.split_series_calls) == 1
-    uid, cal_id, split_at, tail = store.split_series_calls[0]
+    uid, _cal_id, split_at, _tail = store.split_series_calls[0]
     assert uid == "uid-series"
     assert split_at == instance_dt
 
@@ -113,7 +119,7 @@ def test_dispatch_edit_series_calls_queue_update(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     event = _make_event()
     edited = _make_event(summary="Series Edit")
@@ -130,7 +136,7 @@ def test_dispatch_delete_occurrence_calls_delete_instance(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_delete
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     instance_dt = datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
     event = _make_event()
@@ -138,7 +144,7 @@ def test_dispatch_delete_occurrence_calls_delete_instance(qapp):
     _dispatch_delete(parent, store, event, instance_dt, "occurrence")
 
     assert len(store.delete_instance_calls) == 1
-    uid, cal_id, rid = store.delete_instance_calls[0]
+    uid, _cal_id, rid = store.delete_instance_calls[0]
     assert uid == "uid-series"
     assert rid == instance_dt
 
@@ -150,7 +156,7 @@ def test_dispatch_delete_following_calls_truncate(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_delete
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     instance_dt = datetime(2026, 6, 8, 9, 0, tzinfo=timezone.utc)
     event = _make_event()
@@ -158,7 +164,7 @@ def test_dispatch_delete_following_calls_truncate(qapp):
     _dispatch_delete(parent, store, event, instance_dt, "following")
 
     assert len(store.truncate_calls) == 1
-    uid, cal_id, until_dt = store.truncate_calls[0]
+    uid, _cal_id, until_dt = store.truncate_calls[0]
     assert uid == "uid-series"
     assert until_dt == instance_dt
 
@@ -170,7 +176,7 @@ def test_dispatch_edit_occurrence_with_recurrence_id(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     event = _make_event(recurrence_id=rid)
@@ -179,7 +185,7 @@ def test_dispatch_edit_occurrence_with_recurrence_id(qapp):
     _dispatch_edit(parent, store, event, None, edited, "occurrence")
 
     assert len(store.update_instance_calls) == 1
-    uid, cal_id, rid_call, ed = store.update_instance_calls[0]
+    _uid, _cal_id, rid_call, _ed = store.update_instance_calls[0]
     assert rid_call == rid
     parent.deleteLater()
 
@@ -189,7 +195,7 @@ def test_dispatch_edit_following_with_recurrence_id(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_edit
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     event = _make_event(recurrence_id=rid)
@@ -210,7 +216,7 @@ def test_dispatch_edit_series_with_recurrence_id_looks_up_master(qapp):
         def get_event(self, uid, calendar_id):
             return _make_event(etag='"master-etag"')
 
-    store = _MasterLookupStore()
+    store = cast(EventStore, _MasterLookupStore())
     parent = QWidget()
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     event = _make_event(recurrence_id=rid)
@@ -227,7 +233,7 @@ def test_dispatch_delete_occurrence_with_recurrence_id(qapp):
 
     from lilical.ui.views._recurrence_actions import _dispatch_delete
 
-    store = _FakeStore()
+    store = cast(EventStore, _FakeStore())
     parent = QWidget()
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     event = _make_event(recurrence_id=rid)
@@ -247,7 +253,7 @@ def test_dispatch_delete_following_with_recurrence_id(qapp):
         def get_event(self, uid, calendar_id):
             return _make_event()
 
-    store = _MasterLookupStore()
+    store = cast(EventStore, _MasterLookupStore())
     parent = QWidget()
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     event = _make_event(recurrence_id=rid)

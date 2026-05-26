@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +18,18 @@ from lilical.backends.base import (
     TransientError,
 )
 from lilical.models.event import Event
+from lilical.storage.event_store import EventStore
+from lilical.storage.secrets import SecretsStore
 from lilical.sync.engine import SyncEngine
+
+
+def _make_engine(store: Any, *, secrets: Any = None, factory: Any) -> SyncEngine:
+    """Construct a SyncEngine with cast-loose args for test ergonomics."""
+    return SyncEngine(
+        cast(EventStore, store),
+        secrets=cast(SecretsStore, secrets),
+        factory=factory,
+    )
 
 
 class FakeStore:
@@ -102,7 +114,7 @@ class FakeBackend:
 async def test_tick_runs_initial_sync_and_applies_remote_changes() -> None:
     store = FakeStore()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     finished: list[tuple[str, int]] = []
     engine.sync_finished.connect(
         lambda account_id, count: finished.append((account_id, count))
@@ -116,7 +128,7 @@ async def test_tick_runs_initial_sync_and_applies_remote_changes() -> None:
     calendar_id, changes, cursor = store.applied[0]
     assert calendar_id == "cal-1"
     assert len(changes) == 1
-    assert json.loads(cursor) == {"type": "fake", "token": "next"}
+    assert json.loads(cast(str, cursor)) == {"type": "fake", "token": "next"}
     assert finished == [("acc-1", 1)]
 
 
@@ -125,7 +137,7 @@ async def test_full_resync_with_specific_calendar_id() -> None:
     """Bug 3 + Bug 4: _full_resync resyncs only the matching calendar."""
     store = FakeStoreMultiCal()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     account = SimpleNamespace(id="acc-1")
 
     await engine._full_resync(account, backend, "provider-cal-1")
@@ -138,7 +150,7 @@ async def test_full_resync_with_empty_calendar_id_resyncs_all() -> None:
     """Bug 3: _full_resync with empty calendar_id resyncs all calendars."""
     store = FakeStoreMultiCal()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     account = SimpleNamespace(id="acc-1")
 
     await engine._full_resync(account, backend, "")
@@ -154,7 +166,7 @@ async def test_full_resync_applies_remote_changes() -> None:
     """Bug 3: _full_resync calls apply_remote_changes for each calendar."""
     store = FakeStoreMultiCal()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     account = SimpleNamespace(id="acc-1")
 
     await engine._full_resync(account, backend, "")
@@ -165,7 +177,9 @@ async def test_full_resync_applies_remote_changes() -> None:
 @pytest.mark.asyncio
 async def test_run_account_removes_task_on_auth_expired() -> None:
     """Bug 10: _run_account removes task from _tasks and _wake_events on AuthExpired."""
-    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine = _make_engine(
+        store=MagicMock(), secrets=None, factory=lambda x: MagicMock()
+    )
     engine._store.list_calendars = MagicMock(return_value=[])
     engine._store.list_pending_ops = MagicMock(return_value=[])
 
@@ -192,7 +206,9 @@ async def test_run_account_removes_task_on_auth_expired() -> None:
 @pytest.mark.asyncio
 async def test_run_account_removes_task_on_cursor_expired_then_auth_expired() -> None:
     """Bug 10+3: CursorExpired→_full_resync then AuthExpired."""
-    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine = _make_engine(
+        store=MagicMock(), secrets=None, factory=lambda x: MagicMock()
+    )
     engine._store.list_calendars = MagicMock(return_value=[])
     engine._store.list_pending_ops = MagicMock(return_value=[])
     resync_called = False
@@ -228,7 +244,7 @@ async def test_run_account_removes_task_on_cursor_expired_then_auth_expired() ->
 @pytest.mark.asyncio
 async def test_start_account_skips_existing_task() -> None:
     """Bug 10: start_account returns early if account_id is already in _tasks."""
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -246,7 +262,7 @@ async def test_start_account_creates_wake_event() -> None:
     """Bug 10: start_account creates a wake_event and adds the task."""
     store = FakeStore()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     engine._store.get_account = MagicMock(return_value=SimpleNamespace(id="new-acc"))
     engine._store.list_pending_ops = MagicMock(return_value=[])
     engine._store.list_calendars = MagicMock(return_value=[])
@@ -267,7 +283,7 @@ async def test_start_account_creates_wake_event() -> None:
 async def test_stop_account_cancels_task_and_clears_registries() -> None:
     store = FakeStore()
     backend = FakeBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda account: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda account: backend)
     engine._store.get_account = MagicMock(return_value=SimpleNamespace(id="acc-1"))
     engine._store.list_pending_ops = MagicMock(return_value=[])
     engine._store.list_calendars = MagicMock(return_value=[])
@@ -284,7 +300,7 @@ async def test_stop_account_cancels_task_and_clears_registries() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_account_noop_for_unknown_account() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(), secrets=None, factory=lambda account: MagicMock()
     )
     # Must not raise even when the account has never been started.
@@ -294,7 +310,7 @@ async def test_stop_account_noop_for_unknown_account() -> None:
 @pytest.mark.asyncio
 async def test_force_refresh_sets_wake_event() -> None:
     """Bug 10: force_refresh sets the wake event for an account."""
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -314,7 +330,9 @@ async def test_force_refresh_restarts_dead_task_after_auth_expired() -> None:
     The user's "Sync now" must actually retry after a credentials fix, instead
     of being a silent no-op once the loop has exited.
     """
-    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine = _make_engine(
+        store=MagicMock(), secrets=None, factory=lambda x: MagicMock()
+    )
     engine._store.list_calendars = MagicMock(return_value=[])
     engine._store.list_pending_ops = MagicMock(return_value=[])
 
@@ -369,7 +387,9 @@ async def test_force_refresh_restarts_dead_task_after_auth_expired() -> None:
 @pytest.mark.asyncio
 async def test_force_refresh_noop_when_account_unknown() -> None:
     """force_refresh on an unknown account must not crash or create a task."""
-    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine = _make_engine(
+        store=MagicMock(), secrets=None, factory=lambda x: MagicMock()
+    )
     engine._store.get_account = MagicMock(return_value=None)
 
     engine.force_refresh("ghost-acc")
@@ -381,7 +401,9 @@ async def test_force_refresh_noop_when_account_unknown() -> None:
 @pytest.mark.asyncio
 async def test_tick_with_cursor_expired_propagates_to_run_account() -> None:
     """Bug 3 + Bug 4: CursorExpired raised during tick is caught by _run_account."""
-    engine = SyncEngine(store=MagicMock(), secrets=None, factory=lambda x: MagicMock())
+    engine = _make_engine(
+        store=MagicMock(), secrets=None, factory=lambda x: MagicMock()
+    )
     engine._store.list_calendars = MagicMock(return_value=[])
     engine._store.list_pending_ops = MagicMock(return_value=[])
     engine._store.list_accounts = MagicMock(return_value=[])
@@ -459,7 +481,7 @@ async def test_tick_calls_list_calendars_and_upsert_before_pulling_deltas() -> N
     backend = _DiscoveryBackend(
         remote_cals=[{"provider_id": "real", "display_name": "Real"}]
     )
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -510,7 +532,7 @@ async def test_tick_emits_sync_progress_per_page() -> None:
         ],
     ]
     backend = _MultiPageBackend(pages)
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     progress: list[tuple[str, str, int]] = []
     engine.sync_progress.connect(
@@ -554,7 +576,7 @@ async def test_full_resync_runs_discovery_and_emits_progress() -> None:
         ],
     }
     backend = _DiscoveryBackend(remote_cals=[], pages_per_cal=pages_by_cal)
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     progress: list[tuple[str, str, int]] = []
     engine.sync_progress.connect(
@@ -587,7 +609,7 @@ async def test_run_account_emits_sync_failed_on_transient_error() -> None:
             yield  # pragma: no cover (never reached)
 
     store = FakeStore()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: _FailingBackend())
+    engine = _make_engine(store, secrets=None, factory=lambda a: _FailingBackend())
 
     failed: list[tuple[str, str]] = []
     engine.sync_failed.connect(lambda acc, msg: failed.append((acc, msg)))
@@ -657,7 +679,7 @@ class _PendingOpStore:
 
         return SimpleNamespace(provider_id=calendar_id)
 
-    def get_event(self, uid: str, calendar_id: str):
+    def get_event(self, uid: str, calendar_id: str) -> Any:
         from types import SimpleNamespace
 
         # Return a minimal row so delete ops (which now require
@@ -743,7 +765,7 @@ async def test_tick_drains_pending_ops_in_fifo_order() -> None:
         op.id = i + 1
     store = _PendingOpStore(ops)
     backend = _WriteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -759,7 +781,7 @@ async def test_tick_deletes_pending_op_on_success() -> None:
     op.id = 99
     store = _PendingOpStore([op])
     backend = _WriteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -772,7 +794,7 @@ async def test_conflict_error_emits_conflict_detected_and_drops_op() -> None:
     op.id = 77
     store = _PendingOpStore([op])
     backend = _WriteBackend(update_raises=ConflictError("412"))
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     conflicts: list[str] = []
     engine.conflict_detected.connect(lambda uid: conflicts.append(uid))
@@ -789,7 +811,7 @@ async def test_permanent_error_drops_pending_op_and_emits_sync_failed() -> None:
     op.id = 55
     store = _PendingOpStore([op])
     backend = _WriteBackend(delete_raises=PermanentError("404 not found"))
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     failures: list[tuple[str, str]] = []
     engine.sync_failed.connect(lambda acc, msg: failures.append((acc, msg)))
@@ -806,7 +828,7 @@ async def test_transient_error_during_drain_propagates() -> None:
     op.id = 33
     store = _PendingOpStore([op])
     backend = _WriteBackend(update_raises=TransientError("503"))
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     with pytest.raises(TransientError):
         await engine._tick(SimpleNamespace(id="acc-1"), backend)
@@ -829,7 +851,7 @@ async def test_apply_pending_create_marks_synced_with_canonical() -> None:
     op.id = 11
     store = _PendingOpStore([op])
     backend = _WriteBackend(canonical_event=canonical)
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -933,12 +955,12 @@ async def test_tick_dispatches_update_instance_op_to_backend() -> None:
     )
     store = _InstanceOpStore([op])
     backend = _InstanceWriteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
     assert len(backend.instance_updates) == 1
-    cal_id, mpid, rid, ev = backend.instance_updates[0]
+    cal_id, mpid, rid, _ev = backend.instance_updates[0]
     assert cal_id == "cal-1"
     assert mpid == "AAMk-master"
     assert rid == recurrence_id
@@ -983,7 +1005,7 @@ async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
     )
     store = _InstanceOpStore([op])
     backend = _InstanceDeleteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -1015,7 +1037,7 @@ async def test_delete_op_resolves_provider_event_id_from_store() -> None:
     op.id = 42
     store = _IdResolvingStore([op])
     backend = _WriteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -1034,7 +1056,7 @@ async def test_delete_op_skipped_when_no_provider_event_id() -> None:
     # Override get_event to return a row with no provider_event_id
     store.get_event = lambda uid, cal: SimpleNamespace(provider_event_id=None)  # type: ignore[method-assign]
     backend = _WriteBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -1065,7 +1087,7 @@ async def test_update_op_refreshes_etag() -> None:
     )
     store = _PendingOpStore([op])
     backend = _WriteBackend(canonical_event=canonical)
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -1107,7 +1129,7 @@ class _MultiAccountStore:
 @pytest.mark.asyncio
 async def test_start_all_spawns_tasks_for_all_accounts() -> None:
     store = _MultiAccountStore()
-    engine = SyncEngine(
+    engine = _make_engine(
         store=store,
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1133,7 +1155,7 @@ async def test_start_all_spawns_tasks_for_all_accounts() -> None:
 
 @pytest.mark.asyncio
 async def test_start_all_skips_existing_tasks() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1162,7 +1184,7 @@ async def test_start_all_skips_existing_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_all_cancels_all_tasks() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1182,7 +1204,7 @@ async def test_stop_all_cancels_all_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_start_account_nonexistent_is_noop() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1196,7 +1218,7 @@ async def test_start_account_nonexistent_is_noop() -> None:
 
 @pytest.mark.asyncio
 async def test_force_refresh_mid_teardown_is_noop() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1209,7 +1231,7 @@ async def test_force_refresh_mid_teardown_is_noop() -> None:
 
 @pytest.mark.asyncio
 async def test_resurrect_account_deleted_from_db_is_noop() -> None:
-    engine = SyncEngine(
+    engine = _make_engine(
         store=MagicMock(),
         secrets=None,
         factory=lambda account: MagicMock(),
@@ -1233,7 +1255,7 @@ async def test_tick_bare_exception_emits_sync_failed() -> None:
             yield
 
     store = FakeStore()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: _CrashBackend())
+    engine = _make_engine(store, secrets=None, factory=lambda a: _CrashBackend())
 
     failed: list[tuple[str, str]] = []
     engine.sync_failed.connect(lambda acc, msg: failed.append((acc, msg)))
@@ -1297,7 +1319,7 @@ class _IncrementalStore:
 async def test_tick_runs_incremental_sync_when_cursor_present() -> None:
     store = _IncrementalStore()
     backend = _IncrementalBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
@@ -1321,7 +1343,7 @@ class _FailingSecondPageBackend:
 async def test_initial_sync_cal_propagates_reraise() -> None:
     store = FakeStore()
     backend = _FailingSecondPageBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     with pytest.raises(TransientError):
         await engine._tick(SimpleNamespace(id="acc-1"), backend)
@@ -1378,7 +1400,7 @@ class _FailingCalBackend:
 async def test_tick_re_raises_exception_from_parallel_sync() -> None:
     store = _FailingCalStore()
     backend = _FailingCalBackend()
-    engine = SyncEngine(store, secrets=None, factory=lambda a: backend)
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
 
     with pytest.raises(TransientError):
         await engine._tick(SimpleNamespace(id="acc-1"), backend)

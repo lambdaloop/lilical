@@ -6,8 +6,11 @@ import os
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+
+from lilical.storage.event_store import EventStore
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -72,7 +75,7 @@ def test_read_only_calendar_hides_edit_and_delete(qapp):
     from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
 
     dialog = EventDetailsDialog(
-        store=_FakeStore(access_role="reader"),
+        store=cast(EventStore, _FakeStore(access_role="reader")),
         event=_make_event(),
     )
     labels = _button_labels(dialog)
@@ -86,7 +89,7 @@ def test_freebusyreader_calendar_hides_edit_and_delete(qapp):
     from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
 
     dialog = EventDetailsDialog(
-        store=_FakeStore(access_role="freebusyreader"),
+        store=cast(EventStore, _FakeStore(access_role="freebusyreader")),
         event=_make_event(),
     )
     labels = _button_labels(dialog)
@@ -99,7 +102,7 @@ def test_owner_calendar_shows_edit_and_delete(qapp):
     from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
 
     dialog = EventDetailsDialog(
-        store=_FakeStore(access_role="owner"),
+        store=cast(EventStore, _FakeStore(access_role="owner")),
         event=_make_event(),
     )
     labels = _button_labels(dialog)
@@ -113,7 +116,7 @@ def test_writer_calendar_shows_edit_and_delete(qapp):
     from lilical.ui.widgets.event_details_dialog import EventDetailsDialog
 
     dialog = EventDetailsDialog(
-        store=_FakeStore(access_role="writer"),
+        store=cast(EventStore, _FakeStore(access_role="writer")),
         event=_make_event(),
     )
     labels = _button_labels(dialog)

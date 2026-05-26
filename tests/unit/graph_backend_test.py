@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from lilical.backends.base import (
     ConflictError,
     CursorExpired,
     PermanentError,
+    SyncCursor,
     TransientError,
 )
 from lilical.backends.graph import (
@@ -31,7 +33,7 @@ def _attach_mock(backend: GraphBackend, handler) -> None:
 
 
 def test_event_to_change_upsert() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-abc",
         "iCalUId": "uid-1@outlook.com",
         "subject": "Standup",
@@ -40,6 +42,7 @@ def test_event_to_change_upsert() -> None:
         "@odata.etag": 'W/"abc"',
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.kind == "upsert"
     # Local uid is Graph's `id`, not iCalUId — calendarView/delta pre-expands
     # recurring events and every occurrence shares the same iCalUId, so using
@@ -54,19 +57,21 @@ def test_event_to_change_upsert() -> None:
 
 
 def test_event_to_change_removed_marker() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-xyz",
         "iCalUId": "uid-2@outlook.com",
         "@removed": {"reason": "deleted"},
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.kind == "delete"
     assert change.uid == "AAMk-xyz"
 
 
 def test_event_to_change_falls_back_to_id_for_uid() -> None:
-    data = {"id": "AAMk-foo", "subject": "x"}
+    data: dict[str, Any] = {"id": "AAMk-foo", "subject": "x"}
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.uid == "AAMk-foo"
 
 
@@ -96,14 +101,14 @@ async def test_initial_sync_paginates_and_emits_delta_link() -> None:
     _attach_mock(backend, handler)
 
     collected = []
-    last_cursor: GraphCursor | None = None
+    last_cursor: SyncCursor | None = None
     async for batch, cursor in backend.initial_sync("cal-1"):
         collected.extend(batch)
         last_cursor = cursor
 
     # Graph local uid comes from `id`, not `iCalUId`.
     assert [c.uid for c in collected] == ["e1", "e2", "e3"]
-    assert last_cursor is not None
+    assert isinstance(last_cursor, GraphCursor)
     assert last_cursor.delta_link and "deltatoken=ABC" in last_cursor.delta_link
 
 
@@ -246,7 +251,7 @@ async def test_list_calendars_shape() -> None:
 
 
 def test_event_to_change_extracts_timed_event() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-timed",
         "iCalUId": "uid-timed@outlook.com",
         "subject": "Review",
@@ -265,6 +270,7 @@ def test_event_to_change_extracts_timed_event() -> None:
         "lastModifiedDateTime": "2026-05-12T08:00:00.1234567Z",
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.kind == "upsert"
     e = change.event
     assert e is not None
@@ -286,7 +292,7 @@ def test_event_to_change_extracts_timed_event() -> None:
 
 
 def test_event_to_change_handles_all_day_event() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-allday",
         "iCalUId": "uid-allday@outlook.com",
         "subject": "Holiday",
@@ -295,6 +301,7 @@ def test_event_to_change_handles_all_day_event() -> None:
         "isAllDay": True,
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     e = change.event
     assert e is not None
     assert e.all_day is True
@@ -310,7 +317,7 @@ def test_event_to_change_handles_all_day_event() -> None:
 
 
 def test_event_to_change_marks_cancelled() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-cancel",
         "subject": "Killed meeting",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
@@ -318,24 +325,26 @@ def test_event_to_change_marks_cancelled() -> None:
         "isCancelled": True,
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.event is not None
     assert change.event.status == "CANCELLED"
 
 
 def test_event_to_change_show_as_free_is_transparent() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-free",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
         "end": {"dateTime": "2026-05-13T10:00:00.0000000", "timeZone": "UTC"},
         "showAs": "free",
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.event is not None
     assert change.event.transparency == "TRANSPARENT"
 
 
 def test_event_to_change_extracts_categories_and_attendees() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-rich",
         "start": {"dateTime": "2026-05-13T09:00:00.0000000", "timeZone": "UTC"},
         "end": {"dateTime": "2026-05-13T10:00:00.0000000", "timeZone": "UTC"},
@@ -346,6 +355,7 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
         ],
     }
     change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
     assert change.event is not None
     assert set(change.event.categories) == {"Work", "Important"}
     assert {a.email for a in change.event.attendees} == {
@@ -357,7 +367,7 @@ def test_event_to_change_extracts_categories_and_attendees() -> None:
 def test_event_to_change_occurrences_return_none() -> None:
     """Pre-expanded occurrence rows are dropped at the parser boundary.
     The seriesMaster's rrule drives instance generation via the expander."""
-    occurrences = [
+    occurrences: list[dict[str, Any]] = [
         {
             "id": f"AAMk-occ-{i}",
             "iCalUId": "uid-shared@outlook.com",
@@ -381,7 +391,7 @@ def test_event_to_change_occurrences_return_none() -> None:
 def test_event_to_change_series_master_returns_event_with_rrule() -> None:
     """seriesMaster is kept and its recurrence pattern decoded into an rrule.
     The expander uses this rrule to generate instance rows."""
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-master",
         "iCalUId": "uid-master@outlook.com",
         "subject": "Weekly standup",
@@ -409,7 +419,7 @@ def test_event_to_change_series_master_returns_event_with_rrule() -> None:
 
 
 def test_event_to_change_single_instance_no_rrule() -> None:
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-single",
         "subject": "One-off",
         "type": "singleInstance",
@@ -426,7 +436,7 @@ def test_series_master_is_kept_occurrences_are_dropped() -> None:
     """A batch containing a seriesMaster alongside its occurrences should
     produce exactly one EventChange for the master (with rrule); occurrences
     are dropped — the expander generates instance rows from the master's rrule."""
-    master = {
+    master: dict[str, Any] = {
         "id": "AAMk-master",
         "type": "seriesMaster",
         "subject": "Weekly standup",
@@ -437,7 +447,7 @@ def test_series_master_is_kept_occurrences_are_dropped() -> None:
             "range": {"type": "noEnd", "startDate": "2026-05-13"},
         },
     }
-    occurrences = [
+    occurrences: list[dict[str, Any]] = [
         {
             "id": f"AAMk-occ-{i}",
             "iCalUId": "uid-shared@outlook.com",
@@ -462,6 +472,7 @@ def test_series_master_is_kept_occurrences_are_dropped() -> None:
     ]
     # Only the seriesMaster produces an EventChange; 3 occurrences return None.
     assert len(batch) == 1
+    assert batch[0].event is not None
     assert batch[0].event.rrule is not None
     assert "FREQ=WEEKLY" in batch[0].event.rrule
 
@@ -506,7 +517,7 @@ def test_parsed_graph_event_creates_instance_row(tmp_path) -> None:
             )
         )
 
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-pipeline",
         "iCalUId": "uid-pipeline@outlook.com",
         "subject": "Pipeline test",
@@ -570,7 +581,7 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
             )
         )
 
-    master_json = {
+    master_json: dict[str, Any] = {
         "id": "AAMk-master",
         "iCalUId": "uid-shared@outlook.com",
         "type": "seriesMaster",
@@ -586,7 +597,7 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
             },
         },
     }
-    occurrence_jsons = [
+    occurrence_jsons: list[dict[str, Any]] = [
         {
             "id": f"AAMk-occ-{i}",
             "iCalUId": "uid-shared@outlook.com",
@@ -613,6 +624,7 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
     ]
     # Only the master produces a change; 3 occurrences return None.
     assert len(changes) == 1
+    assert changes[0].event is not None
     assert changes[0].event.rrule is not None
 
     store = EventStore(engine)
@@ -635,7 +647,7 @@ def test_series_master_drives_instance_rows_via_rrule(tmp_path) -> None:
 
 
 def test_recurrence_to_rrule_daily() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "daily", "interval": 1},
         "range": {"type": "noEnd", "startDate": "2026-05-13"},
     }
@@ -643,7 +655,7 @@ def test_recurrence_to_rrule_daily() -> None:
 
 
 def test_recurrence_to_rrule_daily_with_interval() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "daily", "interval": 3},
         "range": {"type": "noEnd", "startDate": "2026-05-13"},
     }
@@ -651,7 +663,7 @@ def test_recurrence_to_rrule_daily_with_interval() -> None:
 
 
 def test_recurrence_to_rrule_weekly_multi_day() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {
             "type": "weekly",
             "interval": 1,
@@ -663,7 +675,7 @@ def test_recurrence_to_rrule_weekly_multi_day() -> None:
 
 
 def test_recurrence_to_rrule_absolute_monthly() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "absoluteMonthly", "interval": 1, "dayOfMonth": 15},
         "range": {"type": "noEnd", "startDate": "2026-05-13"},
     }
@@ -671,7 +683,7 @@ def test_recurrence_to_rrule_absolute_monthly() -> None:
 
 
 def test_recurrence_to_rrule_relative_monthly_second_tuesday() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {
             "type": "relativeMonthly",
             "interval": 1,
@@ -684,7 +696,7 @@ def test_recurrence_to_rrule_relative_monthly_second_tuesday() -> None:
 
 
 def test_recurrence_to_rrule_relative_monthly_last_friday() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {
             "type": "relativeMonthly",
             "interval": 1,
@@ -697,7 +709,7 @@ def test_recurrence_to_rrule_relative_monthly_last_friday() -> None:
 
 
 def test_recurrence_to_rrule_absolute_yearly() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {
             "type": "absoluteYearly",
             "interval": 1,
@@ -710,7 +722,7 @@ def test_recurrence_to_rrule_absolute_yearly() -> None:
 
 
 def test_recurrence_to_rrule_relative_yearly() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {
             "type": "relativeYearly",
             "interval": 1,
@@ -727,7 +739,7 @@ def test_recurrence_to_rrule_relative_yearly() -> None:
 
 
 def test_recurrence_to_rrule_numbered_range() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "daily", "interval": 1},
         "range": {
             "type": "numbered",
@@ -739,7 +751,7 @@ def test_recurrence_to_rrule_numbered_range() -> None:
 
 
 def test_recurrence_to_rrule_end_date_range() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "daily", "interval": 1},
         "range": {
             "type": "endDate",
@@ -751,7 +763,7 @@ def test_recurrence_to_rrule_end_date_range() -> None:
 
 
 def test_recurrence_to_rrule_returns_none_for_unknown_pattern() -> None:
-    rec = {
+    rec: dict[str, Any] = {
         "pattern": {"type": "alienCycle", "interval": 1},
         "range": {"type": "noEnd"},
     }
@@ -1057,7 +1069,7 @@ async def test_initial_sync_uses_calendarview_delta_endpoint() -> None:
 def test_series_master_creates_instance_rows_via_rrule(tmp_path) -> None:
     """seriesMaster is kept; its rrule drives EventInstanceRow creation.
     Full end-to-end coverage is in test_series_master_drives_instance_rows_via_rrule."""
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-series",
         "iCalUId": "uid-weekly@outlook.com",
         "type": "seriesMaster",
@@ -1075,6 +1087,7 @@ def test_series_master_creates_instance_rows_via_rrule(tmp_path) -> None:
     }
     change = _graph_event_to_change(data, "cal-1")
     assert change is not None
+    assert change.event is not None
     assert change.event.rrule is not None
     assert "FREQ=WEEKLY" in change.event.rrule
     assert "COUNT=4" in change.event.rrule
@@ -1194,7 +1207,7 @@ async def test_aclose_noop_when_no_client() -> None:
 def test_event_to_change_exception_returns_override_event() -> None:
     """exception-type Graph events produce an override Event: uid is the master's
     id, recurrence_id is the original start of the cancelled occurrence, rrule=None."""
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-exc",
         "iCalUId": "uid-series@outlook.com",
         "subject": "Standup (moved)",
@@ -1227,7 +1240,7 @@ def test_event_to_change_exception_returns_override_event() -> None:
 def test_event_to_change_exception_without_original_start_returns_none() -> None:
     """Attendee-view exceptions lack originalStart; they must be dropped rather than
     overwriting the seriesMaster row (which has recurrence_id='')."""
-    data = {
+    data: dict[str, Any] = {
         "id": "AAMk-exc-attendee",
         "subject": "Standup",
         "type": "exception",

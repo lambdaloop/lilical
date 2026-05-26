@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+
+from lilical.storage.event_store import EventStore
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -60,7 +63,7 @@ def test_picker_excludes_reader_and_freebusyreader(qapp):
             ("cal-shared", "Shared write", "writer"),
         ]
     )
-    dialog = QuickAddDialog(store=store)
+    dialog = QuickAddDialog(store=cast(EventStore, store))
     ids = _picker_ids(dialog)
     assert "cal-work" in ids
     assert "cal-shared" in ids
@@ -78,6 +81,6 @@ def test_picker_empty_when_only_read_only_calendars(qapp):
             ("cal-fb", "FB", "freebusyreader"),
         ]
     )
-    dialog = QuickAddDialog(store=store)
+    dialog = QuickAddDialog(store=cast(EventStore, store))
     assert dialog._cal_combo.count() == 0
     dialog.deleteLater()

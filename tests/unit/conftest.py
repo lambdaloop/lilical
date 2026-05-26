@@ -78,7 +78,7 @@ def make_event(
         uid=uid,
         calendar_id=cal_id,
         summary=summary or f"Event {uid}",
-        location=location,
+        location=location or "",
         dtstart=start,
         dtend=end,
     )

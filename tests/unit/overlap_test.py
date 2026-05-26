@@ -149,7 +149,7 @@ def test_pack_overlapping_lanes_dense_emits_one_cluster() -> None:
     ]
     result = pack_overlapping_lanes(items, col_w)
     assert len(result) == 1
-    x_off, w, mode, data = result[0]
+    _x_off, _w, mode, data = result[0]
     assert mode == "cluster"
     assert len(data["events"]) == 5
     assert "dominant_index" in data

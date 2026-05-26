@@ -56,7 +56,7 @@ def engine():
 @pytest.fixture
 def store(engine):
     from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])  # noqa: F841
+    _app = QApplication.instance() or QApplication([])
     return EventStore(engine)
 
 
