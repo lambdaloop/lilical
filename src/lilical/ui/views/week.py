@@ -1319,6 +1319,9 @@ class WeekView(QGraphicsView):
 
         # Compute global anchor positions from the day column boundary, not the
         # cluster rect, so all clusters in the same column produce a stable x.
+        # The week view never scrolls horizontally, so scene_x == viewport_x;
+        # use viewport.mapToGlobal directly for x to avoid the view-frame offset
+        # that self.mapFromScene introduces.
         cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
         col_w = max(
             1, int((self.viewport().width() - TIME_AXIS_WIDTH) / self._day_count)
@@ -1328,14 +1331,11 @@ class WeekView(QGraphicsView):
         )
         col_left_scene_x = TIME_AXIS_WIDTH + day_index * col_w
         col_right_scene_x = col_left_scene_x + col_w
-        vp_anchor = self.mapFromScene(
-            QPointF(col_left_scene_x, cluster_scene_rect.top())
-        )
-        vp_col_right = self.mapFromScene(
-            QPointF(col_right_scene_x, cluster_scene_rect.top())
-        )
-        anchor_global = self.viewport().mapToGlobal(vp_anchor)
-        column_right_global = self.viewport().mapToGlobal(vp_col_right).x()
+        vp_y = self.mapFromScene(QPointF(0, cluster_scene_rect.top())).y()
+        anchor_global = self.viewport().mapToGlobal(QPoint(col_left_scene_x, vp_y))
+        column_right_global = self.viewport().mapToGlobal(
+            QPoint(col_right_scene_x, 0)
+        ).x()
         view_right_edge_global = self.viewport().mapToGlobal(
             QPoint(self.viewport().width(), 0)
         ).x()

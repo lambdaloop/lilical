@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF
 
+from lilical.ui.views.week import TIME_AXIS_WIDTH, WeekView
 from tests.unit.conftest import (
     cluster_entry,
     cluster_event_data,
@@ -23,6 +24,32 @@ from tests.unit.conftest import (
     mouse_move_to,
     wait_until,
 )
+
+
+def _build_column_cluster_plan(day_index: int, col_w: int) -> dict:
+    """Plan with one cluster whose left edge is exactly at a column boundary."""
+    events_data = []
+    for i in range(3):
+        s = 540 + i * 5
+        e = s + 60
+        ev = make_event(f"cp{i}", hour=9, minute=i * 5)
+        events_data.append(cluster_event_data(ev, start_min=s, end_min=e))
+    rect_x = TIME_AXIS_WIDTH + day_index * col_w
+    rect = QRectF(rect_x, 540.0, col_w, 120.0)
+    plan = empty_week_plan()
+    plan["new_cluster_placements"] = {
+        ("cluster", 0, 540): cluster_entry(rect, events_data)
+    }
+    return plan
+
+
+def _make_week_view(qapp, *, day_count: int = 7, width: int = 1200):
+    store = make_fake_store()
+    view = WeekView(store, day_count=day_count, cal_info_provider=lambda: {})
+    view.resize(width, 800)
+    view.show()
+    qapp.processEvents()
+    return view
 
 
 def _build_cluster_plan(rect_x: float = 200.0, rect_y: float = 540.0):
@@ -168,6 +195,71 @@ def test_spine_click_shows_popover_immediately(qapp) -> None:
         )
         assert not view._cluster_show_timer.isActive(), (
             "spine click should not start the hover timer"
+        )
+    finally:
+        view._cluster_popover.hide()
+        view.close()
+        view.deleteLater()
+
+
+def test_cluster_popover_x_aligns_right_of_column(qapp) -> None:
+    """Popover left edge must sit flush at the cluster column's right edge."""
+    view = _make_week_view(qapp)
+    col_w = max(1, (view.viewport().width() - TIME_AXIS_WIDTH) // 7)
+    day_index = 2
+    view._apply_plan(_build_column_cluster_plan(day_index, col_w))
+    qapp.processEvents()
+    try:
+        cluster = next(iter(view._clusters.values()))
+        cluster.spine_clicked.emit(cluster.cluster_events)
+        qapp.processEvents()
+
+        pop = view._cluster_popover
+        assert pop.isVisible()
+
+        expected_x = view.viewport().mapToGlobal(
+            QPoint(TIME_AXIS_WIDTH + (day_index + 1) * col_w, 0)
+        ).x()
+        assert abs(pop.geometry().x() - expected_x) <= 2, (
+            f"popover x={pop.geometry().x()} expected ≈{expected_x} "
+            f"(col_right of column {day_index})"
+        )
+        assert abs(pop.width() - col_w) <= 2, (
+            f"popover width={pop.width()} expected ≈{col_w}"
+        )
+    finally:
+        view._cluster_popover.hide()
+        view.close()
+        view.deleteLater()
+
+
+def test_cluster_popover_flips_left_on_last_column(qapp) -> None:
+    """Popover flips left when the rightmost column has no space to the right.
+
+    Uses a narrow viewport (500 px) so the flipped popover stays within the
+    offscreen platform's virtual screen (800 px wide) and avail-clamping
+    doesn't interfere with the position assertion.
+    """
+    view = _make_week_view(qapp, width=500)
+    col_w = max(1, (view.viewport().width() - TIME_AXIS_WIDTH) // 7)
+    day_index = 6  # last column
+    view._apply_plan(_build_column_cluster_plan(day_index, col_w))
+    qapp.processEvents()
+    try:
+        cluster = next(iter(view._clusters.values()))
+        cluster.spine_clicked.emit(cluster.cluster_events)
+        qapp.processEvents()
+
+        pop = view._cluster_popover
+        assert pop.isVisible()
+
+        # Flipped left: popover's right edge ≈ column's left edge.
+        expected_col_left = view.viewport().mapToGlobal(
+            QPoint(TIME_AXIS_WIDTH + day_index * col_w, 0)
+        ).x()
+        assert abs((pop.geometry().x() + pop.width()) - expected_col_left) <= 2, (
+            f"popover right edge={pop.geometry().x() + pop.width()} "
+            f"expected ≈{expected_col_left} (col_left of column {day_index})"
         )
     finally:
         view._cluster_popover.hide()
