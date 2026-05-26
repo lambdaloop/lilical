@@ -847,6 +847,7 @@ class EventChip(QGraphicsObject):
             location=self._event.location or None,
             calendar_color=self._calendar_color,
             uid=self._event.uid or None,
+            calendar_id=self._event.calendar_id or None,
         )
 
     # ── Interactivity ────────────────────────────────────────────────────

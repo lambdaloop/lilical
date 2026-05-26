@@ -22,7 +22,8 @@ class PopoverEvent(NamedTuple):
     title: str
     location: str | None
     calendar_color: str | None
-    uid: str | None = None  # propagated so views can look up the source event
+    uid: str | None = None        # propagated so views can look up the source event
+    calendar_id: str | None = None  # used by inspector to resolve calendar name
 
 
 def cluster_events_to_popover_events(
@@ -50,6 +51,7 @@ def cluster_events_to_popover_events(
                 location=event.location or None,
                 calendar_color=payload.get("cal_color"),
                 uid=event.uid or None,
+                calendar_id=event.calendar_id or None,
             )
         )
     return result
