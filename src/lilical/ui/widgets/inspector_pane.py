@@ -70,6 +70,10 @@ class InspectorPane(QWidget):
         self._title = QLabel()
         self._title.setFont(title_font)
         self._title.setWordWrap(True)
+        self._title.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        self._title.setMinimumWidth(0)
         # Cap at 3 lines (font metrics * 3 lines + small slack).
         self._title.setMaximumHeight(QFontMetrics(title_font).lineSpacing() * 3 + 2)
         self._content_layout.addWidget(self._title)
@@ -79,6 +83,10 @@ class InspectorPane(QWidget):
 
         self._location = QLabel()
         self._location.setWordWrap(True)
+        self._location.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        self._location.setMinimumWidth(0)
         self._content_layout.addWidget(self._location)
 
         self._calendar_row = QWidget()
@@ -89,6 +97,10 @@ class InspectorPane(QWidget):
         self._calendar_swatch.setFixedSize(10, 10)
         self._calendar_name = QLabel()
         self._calendar_name.setWordWrap(True)
+        self._calendar_name.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        self._calendar_name.setMinimumWidth(0)
         cal_layout.addWidget(self._calendar_swatch, 0, Qt.AlignmentFlag.AlignVCenter)
         cal_layout.addWidget(self._calendar_name, 1)
         self._content_layout.addWidget(self._calendar_row)
@@ -97,6 +109,10 @@ class InspectorPane(QWidget):
         self._content_layout.addWidget(self._notes_header)
         self._notes = QLabel()
         self._notes.setWordWrap(True)
+        self._notes.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        self._notes.setMinimumWidth(0)
         self._notes.setTextFormat(Qt.TextFormat.RichText)
         self._notes.setOpenExternalLinks(True)
         self._notes.setTextInteractionFlags(
@@ -141,11 +157,10 @@ class InspectorPane(QWidget):
         self,
         primary: PopoverEvent,
         siblings: list[PopoverEvent],
-        notes: str | None = None,
     ) -> None:
-        """Populate both sections: top = `primary`, bottom = `siblings`."""
+        """Populate both sections: top = `primary` (no notes), bottom = `siblings`."""
         self._apply_theme()
-        self._populate_event_section(primary, notes)
+        self._populate_event_section(primary, notes=None)
         self._set_cluster_section(primary, siblings)
 
     def clear(self) -> None:

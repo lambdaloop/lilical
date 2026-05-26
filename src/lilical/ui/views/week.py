@@ -1298,10 +1298,7 @@ class WeekView(QGraphicsView):
         popover_events = cluster_events_to_popover_events(events, self._time_format)
         if not popover_events:
             return
-        sorted_events = sorted(events, key=lambda e: e["start_min"])
         dom_idx = cluster._cluster_data.get("dominant_index", 0)  # noqa: SLF001
-        # Translate dominant_index (original event order) into the sorted
-        # position so the inspector's "primary" matches what the user saw.
         try:
             primary_payload = events[dom_idx]
         except IndexError:
@@ -1311,14 +1308,7 @@ class WeekView(QGraphicsView):
             (pe for pe in popover_events if pe.uid == primary_uid),
             popover_events[0],
         )
-        notes_event = next(
-            (e for e in sorted_events if e["payload"]["event"].uid == primary_uid),
-            sorted_events[0],
-        )
-        notes = (
-            (notes_event["payload"]["event"].description or "").strip() or None
-        )
-        self._inspector.show_cluster(primary, popover_events, notes)
+        self._inspector.show_cluster(primary, popover_events)
 
     def _on_cluster_bar_hovered(
         self, ev_dict: dict, cluster: LineCluster
@@ -1334,8 +1324,7 @@ class WeekView(QGraphicsView):
             (pe for pe in popover_events if pe.uid == bar_uid),
             popover_events[0],
         )
-        notes = (ev_dict["payload"]["event"].description or "").strip() or None
-        self._inspector.show_cluster(primary, popover_events, notes)
+        self._inspector.show_cluster(primary, popover_events)
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 

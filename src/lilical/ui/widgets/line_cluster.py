@@ -267,6 +267,8 @@ class LineCluster(QGraphicsObject):
             self._last_bar_ev = ev
             if ev is not None:
                 self.bar_hovered.emit(ev)
+            else:
+                self.hovered.emit(self._cluster_data["events"])
         super().hoverMoveEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
