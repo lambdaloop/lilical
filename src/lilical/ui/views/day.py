@@ -1041,12 +1041,14 @@ class _DayCanvas(QGraphicsView):
         view_right_edge_global = self.viewport().mapToGlobal(
             QPoint(self.viewport().width(), 0)
         ).x()
+        col_w = max(1, self.viewport().width() - TIME_AXIS_WIDTH)
 
         self._cluster_popover.show_for_cluster(
             popover_events,
             anchor_global,
             column_right_global,
             view_right_edge_global,
+            col_w,
         )
 
     def _on_cluster_event_activated(self, uid: str) -> None:

@@ -64,6 +64,7 @@ class ClusterPopover(QFrame):
         anchor_global_topleft: QPoint,
         column_right_global: int,
         view_right_edge_global: int,
+        column_width: int = 200,
     ) -> None:
         """Display the popover anchored to a cluster's position.
 
@@ -75,6 +76,8 @@ class ClusterPopover(QFrame):
             column_right_global: right edge of the day column in global coords.
             view_right_edge_global: right edge of the whole week/day view in
                 global coords (used for the auto-flip decision).
+            column_width: width of one day column in pixels; the popover is
+                sized to match so it visually covers the adjacent column.
         """
         self._hide_timer.stop()
         self._apply_theme()
@@ -103,6 +106,7 @@ class ClusterPopover(QFrame):
             self._rows_layout.addWidget(row_widget)
             self._current_rows.append(row_widget)
 
+        self.setFixedWidth(max(column_width, 200))
         self.adjustSize()
         pos = self._position_side_anchored(
             anchor_global_topleft, column_right_global, view_right_edge_global
