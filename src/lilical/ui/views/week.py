@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
@@ -717,6 +717,8 @@ def _compute_week_placements(
 
 
 class WeekView(QGraphicsView):
+    day_header_activated = Signal(object)  # date — user clicked a day-column header
+
     def __init__(
         self,
         store: EventStore,
@@ -1409,8 +1411,14 @@ class WeekView(QGraphicsView):
         vp_pos = event.pos()
         vp_y = vp_pos.y()
 
-        # Ignore clicks on the day-label column-header row.
+        # Day-label column-header row: navigate to Day view for the clicked date.
         if vp_y < DAY_HEADER_H:
+            scene_x = self.mapToScene(vp_pos).x()
+            day_off = self._scene_x_to_day_offset(scene_x)
+            if day_off is not None:
+                self.day_header_activated.emit(self._start + timedelta(days=day_off))
+                event.accept()
+                return
             super().mousePressEvent(event)
             return
 

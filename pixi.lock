@@ -2250,8 +2250,8 @@ packages:
   timestamp: 1774072609062
 - pypi: ./
   name: lilical
-  version: 0.1.7.dev0+g65801bb2b.d20260517
-  sha256: 5193459de1b36498260e42875d6814cce3fded7993e955c0a648f3ecbcbca4bd
+  version: 0.3.1.dev25+gdc980cb6b.d20260526
+  sha256: 8e46fff5b0efc8ff394358c4ad4adcec0e8c05d81c782d7dd03720e930c7b1de
   requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/lxml-6.1.0-py312h63ddcf0_0.conda
   sha256: cb02acf7254cc5d2dff65fb93c52103d4858da391a13cf4f24b49360ac74da64

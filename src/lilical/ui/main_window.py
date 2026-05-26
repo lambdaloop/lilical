@@ -613,8 +613,8 @@ class MainWindow(QMainWindow):
         self._update_range_label()
         self._sync_mini_month()
 
-    def _on_month_day_activated(self, d) -> None:
-        """User clicked '+N more' in Month view: switch to Day view of that date."""
+    def _on_day_activated(self, d) -> None:
+        """Switch to Day view and focus the given date."""
         self._switch_view("Day", refresh=False)
         day_view = self._views.get("Day")
         if isinstance(day_view, DayView):
@@ -645,16 +645,18 @@ class MainWindow(QMainWindow):
         v: QWidget
         if name == "Month":
             mv = MonthView(self._store, cal_info_provider=cip)
-            mv.day_activated.connect(self._on_month_day_activated)
+            mv.day_activated.connect(self._on_day_activated)
             mv.new_event_requested.connect(self._on_month_new_event_requested)
             v = mv
         elif name == "Week":
-            v = WeekView(
+            wv = WeekView(
                 self._store,
                 day_count=saved_dc,
                 cal_info_provider=cip,
                 inspector=self._inspector,
             )
+            wv.day_header_activated.connect(self._on_day_activated)
+            v = wv
         elif name == "Day":
             v = DayView(
                 self._store, cal_info_provider=cip, inspector=self._inspector

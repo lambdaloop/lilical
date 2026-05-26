@@ -110,6 +110,23 @@ class _CalendarChip(QToolButton):
         self._apply_style()
 
 
+class _CalendarRow(QWidget):
+    """Calendar row; left-click anywhere delegates to the chip to toggle visibility."""
+
+    def __init__(self, chip: _CalendarChip) -> None:
+        super().__init__()
+        self._chip = chip
+        self.setObjectName("cal-row")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._chip.click()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class _AccountHeader(QWidget):
     """Account header that doubles as a drag handle for reordering."""
 
@@ -507,18 +524,17 @@ class Sidebar(QWidget):
         v.addWidget(header)
 
         for ci in cals:
-            row = QWidget()
-            row.setObjectName("cal-row")
-            row_h = QHBoxLayout(row)
-            row_h.setContentsMargins(14, 2, 4, 2)
-            row_h.setSpacing(8)
-
             chip = _CalendarChip(
                 ci.id, ci.color or "#5e9fff", ci.visible, self._store, account_id=acc_id
             )
             chip.visibility_changed.connect(
                 lambda cid, vis: self.calendar_visibility_changed.emit(cid, vis)
             )
+
+            row = _CalendarRow(chip)
+            row_h = QHBoxLayout(row)
+            row_h.setContentsMargins(14, 2, 4, 2)
+            row_h.setSpacing(8)
             row_h.addWidget(chip)
 
             name_label = _ElidedLabel(ci.display_name)
