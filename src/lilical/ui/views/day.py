@@ -666,6 +666,7 @@ class _DayCanvas(QGraphicsView):
 
         # Cluster hover-popover state.
         self._cluster_popover = ClusterPopover()
+        self._cluster_popover.event_activated.connect(self._on_cluster_event_activated)
         self._cluster_show_timer = QTimer(self)
         self._cluster_show_timer.setSingleShot(True)
         self._cluster_show_timer.setInterval(280)
@@ -983,7 +984,6 @@ class _DayCanvas(QGraphicsView):
         cluster.spine_clicked.connect(
             lambda evs, cl=cluster: self._on_cluster_spine_clicked(evs, cl)
         )
-        self._cluster_popover.event_activated.connect(self._on_cluster_event_activated)
 
     def _on_cluster_hovered(self, events: list, cluster: "LineCluster") -> None:
         self._cluster_show_timer.stop()
@@ -1033,15 +1033,23 @@ class _DayCanvas(QGraphicsView):
                 )
             )
 
+        # Compute global anchor positions from the day column boundary so the
+        # popover position is stable regardless of cluster width.
         cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
-        vp_tl = self.mapFromScene(cluster_scene_rect.topLeft())
-        vp_br = self.mapFromScene(cluster_scene_rect.topRight())
-        anchor_global = self.viewport().mapToGlobal(vp_tl)
-        column_right_global = self.viewport().mapToGlobal(vp_br).x()
+        col_w = max(1, self.viewport().width() - TIME_AXIS_WIDTH)
+        col_left_scene_x = float(TIME_AXIS_WIDTH)
+        col_right_scene_x = col_left_scene_x + col_w
+        vp_anchor = self.mapFromScene(
+            QPointF(col_left_scene_x, cluster_scene_rect.top())
+        )
+        vp_col_right = self.mapFromScene(
+            QPointF(col_right_scene_x, cluster_scene_rect.top())
+        )
+        anchor_global = self.viewport().mapToGlobal(vp_anchor)
+        column_right_global = self.viewport().mapToGlobal(vp_col_right).x()
         view_right_edge_global = self.viewport().mapToGlobal(
             QPoint(self.viewport().width(), 0)
         ).x()
-        col_w = max(1, self.viewport().width() - TIME_AXIS_WIDTH)
 
         self._cluster_popover.show_for_cluster(
             popover_events,

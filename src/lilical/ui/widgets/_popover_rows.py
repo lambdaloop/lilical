@@ -61,15 +61,5 @@ def make_row(ev: PopoverEvent) -> QWidget:
     )
     vl.addWidget(title_lbl)
 
-    if ev.location:
-        loc_lbl = QLabel(ev.location)
-        loc_lbl.setWordWrap(True)
-        loc_lbl.setStyleSheet(
-            f"color: {theme.TEXT_SECONDARY};"
-            f" font-family: {theme.FONT_FAMILY};"
-            f" font-size: {theme.FONT_CHIP_PREFIX}pt;"
-        )
-        vl.addWidget(loc_lbl)
-
     hl.addWidget(text_col, 1)
     return row
