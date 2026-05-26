@@ -26,6 +26,27 @@ from tests.unit.conftest import (
 )
 
 
+def _build_two_column_cluster_plan(
+    col_a: int, col_b: int, col_w: int
+) -> dict:
+    """Plan with two clusters in different day columns."""
+    plan = empty_week_plan()
+    for col_i, col in enumerate((col_a, col_b)):
+        events_data = [
+            cluster_event_data(
+                make_event(f"tc{col_i}{j}", hour=9, minute=j * 5),
+                start_min=540 + j * 5,
+                end_min=600 + j * 5,
+            )
+            for j in range(2)
+        ]
+        rect_x = TIME_AXIS_WIDTH + col * col_w
+        plan["new_cluster_placements"][("cluster", col_i, 540)] = cluster_entry(
+            QRectF(rect_x, 540.0, col_w, 120.0), events_data
+        )
+    return plan
+
+
 def _build_column_cluster_plan(day_index: int, col_w: int) -> dict:
     """Plan with one cluster whose left edge is exactly at a column boundary."""
     events_data = []
@@ -260,6 +281,57 @@ def test_cluster_popover_flips_left_on_last_column(qapp) -> None:
         assert abs((pop.geometry().x() + pop.width()) - expected_col_left) <= 2, (
             f"popover right edge={pop.geometry().x() + pop.width()} "
             f"expected ≈{expected_col_left} (col_left of column {day_index})"
+        )
+    finally:
+        view._cluster_popover.hide()
+        view.close()
+        view.deleteLater()
+
+
+def test_cluster_popover_reanchors_immediately_on_new_hover(qapp) -> None:
+    """Moving from cluster A to B re-anchors the popover without hiding it.
+
+    Uses a 700 px viewport so the popover for column 4 stays within the
+    offscreen platform's 800 px virtual screen and avail-clamping doesn't
+    interfere with the position assertion.
+    """
+    view = _make_week_view(qapp, width=700)
+    col_w = max(1, (view.viewport().width() - TIME_AXIS_WIDTH) // 7)
+    col_a, col_b = 1, 4
+    view._apply_plan(_build_two_column_cluster_plan(col_a, col_b, col_w))
+    qapp.processEvents()
+    try:
+        clusters = list(view._clusters.values())
+        assert len(clusters) == 2, f"expected 2 clusters, got {len(clusters)}"
+        cluster_a = next(
+            c for c in clusters
+            if abs(c.pos().x() - (TIME_AXIS_WIDTH + col_a * col_w)) < 2
+        )
+        cluster_b = next(
+            c for c in clusters
+            if abs(c.pos().x() - (TIME_AXIS_WIDTH + col_b * col_w)) < 2
+        )
+
+        # Show popover at cluster A (synchronous).
+        cluster_a.spine_clicked.emit(cluster_a.cluster_events)
+        qapp.processEvents()
+        pop = view._cluster_popover
+        assert pop.isVisible()
+        x_a = pop.geometry().x()
+
+        # Hover cluster B — should reposition immediately, no hide.
+        view._on_cluster_hovered(cluster_b.cluster_events, cluster_b)
+        qapp.processEvents()
+
+        assert pop.isVisible(), "popover should stay visible during re-anchor"
+        x_b = pop.geometry().x()
+        assert x_b != x_a, f"popover did not move from column {col_a} to {col_b}"
+
+        expected_b_x = view.viewport().mapToGlobal(
+            QPoint(TIME_AXIS_WIDTH + (col_b + 1) * col_w, 0)
+        ).x()
+        assert abs(x_b - expected_b_x) <= 2, (
+            f"popover x={x_b} expected ≈{expected_b_x} (col_right of column {col_b})"
         )
     finally:
         view._cluster_popover.hide()
