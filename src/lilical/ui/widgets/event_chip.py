@@ -169,6 +169,10 @@ class EventChip(QGraphicsObject):
     edit_requested = Signal(object)  # emits Event — right-click → Edit
     delete_requested = Signal(object)  # emits Event
     toggle_complete_requested = Signal(object, bool)  # (inst_key triple, new completed)
+    # Hover signals fed to the right-side InspectorPane.
+    # Payload: (PopoverEvent, notes_str_or_None).
+    hovered = Signal(object, object)
+    hover_left = Signal()
     # Drag signals: see docstring for the chip-drag state machine.
     # Payload: (event, mode, scene_pos). mode ∈ {"move", "resize_top",
     # "resize_bottom"}.
@@ -832,16 +836,65 @@ class EventChip(QGraphicsObject):
             glyph,
         )
 
+    # ── Inspector-pane payload ───────────────────────────────────────────
+    def _to_popover_event(self):  # noqa: ANN202 — return type is PopoverEvent
+        """Build the PopoverEvent payload emitted by `hovered`.
+
+        Lives on the chip because the chip already knows its event,
+        calendar color, instance start, and time format.
+        """
+        from lilical.ui.widgets._popover_rows import PopoverEvent
+
+        if self._event.all_day or not self._show_time_prefix:
+            time_str = "All day"
+        else:
+            master_start = _coerce_dt(self._event.dtstart)
+            master_end = _coerce_dt(self._event.dtend)
+            start_dt = self._instance_dtstart or master_start
+            if start_dt and master_start and master_end:
+                end_dt = start_dt + (master_end - master_start)
+            else:
+                end_dt = None
+            if start_dt and end_dt:
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=local_zoneinfo())
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=local_zoneinfo())
+                local_start = start_dt.astimezone()
+                local_end = end_dt.astimezone()
+                if self._time_format == "12h":
+                    from lilical.ui._time_fmt import fmt_hm
+
+                    s_str = fmt_hm(local_start.hour, local_start.minute, "12h")
+                    e_str = fmt_hm(local_end.hour, local_end.minute, "12h")
+                else:
+                    s_str = f"{local_start.hour:02d}:{local_start.minute:02d}"
+                    e_str = f"{local_end.hour:02d}:{local_end.minute:02d}"
+                time_str = f"{s_str} – {e_str}"
+            else:
+                time_str = self._time_prefix or ""
+
+        return PopoverEvent(
+            time_str=time_str,
+            title=self._event.summary or "(no title)",
+            location=self._event.location or None,
+            calendar_color=self._calendar_color,
+            uid=self._event.uid or None,
+        )
+
     # ── Interactivity ────────────────────────────────────────────────────
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hovered = True
         self.update()
+        notes = (self._event.description or "").strip() or None
+        self.hovered.emit(self._to_popover_event(), notes)
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hovered = False
         self.unsetCursor()
         self.update()
+        self.hover_left.emit()
         super().hoverLeaveEvent(event)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
