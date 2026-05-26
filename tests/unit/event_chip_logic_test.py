@@ -6,6 +6,7 @@ Functions under test require PySide6.QColor but NOT a QApplication instance.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -130,8 +131,8 @@ def test_chip_tier_mins_are_monotonically_increasing() -> None:
 import pytest  # noqa: E402 (placed at end due to Qt import order)
 
 
-def _make_event(**overrides) -> Event:
-    defaults = {"uid": "u1", "calendar_id": "c1"}
+def _make_event(**overrides: Any) -> Event:
+    defaults: dict[str, Any] = {"uid": "u1", "calendar_id": "c1"}
     defaults.update(overrides)
     return Event(**defaults)
 
