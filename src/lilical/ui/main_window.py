@@ -49,6 +49,7 @@ from lilical.ui.views.month import MonthView
 from lilical.ui.views.week import VALID_DAY_COUNTS, WeekView
 from lilical.ui.widgets.account_setup import AccountSetupDialog
 from lilical.ui.widgets.event_chip import ChipMode
+from lilical.ui.widgets.inspector_pane import InspectorPane
 
 log = logging.getLogger(__name__)
 
@@ -288,12 +289,18 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(self._view_container, 1)
 
+        # Right-side inspector pane — shows hovered event details + cluster
+        # context. Constructed before views so it can be passed into them.
+        self._inspector = InspectorPane()
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._sidebar)
         splitter.addWidget(right)
+        splitter.addWidget(self._inspector)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([240, 960])
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([240, 680, 280])
         splitter.setChildrenCollapsible(False)
         main_layout.addWidget(splitter)
 
@@ -642,9 +649,16 @@ class MainWindow(QMainWindow):
             mv.new_event_requested.connect(self._on_month_new_event_requested)
             v = mv
         elif name == "Week":
-            v = WeekView(self._store, day_count=saved_dc, cal_info_provider=cip)
+            v = WeekView(
+                self._store,
+                day_count=saved_dc,
+                cal_info_provider=cip,
+                inspector=self._inspector,
+            )
         elif name == "Day":
-            v = DayView(self._store, cal_info_provider=cip)
+            v = DayView(
+                self._store, cal_info_provider=cip, inspector=self._inspector
+            )
         elif name == "Agenda":
             v = AgendaView(self._store, cal_info_provider=cip)
         else:

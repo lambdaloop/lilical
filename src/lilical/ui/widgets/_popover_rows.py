@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
@@ -22,7 +22,37 @@ class PopoverEvent(NamedTuple):
     title: str
     location: str | None
     calendar_color: str | None
-    uid: str | None = None  # used by ClusterPopover for click-to-edit
+    uid: str | None = None  # propagated so views can look up the source event
+
+
+def cluster_events_to_popover_events(
+    events: list[dict[str, Any]], time_format: str
+) -> list[PopoverEvent]:
+    """Build a sorted PopoverEvent list from a cluster's raw event dicts."""
+    from lilical.ui._time_fmt import fmt_hm
+
+    result: list[PopoverEvent] = []
+    for ev in sorted(events, key=lambda e: e["start_min"]):
+        payload = ev["payload"]
+        event = payload["event"]
+        s = int(ev["start_min"])
+        e = int(ev["end_min"])
+        if time_format == "12h":
+            s_str = fmt_hm(s // 60, s % 60, "12h")
+            e_str = fmt_hm(e // 60, e % 60, "12h")
+        else:
+            s_str = f"{s // 60:02d}:{s % 60:02d}"
+            e_str = f"{e // 60:02d}:{e % 60:02d}"
+        result.append(
+            PopoverEvent(
+                time_str=f"{s_str} – {e_str}",
+                title=event.summary or "(no title)",
+                location=event.location or None,
+                calendar_color=payload.get("cal_color"),
+                uid=event.uid or None,
+            )
+        )
+    return result
 
 
 def make_row(ev: PopoverEvent) -> QWidget:

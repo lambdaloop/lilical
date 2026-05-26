@@ -6,7 +6,7 @@ import math
 from datetime import date, datetime, timedelta
 from typing import override
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -25,10 +25,13 @@ from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping_lanes
-from lilical.ui.widgets._popover_rows import PopoverEvent
-from lilical.ui.widgets.cluster_popover import ClusterPopover
+from lilical.ui.widgets._popover_rows import (
+    PopoverEvent,
+    cluster_events_to_popover_events,
+)
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
 
@@ -608,12 +611,20 @@ def _build_mini_agenda_plan(
 class _DayCanvas(QGraphicsView):
     """Graphics canvas portion of the Day view (the time-grid)."""
 
-    def __init__(self, store: EventStore, day: date, cal_info_provider=None) -> None:
+    def __init__(
+        self,
+        store: EventStore,
+        day: date,
+        cal_info_provider=None,
+        *,
+        inspector: InspectorPane | None = None,
+    ) -> None:
         super().__init__()
         self._store = store
         self._cal_info_provider = cal_info_provider or (lambda: {})
         self._cached_data: dict | None = None
         self._day = day
+        self._inspector = inspector
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
@@ -663,16 +674,6 @@ class _DayCanvas(QGraphicsView):
         self.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
 
         store.instance_completion_changed.connect(self._on_completion_changed)
-
-        # Cluster hover-popover state.
-        self._cluster_popover = ClusterPopover()
-        self._cluster_popover.event_activated.connect(self._on_cluster_event_activated)
-        self._cluster_show_timer = QTimer(self)
-        self._cluster_show_timer.setSingleShot(True)
-        self._cluster_show_timer.setInterval(280)
-        self._cluster_show_timer.timeout.connect(self._show_cluster_popover)
-        self._pending_cluster: LineCluster | None = None
-        self._pending_cluster_events: list[dict] = []
 
     @override
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -964,8 +965,13 @@ class _DayCanvas(QGraphicsView):
         chip.drag_progress.connect(self._on_chip_drag_progress)
         chip.drag_committed.connect(self._on_chip_drag_committed)
         chip.drag_cancelled.connect(self._on_chip_drag_cancelled)
+        chip.hovered.connect(self._on_event_hovered)
+        chip.hover_left.connect(self._on_event_hover_left)
 
     def _wire_cluster_signals(self, cluster: "LineCluster") -> None:
+        # Wire the embedded dominant chip's click signals exactly like a
+        # regular chip; hover signals on the embedded chip are inert because
+        # LineCluster sets setAcceptHoverEvents(False) on it.
         chip = cluster.chip
         chip.details_requested.connect(
             lambda ev, c=chip: self._on_details_requested(ev, c.instance_dtstart)
@@ -980,94 +986,43 @@ class _DayCanvas(QGraphicsView):
         cluster.hovered.connect(
             lambda evs, cl=cluster: self._on_cluster_hovered(evs, cl)
         )
-        cluster.hover_left.connect(self._on_cluster_hover_left)
-        cluster.spine_clicked.connect(
-            lambda evs, cl=cluster: self._on_cluster_spine_clicked(evs, cl)
-        )
+        cluster.hover_left.connect(self._on_event_hover_left)
+
+    # ── Inspector pane (hover → right-side details panel) ────────────────
+
+    def _on_event_hovered(self, popover_event: PopoverEvent, notes: str | None) -> None:
+        if self._inspector is not None:
+            self._inspector.show_event(popover_event, notes)
+
+    def _on_event_hover_left(self) -> None:
+        if self._inspector is not None:
+            self._inspector.clear()
 
     def _on_cluster_hovered(self, events: list, cluster: "LineCluster") -> None:
-        self._cluster_show_timer.stop()
-        self._pending_cluster = cluster
-        self._pending_cluster_events = list(events)
-        if self._cluster_popover.isVisible():
-            self._cluster_popover.cancel_hide()
-            self._show_cluster_popover()
-        else:
-            self._cluster_show_timer.start()
-
-    def _on_cluster_hover_left(self) -> None:
-        self._cluster_show_timer.stop()
-        if self._cluster_popover.isVisible():
-            self._cluster_popover.schedule_hide()
-
-    def _on_cluster_spine_clicked(self, events: list, cluster: "LineCluster") -> None:
-        self._cluster_show_timer.stop()
-        self._pending_cluster = cluster
-        self._pending_cluster_events = list(events)
-        self._show_cluster_popover()
-
-    def _show_cluster_popover(self) -> None:
-        cluster = self._pending_cluster
-        if cluster is None:
+        if self._inspector is None:
             return
-        events = self._pending_cluster_events
-
-        popover_events: list[PopoverEvent] = []
-        for ev in sorted(events, key=lambda e: e["start_min"]):
-            payload = ev["payload"]
-            event = payload["event"]
-            s = int(ev["start_min"])
-            e = int(ev["end_min"])
-            s_str = f"{s // 60:02d}:{s % 60:02d}"
-            e_str = f"{e // 60:02d}:{e % 60:02d}"
-            if self._time_format == "12h":
-                from lilical.ui._time_fmt import fmt_hm
-                s_str = fmt_hm(s // 60, s % 60, time_format="12h")
-                e_str = fmt_hm(e // 60, e % 60, time_format="12h")
-            time_str = f"{s_str} – {e_str}"
-            popover_events.append(
-                PopoverEvent(
-                    time_str=time_str,
-                    title=event.summary or "(no title)",
-                    location=event.location or None,
-                    calendar_color=payload.get("cal_color"),
-                    uid=event.uid or None,
-                )
-            )
-
-        # Compute global anchor positions from the day column boundary so the
-        # popover position is stable regardless of cluster width.
-        # The day view never scrolls horizontally, so scene_x == viewport_x;
-        # use viewport.mapToGlobal directly for x to avoid the view-frame offset
-        # that self.mapFromScene introduces.
-        cluster_scene_rect = cluster.mapToScene(cluster.boundingRect()).boundingRect()
-        col_w = max(1, self.viewport().width() - TIME_AXIS_WIDTH)
-        col_left_scene_x = TIME_AXIS_WIDTH
-        col_right_scene_x = col_left_scene_x + col_w
-        vp_y = self.mapFromScene(QPointF(0, cluster_scene_rect.top())).y()
-        anchor_global = self.viewport().mapToGlobal(QPoint(col_left_scene_x, vp_y))
-        column_right_global = self.viewport().mapToGlobal(
-            QPoint(col_right_scene_x, 0)
-        ).x()
-        view_right_edge_global = self.viewport().mapToGlobal(
-            QPoint(self.viewport().width(), 0)
-        ).x()
-
-        self._cluster_popover.show_for_cluster(
-            popover_events,
-            anchor_global,
-            column_right_global,
-            view_right_edge_global,
-            col_w,
+        popover_events = cluster_events_to_popover_events(events, self._time_format)
+        if not popover_events:
+            return
+        sorted_events = sorted(events, key=lambda e: e["start_min"])
+        dom_idx = cluster._cluster_data.get("dominant_index", 0)  # noqa: SLF001
+        try:
+            primary_payload = events[dom_idx]
+        except IndexError:
+            primary_payload = events[0]
+        primary_uid = primary_payload["payload"]["event"].uid
+        primary = next(
+            (pe for pe in popover_events if pe.uid == primary_uid),
+            popover_events[0],
         )
-
-    def _on_cluster_event_activated(self, uid: str) -> None:
-        for cluster in self._clusters.values():
-            for ev in cluster.cluster_events:
-                event = ev["payload"]["event"]
-                if (event.uid or "") == uid:
-                    self._on_details_requested(event, ev["payload"].get("instance_dtstart"))  # noqa: E501
-                    return
+        notes_event = next(
+            (e for e in sorted_events if e["payload"]["event"].uid == primary_uid),
+            sorted_events[0],
+        )
+        notes = (
+            (notes_event["payload"]["event"].description or "").strip() or None
+        )
+        self._inspector.show_cluster(primary, popover_events, notes)
 
     def _on_toggle_complete_requested(
         self, inst_key: tuple[str, str, int], completed: bool
@@ -1441,7 +1396,12 @@ class DayView(QWidget):
     MINI_AGENDA_H = 96
 
     def __init__(
-        self, store: EventStore, day: date | None = None, cal_info_provider=None
+        self,
+        store: EventStore,
+        day: date | None = None,
+        cal_info_provider=None,
+        *,
+        inspector: InspectorPane | None = None,
     ) -> None:
         super().__init__()
         self._store = store
@@ -1452,7 +1412,9 @@ class DayView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._canvas = _DayCanvas(store, self._day, cal_info_provider=cal_info_provider)
+        self._canvas = _DayCanvas(
+            store, self._day, cal_info_provider=cal_info_provider, inspector=inspector
+        )
         layout.addWidget(self._canvas, 1)
 
         # Mini-agenda strip below the time grid.
