@@ -103,8 +103,6 @@ class InspectorPane(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.LinksAccessibleByMouse
         )
-        notes_font_metrics = QFontMetrics(self._notes.font())
-        self._notes.setMaximumHeight(notes_font_metrics.lineSpacing() * 6 + 2)
         self._content_layout.addWidget(self._notes)
 
         # ── Separator between sections ─────────────────────────────────

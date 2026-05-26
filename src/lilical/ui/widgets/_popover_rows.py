@@ -87,7 +87,7 @@ def make_row(ev: PopoverEvent) -> QWidget:
     # Set font via QFont so QFontMetrics can compute accurate line height for
     # capping at 3 lines. Stylesheet is only used for color.
     title_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE)
-    title_font.setWeight(QFont.Weight.DemiBold)
+    title_font.setWeight(QFont.Weight.Medium)
     title_lbl = QLabel(ev.title or "(no title)")
     title_lbl.setFont(title_font)
     title_lbl.setWordWrap(True)
