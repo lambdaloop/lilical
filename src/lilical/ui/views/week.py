@@ -1268,11 +1268,15 @@ class WeekView(QGraphicsView):
 
     def _on_cluster_hovered(self, events: list, cluster: "LineCluster") -> None:
         self._cluster_show_timer.stop()
-        if self._cluster_popover.isVisible():
-            self._cluster_popover.schedule_hide()
         self._pending_cluster = cluster
         self._pending_cluster_events = list(events)
-        self._cluster_show_timer.start()
+        if self._cluster_popover.isVisible():
+            # Re-anchor immediately to the new cluster — avoids the 150/280 ms
+            # hide-then-reshow flicker when moving between columns.
+            self._cluster_popover.cancel_hide()
+            self._show_cluster_popover()
+        else:
+            self._cluster_show_timer.start()
 
     def _on_cluster_hover_left(self) -> None:
         self._cluster_show_timer.stop()

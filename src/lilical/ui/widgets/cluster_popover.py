@@ -151,6 +151,10 @@ class ClusterPopover(QFrame):
         """Start the re-entry-tolerance hide timer (called from the view)."""
         self._hide_timer.start()
 
+    def cancel_hide(self) -> None:
+        """Cancel a pending hide (e.g., when re-anchoring to a new cluster)."""
+        self._hide_timer.stop()
+
     def enterEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hide_timer.stop()
         super().enterEvent(event)
