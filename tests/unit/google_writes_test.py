@@ -191,7 +191,13 @@ def test_create_event_sends_full_body():
         dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
     )
 
-    result = asyncio.run(backend.create_event("cal-1", event))
+    async def _run():
+        try:
+            return await backend.create_event("cal-1", event)
+        finally:
+            await backend.aclose()
+
+    result = asyncio.run(_run())
 
     assert len(captured) == 1
     req = captured[0]
@@ -233,7 +239,13 @@ def test_update_event_uses_provider_event_id():
         dtend=datetime(2026, 5, 14, 11, 0, tzinfo=timezone.utc),
     )
 
-    asyncio.run(backend.update_event("cal-1", event, None))
+    async def _run():
+        try:
+            await backend.update_event("cal-1", event, None)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
 
     assert len(captured) == 1
     req = captured[0]
@@ -252,7 +264,13 @@ def test_delete_event_uses_provider_event_id():
     backend = _make_backend()
     _attach_mock(backend, handler)
 
-    asyncio.run(backend.delete_event("cal-1", "pid-456", None))
+    async def _run():
+        try:
+            await backend.delete_event("cal-1", "pid-456", None)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
 
     assert len(captured) == 1
     req = captured[0]
