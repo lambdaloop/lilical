@@ -232,8 +232,9 @@ class LineCluster(QGraphicsObject):
 
         # Secondary event bars.
         painter.setPen(Qt.PenStyle.NoPen)
-        for bar_rect, color, _ev in self._bar_rects:
-            painter.setBrush(color)
+        for bar_rect, color, ev in self._bar_rects:
+            draw_color = color.lighter(115) if ev is self._last_bar_ev else color
+            painter.setBrush(draw_color)
             painter.drawRect(bar_rect)
 
     # ── Hit testing ────────────────────────────────────────────────────────
@@ -263,8 +264,12 @@ class LineCluster(QGraphicsObject):
 
     def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
         ev = self._hit_bar(event.pos())
+        chip_w = self._rect.width() - self._spine_w
+        over_chip = event.pos().x() < chip_w
+        self._chip.set_hovered(over_chip)
         if ev is not self._last_bar_ev:
             self._last_bar_ev = ev
+            self.update()
             if ev is not None:
                 self.bar_hovered.emit(ev)
             else:
@@ -275,6 +280,7 @@ class LineCluster(QGraphicsObject):
         if not self.sceneBoundingRect().contains(event.scenePos()):
             self._hovered = False
             self._last_bar_ev = None
+            self._chip.set_hovered(False)
             self.hover_left.emit()
         super().hoverLeaveEvent(event)
 

@@ -811,6 +811,12 @@ class EventChip(QGraphicsObject):
         )
 
     # ── Interactivity ────────────────────────────────────────────────────
+    def set_hovered(self, hovered: bool) -> None:
+        """Set hover state without emitting signals (used by LineCluster)."""
+        if self._hovered != hovered:
+            self._hovered = hovered
+            self.update()
+
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         self._hovered = True
         self.update()
