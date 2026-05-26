@@ -106,7 +106,7 @@ class ClusterPopover(QFrame):
             self._rows_layout.addWidget(row_widget)
             self._current_rows.append(row_widget)
 
-        self.setFixedWidth(max(column_width, 200))
+        self.setFixedWidth(max(column_width, 120))
         self.adjustSize()
         pos = self._position_side_anchored(
             anchor_global_topleft, column_right_global, view_right_edge_global
@@ -126,11 +126,12 @@ class ClusterPopover(QFrame):
         avail = screen.availableGeometry() if screen else None
 
         # Prefer right of column; flip to left when that would clip past the
-        # view's right border.
-        if column_right + 12 + pop_w <= view_right_edge - 12:
-            x = column_right + 12
+        # view's right border. No gap so the popover visually covers the
+        # adjacent column flush.
+        if column_right + pop_w <= view_right_edge:
+            x = column_right
         else:
-            x = anchor.x() - pop_w - 12
+            x = anchor.x() - pop_w
 
         y = anchor.y()
 
