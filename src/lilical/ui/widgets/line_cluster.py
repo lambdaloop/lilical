@@ -233,7 +233,7 @@ class LineCluster(QGraphicsObject):
         # Secondary event bars.
         painter.setPen(Qt.PenStyle.NoPen)
         for bar_rect, color, ev in self._bar_rects:
-            draw_color = color.lighter(115) if ev is self._last_bar_ev else color
+            draw_color = color.lighter(170) if ev is self._last_bar_ev else color
             painter.setBrush(draw_color)
             painter.drawRect(bar_rect)
 

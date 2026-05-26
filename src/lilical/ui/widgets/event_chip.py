@@ -530,7 +530,10 @@ class EventChip(QGraphicsObject):
     def _paint_text_mode(self, painter: QPainter, base: QColor) -> None:
         _bar_w = 3
         body = self._rect.adjusted(0, 0, -1, -1)
-        painter.setBrush(QColor(theme.BG_SURFACE_ALT))
+        body_fill = QColor(theme.BG_SURFACE_ALT)
+        if self._hovered:
+            body_fill = body_fill.lighter(135)
+        painter.setBrush(body_fill)
         if self._is_needs_action():
             outline_pen = QPen(base.darker(140), 1.0, Qt.PenStyle.DashLine)
             outline_pen.setCosmetic(True)
@@ -542,7 +545,8 @@ class EventChip(QGraphicsObject):
         bar_rect = QRectF(
             self._rect.x() + 1, self._rect.y() + 1, _bar_w, self._rect.height() - 3
         )
-        painter.setBrush(base)
+        strip_color = base.lighter(140) if self._hovered else base
+        painter.setBrush(strip_color)
         painter.drawRect(bar_rect)
 
         text_color = QColor(theme.TEXT_PRIMARY)
