@@ -11,12 +11,11 @@ from PySide6.QtGui import (
     QFontMetricsF,
     QPainter,
     QPen,
-    QTextLayout,
-    QTextOption,
 )
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsSceneContextMenuEvent, QMenu
 
 from lilical.ui import theme
+from lilical.ui._text_layout import draw_tight_wrapped
 from lilical.utils.timezone import local_zoneinfo
 
 if TYPE_CHECKING:
@@ -86,45 +85,6 @@ def _ellipsize(painter: QPainter, text: str, max_w: float) -> str:
     fm = QFontMetricsF(painter.font())
     return fm.elidedText(text, Qt.TextElideMode.ElideRight, max_w)
 
-
-def _draw_tight_wrapped(
-    painter: QPainter, text: str, font: QFont, rect: QRectF
-) -> None:
-    """Word-wrap `text` into `rect` with no font leading between lines.
-
-    Uses ascent+descent as the line step instead of height() (which adds
-    leading, typically 1-2 px at 9 pt). Caller must set a clip rect; lines
-    that extend past rect.height() are silently discarded.
-    """
-    fm = QFontMetricsF(font)
-    line_step = round((fm.ascent() + fm.descent()) * 0.85)
-    max_h = rect.height()
-
-    layout = QTextLayout(text, font)
-    opt = QTextOption()
-    opt.setWrapMode(QTextOption.WrapMode.WordWrap)
-    layout.setTextOption(opt)
-
-    layout.beginLayout()
-    y = 0.0
-    while True:
-        line = layout.createLine()
-        if not line.isValid():
-            break
-        line.setLineWidth(rect.width())
-        line.setPosition(QPointF(0, y))
-        y += line_step
-        if y >= max_h:
-            # Drain remaining text off-screen so endLayout() closes cleanly.
-            while True:
-                line = layout.createLine()
-                if not line.isValid():
-                    break
-                line.setLineWidth(rect.width())
-                line.setPosition(QPointF(0, max_h + line_step))
-            break
-    layout.endLayout()
-    layout.draw(painter, rect.topLeft())
 
 
 def _coerce_dt(value: object) -> datetime | None:
@@ -498,7 +458,7 @@ class EventChip(QGraphicsObject):
                 max(title_fm.height(), available - loc_reserved),
             )
             painter.setFont(title_font)
-            _draw_tight_wrapped(painter, title, title_font, title_rect)
+            draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
                 painter.setFont(loc_font)
@@ -663,7 +623,7 @@ class EventChip(QGraphicsObject):
             )
             painter.setFont(title_font)
             painter.setPen(text_color)
-            _draw_tight_wrapped(painter, title, title_font, title_rect)
+            draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
                 painter.setFont(loc_font)
