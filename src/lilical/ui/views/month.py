@@ -738,6 +738,9 @@ class MonthView(QGraphicsView):
             chip.delete_requested.connect(
                 lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
             )
+            chip.copy_requested.connect(
+                lambda ev, c=chip: self._on_copy_requested(ev, c.instance_dtstart)
+            )
             chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
             self._scene.addItem(chip)
         chip.set_completed_display(self._completed_enabled)
@@ -773,3 +776,8 @@ class MonthView(QGraphicsView):
         from lilical.ui.views._recurrence_actions import open_delete_dialog
 
         open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+
+    def _on_copy_requested(self, event, instance_dtstart=None) -> None:
+        from lilical.ui.views._recurrence_actions import open_copy_dialog
+
+        open_copy_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]

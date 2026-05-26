@@ -91,6 +91,95 @@ def open_edit_dialog(
     _dispatch_edit(parent, store, event, instance_dtstart, edited, choice)
 
 
+def open_copy_dialog(
+    parent: QWidget,
+    store: "EventStore",
+    event: "Event",
+    instance_dtstart: datetime | None,
+) -> None:
+    """Full copy flow: recurrence scope prompt → calendar picker → queue_copy.
+
+    For non-recurring events the recurrence dialog is skipped.
+    'following' copies the master's series starting at the clicked occurrence
+    date with the rrule intact (no count/until adjustment).
+    """
+    from lilical.ui.widgets.copy_to_calendar_dialog import CopyToCalendarDialog
+    from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
+
+    is_recurring = bool(event.rrule or event.recurrence_id is not None)
+    choice = "series"
+
+    if is_recurring:
+        rad = RecurrenceActionDialog(parent, action="copy")
+        if not rad.exec():
+            return
+        choice = rad.choice or "series"
+
+    # Build the event to copy based on scope choice
+    if choice == "occurrence":
+        # Resolve to a one-off: strip recurrence, anchor to the clicked date
+        if event.recurrence_id is not None:
+            # Already an override row — use it directly but strip recurrence fields
+            src = dataclasses.replace(
+                event,
+                rrule=None,
+                exdates=(),
+                rdates=(),
+                recurrence_id=None,
+            )
+        elif instance_dtstart is not None:
+            # Regular occurrence of a repeating master — build a one-off
+            has_bounds = event.dtend and event.dtstart
+            delta = (event.dtend - event.dtstart) if has_bounds else None  # type: ignore[operator]
+            src = dataclasses.replace(
+                event,
+                dtstart=instance_dtstart,
+                dtend=(instance_dtstart + delta) if delta is not None else event.dtend,
+                rrule=None,
+                exdates=(),
+                rdates=(),
+                recurrence_id=None,
+            )
+        else:
+            src = event
+    elif choice == "following":
+        # Copy master series starting at the clicked occurrence date
+        master = event
+        if event.recurrence_id is not None:
+            m = store.get_event(event.uid, event.calendar_id)
+            if m:
+                master = m
+        anchor = instance_dtstart or event.recurrence_id or master.dtstart
+        if anchor is not None and master.dtstart is not None:
+            has_bounds = master.dtend and master.dtstart
+            delta = (master.dtend - master.dtstart) if has_bounds else None  # type: ignore[operator]
+            src = dataclasses.replace(
+                master,
+                dtstart=anchor,
+                dtend=(anchor + delta) if delta is not None else master.dtend,
+                exdates=(),
+                rdates=(),
+                recurrence_id=None,
+            )
+        else:
+            src = master
+    else:
+        # Entire series — copy the master
+        src = event
+        if event.recurrence_id is not None:
+            m = store.get_event(event.uid, event.calendar_id)
+            if m:
+                src = m
+
+    dlg = CopyToCalendarDialog(parent, store=store, source_calendar_id=src.calendar_id)
+    if not dlg.exec():
+        return
+    target_id = dlg.calendar_id
+    if not target_id:
+        return
+    store.queue_copy(src, target_id)
+
+
 def open_delete_dialog(
     parent: QWidget,
     store: "EventStore",

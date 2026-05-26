@@ -942,6 +942,11 @@ class _DayCanvas(QGraphicsView):
 
         open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
 
+    def _on_copy_requested(self, event, instance_dtstart=None) -> None:
+        from lilical.ui.views._recurrence_actions import open_copy_dialog
+
+        open_copy_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+
     # ── Snap / public setter ──────────────────────────────────────────────
 
     def set_snap_minutes(self, m: int) -> None:
@@ -960,6 +965,9 @@ class _DayCanvas(QGraphicsView):
         )
         chip.delete_requested.connect(
             lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+        )
+        chip.copy_requested.connect(
+            lambda ev, c=chip: self._on_copy_requested(ev, c.instance_dtstart)
         )
         chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
         chip.drag_progress.connect(self._on_chip_drag_progress)
@@ -981,6 +989,9 @@ class _DayCanvas(QGraphicsView):
         )
         chip.delete_requested.connect(
             lambda ev, c=chip: self._on_delete_requested(ev, c.instance_dtstart)
+        )
+        chip.copy_requested.connect(
+            lambda ev, c=chip: self._on_copy_requested(ev, c.instance_dtstart)
         )
         chip.toggle_complete_requested.connect(self._on_toggle_complete_requested)
         cluster.hovered.connect(
@@ -1004,6 +1015,12 @@ class _DayCanvas(QGraphicsView):
         )
         cluster.event_delete_requested.connect(
             lambda ev_dict: self._on_delete_requested(
+                ev_dict["payload"]["event"],
+                ev_dict["payload"].get("instance_dtstart"),
+            )
+        )
+        cluster.event_copy_requested.connect(
+            lambda ev_dict: self._on_copy_requested(
                 ev_dict["payload"]["event"],
                 ev_dict["payload"].get("instance_dtstart"),
             )

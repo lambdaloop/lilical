@@ -128,6 +128,7 @@ class EventChip(QGraphicsObject):
     details_requested = Signal(object)  # emits Event — left-click opens read-only view
     edit_requested = Signal(object)  # emits Event — right-click → Edit
     delete_requested = Signal(object)  # emits Event
+    copy_requested = Signal(object)  # emits Event — right-click → Copy to calendar
     toggle_complete_requested = Signal(object, bool)  # (inst_key triple, new completed)
     # Hover signals fed to the right-side InspectorPane.
     # Payload: (PopoverEvent, notes_str_or_None).
@@ -955,8 +956,10 @@ class EventChip(QGraphicsObject):
             edit_act = menu.addAction("Edit…")
             menu.addSeparator()
             del_act = menu.addAction("Delete…")
-        if menu.isEmpty():
-            return
+        # "Copy to calendar…" is always available, even for read-only sources.
+        if not menu.isEmpty():
+            menu.addSeparator()
+        copy_act = menu.addAction("Copy to calendar…")
         chosen = menu.exec(event.screenPos())
         if toggle_act is not None and chosen is toggle_act:
             self.toggle_complete_requested.emit(self._inst_key, not self._completed)
@@ -964,3 +967,5 @@ class EventChip(QGraphicsObject):
             self.edit_requested.emit(self._event)
         elif del_act is not None and chosen is del_act:
             self.delete_requested.emit(self._event)
+        elif chosen is copy_act:
+            self.copy_requested.emit(self._event)

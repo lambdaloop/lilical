@@ -353,6 +353,8 @@ class AgendaView(QWidget):
         menu = QMenu(self)
         edit_action = menu.addAction("Edit")
         delete_action = menu.addAction("Delete")
+        menu.addSeparator()
+        copy_action = menu.addAction("Copy to calendar…")
         action = menu.exec(self._tree.viewport().mapToGlobal(pos))
         if action == edit_action:
             from lilical.ui.views._recurrence_actions import open_edit_dialog
@@ -362,3 +364,7 @@ class AgendaView(QWidget):
             from lilical.ui.views._recurrence_actions import open_delete_dialog
 
             open_delete_dialog(self, self._store, event, instance_dtstart)
+        elif action == copy_action:
+            from lilical.ui.views._recurrence_actions import open_copy_dialog
+
+            open_copy_dialog(self, self._store, event, instance_dtstart)

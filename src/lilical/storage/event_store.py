@@ -680,6 +680,50 @@ class EventStore(QObject):
         self.local_events_changed.emit()
         return new_uid
 
+    def queue_copy(self, source_event: Event, target_calendar_id: str) -> str:
+        """Copy an event into a different calendar, leaving the source intact.
+
+        Attendees, organizer, and self_response are stripped so the target
+        account does not re-send invites.  Reminders (valarms) are preserved.
+        Returns the new event uid.
+        """
+        import uuid as _uuid
+
+        new_uid = str(_uuid.uuid4())
+        copy = dataclasses.replace(
+            source_event,
+            uid=new_uid,
+            calendar_id=target_calendar_id,
+            provider_event_id=None,
+            etag=None,
+            sequence=0,
+            attendees=(),
+            organizer=None,
+            self_response=None,
+            local_dirty=True,
+        )
+        account_id = self._account_id_for_calendar(target_calendar_id)
+        with self._write_session() as s:
+            new_row = _event_to_row(copy)
+            new_row.local_dirty = True
+            s.add(new_row)
+            self._rebuild_instances_for(s, copy)
+            if account_id:
+                s.add(
+                    PendingOpRow(
+                        account_id=account_id,
+                        calendar_id=target_calendar_id,
+                        uid=new_uid,
+                        op="create",
+                        payload=_event_to_json(copy),
+                        if_match=None,
+                        created_at=_utc_now(),
+                    )
+                )
+        self.events_changed.emit(target_calendar_id, {new_uid})
+        self.local_events_changed.emit()
+        return new_uid
+
     def queue_update_instance(
         self,
         uid: str,

@@ -21,7 +21,8 @@ class RecurrenceActionDialog(QDialog):
         action: str = "edit",
     ) -> None:
         super().__init__(parent)
-        verb = "Edit" if action == "edit" else "Delete"
+        _verbs = {"edit": "Edit", "delete": "Delete", "copy": "Copy"}
+        verb = _verbs.get(action, action.capitalize())
         self.setWindowTitle(f"{verb} recurring event")
         self._choice: str | None = None
 

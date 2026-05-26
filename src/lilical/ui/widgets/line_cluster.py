@@ -120,6 +120,7 @@ class LineCluster(QGraphicsObject):
     event_details_requested = Signal(object) # event dict
     event_edit_requested = Signal(object)    # event dict
     event_delete_requested = Signal(object)  # event dict
+    event_copy_requested = Signal(object)    # event dict
 
     def __init__(
         self,
@@ -320,12 +321,16 @@ class LineCluster(QGraphicsObject):
             edit_act = menu.addAction("Edit…")
             menu.addSeparator()
             del_act = menu.addAction("Delete…")
-        if menu.isEmpty():
-            return
+        # "Copy to calendar…" is always available, even for read-only sources.
+        if not menu.isEmpty():
+            menu.addSeparator()
+        copy_act = menu.addAction("Copy to calendar…")
 
         chosen = menu.exec(event.screenPos())
         if edit_act is not None and chosen is edit_act:
             self.event_edit_requested.emit(ev)
         elif del_act is not None and chosen is del_act:
             self.event_delete_requested.emit(ev)
+        elif chosen is copy_act:
+            self.event_copy_requested.emit(ev)
         event.accept()
