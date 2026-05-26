@@ -986,7 +986,28 @@ class _DayCanvas(QGraphicsView):
         cluster.hovered.connect(
             lambda evs, cl=cluster: self._on_cluster_hovered(evs, cl)
         )
+        cluster.bar_hovered.connect(
+            lambda ev_dict, cl=cluster: self._on_cluster_bar_hovered(ev_dict, cl)
+        )
         cluster.hover_left.connect(self._on_event_hover_left)
+        cluster.event_details_requested.connect(
+            lambda ev_dict: self._on_details_requested(
+                ev_dict["payload"]["event"],
+                ev_dict["payload"].get("instance_dtstart"),
+            )
+        )
+        cluster.event_edit_requested.connect(
+            lambda ev_dict: self._on_edit_requested(
+                ev_dict["payload"]["event"],
+                ev_dict["payload"].get("instance_dtstart"),
+            )
+        )
+        cluster.event_delete_requested.connect(
+            lambda ev_dict: self._on_delete_requested(
+                ev_dict["payload"]["event"],
+                ev_dict["payload"].get("instance_dtstart"),
+            )
+        )
 
     # ── Inspector pane (hover → right-side details panel) ────────────────
 
@@ -1022,6 +1043,23 @@ class _DayCanvas(QGraphicsView):
         notes = (
             (notes_event["payload"]["event"].description or "").strip() or None
         )
+        self._inspector.show_cluster(primary, popover_events, notes)
+
+    def _on_cluster_bar_hovered(
+        self, ev_dict: dict, cluster: LineCluster
+    ) -> None:
+        if self._inspector is None:
+            return
+        all_events = cluster.cluster_events
+        popover_events = cluster_events_to_popover_events(all_events, self._time_format)
+        if not popover_events:
+            return
+        bar_uid = ev_dict["payload"]["event"].uid
+        primary = next(
+            (pe for pe in popover_events if pe.uid == bar_uid),
+            popover_events[0],
+        )
+        notes = (ev_dict["payload"]["event"].description or "").strip() or None
         self._inspector.show_cluster(primary, popover_events, notes)
 
     def _on_toggle_complete_requested(

@@ -6,7 +6,7 @@ from typing import Any
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsObject
+from PySide6.QtWidgets import QGraphicsObject, QMenu
 
 from lilical.ui import theme
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
@@ -52,7 +52,8 @@ def _resolve_cluster_geometry(
         else None
     )
 
-    bar_rects: list[tuple[QRectF, QColor]] = []
+    # Each bar tuple: (rect, color, event_dict) — event_dict needed for hit-tests.
+    bar_rects: list[tuple[QRectF, QColor, dict[str, Any]]] = []
     sec_idx = 0
     for i, ev in enumerate(events):
         if i == dominant_idx:
@@ -72,6 +73,7 @@ def _resolve_cluster_geometry(
             (
                 QRectF(bar_x_local, bar_y_local, theme.CLUSTER_LINE_WIDTH_PX, bar_h),
                 color,
+                ev,
             )
         )
         sec_idx += 1
@@ -97,19 +99,27 @@ class LineCluster(QGraphicsObject):
     """Renders a dense overlap cluster as one dominant chip + thin spine bars.
 
     The dominant event occupies most of the column width as a normal TEXT-mode
-    chip.  Every other event in the cluster is represented by a 4 px wide
-    colored vertical bar whose vertical extent maps to the event's real
-    start/end times against the time grid.
+    chip.  Every other event in the cluster is represented by a colored vertical
+    bar whose vertical extent maps to the event's real start/end times.
 
     Signals:
         hovered: emitted on hoverEnterEvent with the raw cluster events list.
         hover_left: emitted on hoverLeaveEvent.
-        spine_clicked: emitted when the user clicks the spine (bar) area.
+        spine_clicked: emitted when the user clicks the spine area (no specific bar).
+        bar_hovered: emitted when the cursor moves onto a different bar; carries
+            the event dict for that bar so the inspector can update its primary.
+        event_details_requested: emitted on left-click on a bar.
+        event_edit_requested: emitted from the bar context menu.
+        event_delete_requested: emitted from the bar context menu.
     """
 
-    hovered = Signal(object)        # list[dict] — cluster event entries
+    hovered = Signal(object)                 # list[dict] — cluster event entries
     hover_left = Signal()
-    spine_clicked = Signal(object)  # list[dict] — cluster event entries
+    spine_clicked = Signal(object)           # list[dict] — cluster event entries
+    bar_hovered = Signal(object)             # event dict
+    event_details_requested = Signal(object) # event dict
+    event_edit_requested = Signal(object)    # event dict
+    event_delete_requested = Signal(object)  # event dict
 
     def __init__(
         self,
@@ -134,7 +144,8 @@ class LineCluster(QGraphicsObject):
         )
 
         self._spine_w: float = geo["spine_w"]
-        self._bar_rects: list[tuple[QRectF, QColor]] = geo["bar_rects"]
+        self._bar_rects: list[tuple[QRectF, QColor, dict[str, Any]]] = geo["bar_rects"]
+        self._read_only_cal_ids: set[str] = ro
 
         self._chip = EventChip(
             geo["dom_event"],
@@ -154,6 +165,7 @@ class LineCluster(QGraphicsObject):
 
         self.setAcceptHoverEvents(True)
         self._hovered: bool = False
+        self._last_bar_ev: dict[str, Any] | None = None
 
     @property
     def chip(self) -> EventChip:
@@ -182,6 +194,7 @@ class LineCluster(QGraphicsObject):
 
         color_map = calendar_color_map or {}
         ro = read_only_cal_ids or set()
+        self._read_only_cal_ids = ro
 
         geo = _resolve_cluster_geometry(  # noqa: E501
             rect, cluster_data, px_per_hour, color_map, time_format, ro
@@ -219,9 +232,28 @@ class LineCluster(QGraphicsObject):
 
         # Secondary event bars.
         painter.setPen(Qt.PenStyle.NoPen)
-        for bar_rect, color in self._bar_rects:
+        for bar_rect, color, _ev in self._bar_rects:
             painter.setBrush(color)
             painter.drawRect(bar_rect)
+
+    # ── Hit testing ────────────────────────────────────────────────────────
+
+    def _hit_bar(self, local_pos: Any) -> dict[str, Any] | None:
+        """Return the event dict for the bar under *local_pos*, or None."""
+        for bar_rect, _color, ev in self._bar_rects:
+            # Expand the hit rect horizontally to cover the gap between bars so
+            # the cursor doesn't fall into dead zones between 6px bars.
+            hit = bar_rect.adjusted(
+                -theme.CLUSTER_LINE_GAP_PX / 2,
+                0,
+                theme.CLUSTER_LINE_GAP_PX / 2,
+                0,
+            )
+            if hit.contains(local_pos):
+                return ev
+        return None
+
+    # ── Hover ──────────────────────────────────────────────────────────────
 
     def hoverEnterEvent(self, event) -> None:  # noqa: ANN001, N802
         if not self._hovered:
@@ -229,17 +261,63 @@ class LineCluster(QGraphicsObject):
             self.hovered.emit(self._cluster_data["events"])
         super().hoverEnterEvent(event)
 
+    def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
+        ev = self._hit_bar(event.pos())
+        if ev is not self._last_bar_ev:
+            self._last_bar_ev = ev
+            if ev is not None:
+                self.bar_hovered.emit(ev)
+        super().hoverMoveEvent(event)
+
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
         if not self.sceneBoundingRect().contains(event.scenePos()):
             self._hovered = False
+            self._last_bar_ev = None
             self.hover_left.emit()
         super().hoverLeaveEvent(event)
+
+    # ── Mouse ──────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
         if event.button() == Qt.MouseButton.LeftButton:
             chip_w = self._rect.width() - self._spine_w
             if event.pos().x() > chip_w:
-                self.spine_clicked.emit(self._cluster_data["events"])
+                ev = self._hit_bar(event.pos())
+                if ev is not None:
+                    self.event_details_requested.emit(ev)
+                else:
+                    self.spine_clicked.emit(self._cluster_data["events"])
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: ANN001, N802
+        chip_w = self._rect.width() - self._spine_w
+        if event.pos().x() <= chip_w:
+            super().contextMenuEvent(event)
+            return
+
+        ev = self._hit_bar(event.pos())
+        if ev is None:
+            super().contextMenuEvent(event)
+            return
+
+        cal_id: str = ev.get("cal_id", "")
+        read_only = cal_id in self._read_only_cal_ids
+
+        menu = QMenu()
+        edit_act = None
+        del_act = None
+        if not read_only:
+            edit_act = menu.addAction("Edit…")
+            menu.addSeparator()
+            del_act = menu.addAction("Delete…")
+        if menu.isEmpty():
+            return
+
+        chosen = menu.exec(event.screenPos())
+        if edit_act is not None and chosen is edit_act:
+            self.event_edit_requested.emit(ev)
+        elif del_act is not None and chosen is del_act:
+            self.event_delete_requested.emit(ev)
+        event.accept()

@@ -141,6 +141,6 @@ GLYPH_CONTINUES_RIGHT = "→"
 GLYPH_CONTINUES_LEFT = "←"
 
 # ── Dense-overlap cluster rendering ──────────────────────────────────────
-CLUSTER_LINE_WIDTH_PX = 4
+CLUSTER_LINE_WIDTH_PX = 6
 CLUSTER_LINE_GAP_PX = 2          # 6 px center-to-center
 CLUSTER_SPINE_MAX_FRAC = 0.4     # cap spine as fraction of column width
