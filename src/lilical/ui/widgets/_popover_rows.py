@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui import theme
+from lilical.ui.widgets._wrap_label import WrapLabel
 
 
 class PopoverEvent(NamedTuple):
@@ -88,9 +89,8 @@ def make_row(ev: PopoverEvent) -> QWidget:
     # capping at 3 lines. Stylesheet is only used for color.
     title_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE)
     title_font.setWeight(QFont.Weight.Medium)
-    title_lbl = QLabel(ev.title or "(no title)")
+    title_lbl = WrapLabel(ev.title or "(no title)")
     title_lbl.setFont(title_font)
-    title_lbl.setWordWrap(True)
     title_lbl.setMaximumHeight(QFontMetrics(title_font).lineSpacing() * 3)
     title_lbl.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
     vl.addWidget(title_lbl)

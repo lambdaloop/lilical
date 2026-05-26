@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from lilical.ui import theme
 from lilical.ui._notes_fmt import format_notes_html
 from lilical.ui.widgets._popover_rows import PopoverEvent, make_row
+from lilical.ui.widgets._wrap_label import WrapLabel
 
 
 class InspectorPane(QWidget):
@@ -67,13 +68,8 @@ class InspectorPane(QWidget):
         title_font = QFont()
         title_font.setPointSize(max(11, theme.FONT_BASE + 2))
         title_font.setWeight(QFont.Weight.DemiBold)
-        self._title = QLabel()
+        self._title = WrapLabel()
         self._title.setFont(title_font)
-        self._title.setWordWrap(True)
-        self._title.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
-        )
-        self._title.setMinimumWidth(0)
         # Cap at 3 lines (font metrics * 3 lines + small slack).
         self._title.setMaximumHeight(QFontMetrics(title_font).lineSpacing() * 3 + 2)
         self._content_layout.addWidget(self._title)
@@ -81,12 +77,7 @@ class InspectorPane(QWidget):
         self._time = QLabel()
         self._content_layout.addWidget(self._time)
 
-        self._location = QLabel()
-        self._location.setWordWrap(True)
-        self._location.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
-        )
-        self._location.setMinimumWidth(0)
+        self._location = WrapLabel()
         self._content_layout.addWidget(self._location)
 
         self._calendar_row = QWidget()
@@ -95,24 +86,14 @@ class InspectorPane(QWidget):
         cal_layout.setSpacing(6)
         self._calendar_swatch = QFrame()
         self._calendar_swatch.setFixedSize(10, 10)
-        self._calendar_name = QLabel()
-        self._calendar_name.setWordWrap(True)
-        self._calendar_name.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
-        )
-        self._calendar_name.setMinimumWidth(0)
+        self._calendar_name = WrapLabel()
         cal_layout.addWidget(self._calendar_swatch, 0, Qt.AlignmentFlag.AlignVCenter)
         cal_layout.addWidget(self._calendar_name, 1)
         self._content_layout.addWidget(self._calendar_row)
 
         self._notes_header = QLabel("NOTES")
         self._content_layout.addWidget(self._notes_header)
-        self._notes = QLabel()
-        self._notes.setWordWrap(True)
-        self._notes.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
-        )
-        self._notes.setMinimumWidth(0)
+        self._notes = WrapLabel()
         self._notes.setTextFormat(Qt.TextFormat.RichText)
         self._notes.setOpenExternalLinks(True)
         self._notes.setTextInteractionFlags(
