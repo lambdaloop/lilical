@@ -140,21 +140,18 @@ def test_not_dimmed_by_default() -> None:
     e = _make_event()
     chip = _MockChip(e)
     assert not chip._is_dimmed()
-    assert chip._dim_reason() is None
 
 
 def test_dimmed_for_cancelled() -> None:
     e = _make_event(status="CANCELLED")
     chip = _MockChip(e)
     assert chip._is_dimmed()
-    assert chip._dim_reason() == "cancelled"
 
 
 def test_dimmed_for_declined_self_response() -> None:
     e = _make_event(self_response="DECLINED")
     chip = _MockChip(e)
     assert chip._is_dimmed()
-    assert chip._dim_reason() == "declined"
 
 
 def test_not_dimmed_for_tentative() -> None:
@@ -170,7 +167,7 @@ def test_not_dimmed_for_accepted_self_response() -> None:
 
 
 class _MockChip:
-    """Minimal duck-type of EventChip exposing _is_dimmed / _dim_reason."""
+    """Minimal duck-type of EventChip exposing _is_dimmed."""
 
     def __init__(self, event: Event) -> None:
         self._event = event
@@ -180,8 +177,3 @@ class _MockChip:
         from lilical.ui.widgets.event_chip import EventChip
 
         return EventChip._is_dimmed(self)  # type: ignore[arg-type]
-
-    def _dim_reason(self) -> str | None:
-        from lilical.ui.widgets.event_chip import EventChip
-
-        return EventChip._dim_reason(self)  # type: ignore[arg-type]

@@ -157,7 +157,7 @@ class EventChip(QGraphicsObject):
     Rendering tiers are derived at paint time from the actual font metrics
     (title_fm.height(), pfm.height(), loc_fm.height()) so they stay compact
     at every UI scale without multiplying fixed-pixel slack:
-        h < t+1        : solid fill, no text (tooltip carries title)
+        h < t+1        : solid fill, no text (inspector pane carries title)
         h >= t+1       : time prefix + title on one row, vertically centred
         h >= t+p       : time prefix on its own row, then title (wraps)
         h >= t+p+l     : + location line (if event.location set)
@@ -225,7 +225,6 @@ class EventChip(QGraphicsObject):
         self._drag_mode: str | None = None
         self._press_scene_pos: QPointF | None = None
         self.setAcceptHoverEvents(True)
-        self.setToolTip(self._build_tooltip())
 
     def _prefix_text(self) -> str | None:
         if not self._show_time_prefix:
@@ -234,26 +233,6 @@ class EventChip(QGraphicsObject):
             return self._time_prefix or None
         return _format_time_prefix_from(self._event, self._time_format)
 
-    def _build_tooltip(self) -> str:
-        parts = [self._event.summary or "(no title)"]
-        prefix = self._prefix_text()
-        if prefix:
-            parts.insert(0, prefix)
-        if self._event.location:
-            parts.append(self._event.location)
-        # Surface cancellation/decline in the tooltip too — the visual dim
-        # plus strikethrough is easy to miss on dense calendars.
-        if self._is_dimmed():
-            reason = self._dim_reason()
-            if reason:
-                parts.append(f"({reason})")
-        elif self._is_needs_action():
-            sr = (self._event.self_response or "").upper()
-            parts.append("(tentative)" if sr == "TENTATIVE" else "(awaiting response)")
-        if self._is_completed():
-            parts.append("(completed)")
-        return "\n".join(parts)
-
     def _is_completed(self) -> bool:
         return self._completed and self._completed_display_enabled
 
@@ -261,7 +240,6 @@ class EventChip(QGraphicsObject):
         if enabled == self._completed_display_enabled:
             return
         self._completed_display_enabled = enabled
-        self.setToolTip(self._build_tooltip())
         self.update()
 
     def _is_dimmed(self) -> bool:
@@ -276,15 +254,6 @@ class EventChip(QGraphicsObject):
         """True when the user hasn't committed (no response or tentative)."""
         sr = (self._event.self_response or "").upper()
         return sr in ("NEEDS-ACTION", "TENTATIVE")
-
-    def _dim_reason(self) -> str | None:
-        status = (self._event.status or "").upper()
-        if status == "CANCELLED":
-            return "cancelled"
-        sr = (self._event.self_response or "").upper()
-        if sr == "DECLINED":
-            return "declined"
-        return None
 
     @property
     def instance_dtstart(self) -> datetime | None:
@@ -315,7 +284,6 @@ class EventChip(QGraphicsObject):
         self._instance_dtstart = instance_dtstart
         if mode is not None:
             self._mode = mode
-        self.setToolTip(self._build_tooltip())
         self.update()
 
     def update_event_data(
@@ -331,7 +299,6 @@ class EventChip(QGraphicsObject):
         self._event = event
         self._completed = completed
         self._inst_key = inst_key
-        self.setToolTip(self._build_tooltip())
         self.update()
 
     @override
