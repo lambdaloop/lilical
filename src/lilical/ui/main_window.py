@@ -291,7 +291,7 @@ class MainWindow(QMainWindow):
 
         # Right-side inspector pane — shows hovered event details + cluster
         # context. Constructed before views so it can be passed into them.
-        self._inspector = InspectorPane()
+        self._inspector = InspectorPane(cal_info_provider=self._cal_info_provider)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._sidebar)
@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([240, 680, 280])
+        splitter.setSizes([240, 760, 200])
         splitter.setChildrenCollapsible(False)
         main_layout.addWidget(splitter)
 

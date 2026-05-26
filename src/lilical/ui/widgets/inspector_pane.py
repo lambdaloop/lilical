@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui import theme
+from lilical.ui._notes_fmt import format_notes_html
 from lilical.ui.widgets._popover_rows import PopoverEvent, make_row
 
 
@@ -23,7 +26,7 @@ class InspectorPane(QWidget):
 
     Two stacked sections inside a QScrollArea:
       - Top: details of the single hovered event (title, time, location,
-        calendar color, notes).
+        calendar color + name, notes).
       - Bottom (cluster context): only shown when hovering an event that
         is part of a dense overlap cluster; lists the sibling events using
         the same `make_row` factory that the legacy popover used.
@@ -31,9 +34,13 @@ class InspectorPane(QWidget):
     Empty when nothing is hovered.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cal_info_provider: Callable[[], dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
-        self.setMinimumWidth(220)
+        self._cal_info_provider = cal_info_provider
+        self.setMinimumWidth(180)
         self.setMaximumWidth(420)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
@@ -81,6 +88,7 @@ class InspectorPane(QWidget):
         self._calendar_swatch = QFrame()
         self._calendar_swatch.setFixedSize(10, 10)
         self._calendar_name = QLabel()
+        self._calendar_name.setWordWrap(True)
         cal_layout.addWidget(self._calendar_swatch, 0, Qt.AlignmentFlag.AlignVCenter)
         cal_layout.addWidget(self._calendar_name, 1)
         self._content_layout.addWidget(self._calendar_row)
@@ -89,6 +97,12 @@ class InspectorPane(QWidget):
         self._content_layout.addWidget(self._notes_header)
         self._notes = QLabel()
         self._notes.setWordWrap(True)
+        self._notes.setTextFormat(Qt.TextFormat.RichText)
+        self._notes.setOpenExternalLinks(True)
+        self._notes.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
         notes_font_metrics = QFontMetrics(self._notes.font())
         self._notes.setMaximumHeight(notes_font_metrics.lineSpacing() * 6 + 2)
         self._content_layout.addWidget(self._notes)
@@ -153,6 +167,12 @@ class InspectorPane(QWidget):
 
     # ── Internal helpers ───────────────────────────────────────────────
 
+    def _resolve_calendar_name(self, calendar_id: str | None) -> str | None:
+        if not calendar_id or self._cal_info_provider is None:
+            return None
+        info = self._cal_info_provider().get(calendar_id)
+        return getattr(info, "display_name", None) or None
+
     def _populate_event_section(
         self, ev: PopoverEvent, notes: str | None
     ) -> None:
@@ -173,15 +193,17 @@ class InspectorPane(QWidget):
         self._calendar_swatch.setStyleSheet(
             f"background: {color}; border-radius: 5px;"
         )
-        # The PopoverEvent tuple doesn't carry the calendar name; the swatch
-        # alone is enough since the cluster section also uses color swatches.
-        self._calendar_name.setText("")
+        cal_name = self._resolve_calendar_name(ev.calendar_id)
+        if cal_name:
+            self._calendar_name.setText(cal_name)
+        else:
+            self._calendar_name.clear()
         self._calendar_row.setVisible(True)
 
         notes_text = (notes or "").strip()
         if notes_text:
             self._notes_header.setVisible(True)
-            self._notes.setText(notes_text)
+            self._notes.setText(format_notes_html(notes_text))
             self._notes.setVisible(True)
         else:
             self._notes_header.setVisible(False)
@@ -221,9 +243,8 @@ class InspectorPane(QWidget):
     def _apply_theme(self) -> None:
         self.setStyleSheet(
             f"InspectorPane {{ background: {theme.BG_SURFACE}; }}"
+            f" InspectorPane QWidget {{ background: transparent; }}"
             f" QScrollArea {{ background: {theme.BG_SURFACE}; border: none; }}"
-            f" QScrollArea > QWidget > QWidget {{"
-            f" background: {theme.BG_SURFACE}; }}"
         )
         meta_style = (
             f"color: {theme.TEXT_DISABLED};"

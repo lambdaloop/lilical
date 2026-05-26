@@ -19,9 +19,9 @@ def qapp():
 
 def _notes_text(description: str) -> str:
     """Return the string that would be set on the notes QLabel."""
-    from lilical.ui.widgets.event_details_dialog import _is_html, _linkify
+    from lilical.ui._notes_fmt import is_html, linkify
 
-    return description if _is_html(description) else _linkify(description)
+    return description if is_html(description) else linkify(description)
 
 
 def test_plain_text_url_is_linkified(qapp):
