@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.ui import theme
-from lilical.ui.widgets._wrap_label import WrapLabel
+from lilical.ui.widgets._tight_title_label import TightTitleLabel
 
 
 class PopoverEvent(NamedTuple):
@@ -85,14 +85,8 @@ def make_row(ev: PopoverEvent) -> QWidget:
     )
     vl.addWidget(time_lbl)
 
-    # Set font via QFont so QFontMetrics can compute accurate line height for
-    # capping at 3 lines. Stylesheet is only used for color.
-    title_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE)
-    title_font.setWeight(QFont.Weight.Medium)
-    title_lbl = WrapLabel(ev.title or "(no title)")
-    title_lbl.setFont(title_font)
-    title_lbl.setMaximumHeight(QFontMetrics(title_font).lineSpacing() * 3)
-    title_lbl.setStyleSheet(f"color: {theme.TEXT_PRIMARY};")
+    title_font = QFont(theme.FONT_FAMILY, theme.FONT_CHIP_TITLE, QFont.Weight.Medium)
+    title_lbl = TightTitleLabel(ev.title or "(no title)", title_font, max_lines=3)
     vl.addWidget(title_lbl)
 
     # Propagate heightForWidth so adjustSize() on the popover grows for wraps.
