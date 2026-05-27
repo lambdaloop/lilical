@@ -1,0 +1,37 @@
+{
+  "name": "best-value",
+  "description": "Sonnet for chat/review, GPT-5.4 plans, Gemini codes (free), GLM-flash compresses (free)",
+  "planningPreference": [
+    "planning",
+    "reasoning",
+    "architecture",
+    "analysis"
+  ],
+  "executionPreference": [
+    "coding",
+    "fast-coding",
+    "refactoring"
+  ],
+  "reviewPreference": [
+    "code-review",
+    "analysis",
+    "reasoning"
+  ],
+  "contextBudget": 40000,
+  "maxIterations": 24,
+  "loopCostCap": 5,
+  "loopIterationCap": 24,
+  "promotionThreshold": 2,
+  "includeReflection": true,
+  "includeVerification": true,
+  "preferLocal": false,
+  "maxOutputTokens": 8192,
+  "rolePinning": {
+    "discuss": "claude-sonnet-4-5-20250929",
+    "dispatch": "gpt-5.4",
+    "execute": "models/gemini-2.5-pro",
+    "reflect": "claude-sonnet-4-5-20250929",
+    "compress": "glm-4.5-flash",
+    "state_update": "glm-4.5-flash"
+  }
+}

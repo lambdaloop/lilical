@@ -8,7 +8,13 @@ from typing import override
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSizePolicy
+from PySide6.QtWidgets import (
+    QGraphicsItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QSizePolicy,
+    QToolTip,
+)
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
@@ -23,7 +29,6 @@ from lilical.ui.widgets._popover_rows import (
 from lilical.ui.widgets.day_events_popover import DayEventsPopover
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
-from lilical.ui.widgets.event_tooltip import EventTooltip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -752,8 +757,6 @@ class WeekView(QGraphicsView):
         self._band_show_timer.timeout.connect(self._show_band_popover)
         # Right-side inspector pane (None in standalone tests).
         self._inspector = inspector
-        # Lightweight tooltip shown when inspector is toggled off.
-        self._tooltip = EventTooltip()
         self._rendered_start: date | None = None
         self._needs_scroll: bool = True
         self._completed_enabled: bool = False
@@ -1165,22 +1168,30 @@ class WeekView(QGraphicsView):
     def _on_details_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_details_dialog
 
-        open_details_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_details_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
 
-        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_edit_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_delete_dialog
 
-        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_delete_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_copy_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_copy_dialog
 
-        open_copy_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_copy_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     # ── Chip signal wiring ────────────────────────────────────────────────
 
@@ -1310,10 +1321,14 @@ class WeekView(QGraphicsView):
         if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
         else:
-            self._tooltip.show_event(popover_event, notes, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                f"{popover_event.time_str}\n{popover_event.title}",
+                self.viewport(),
+            )
 
     def _on_event_hover_left(self) -> None:
-        self._tooltip.hide_tooltip()
+        QToolTip.hideText()
         if self._inspector is not None:
             self._inspector.clear()
 
@@ -1336,7 +1351,11 @@ class WeekView(QGraphicsView):
         if self._inspector.isVisible():
             self._inspector.show_cluster(primary, popover_events)
         else:
-            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                self._build_cluster_tooltip(popover_events),
+                self.viewport(),
+            )
 
     def _on_cluster_bar_hovered(
         self, ev_dict: dict, cluster: LineCluster
@@ -1355,7 +1374,22 @@ class WeekView(QGraphicsView):
         if self._inspector.isVisible():
             self._inspector.show_cluster(primary, popover_events)
         else:
-            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                f"{primary.time_str}\n{primary.title}",
+                self.viewport(),
+            )
+
+    @staticmethod
+    def _build_cluster_tooltip(siblings: list[PopoverEvent]) -> str:
+        n = len(siblings)
+        first_time = siblings[0].time_str.split("–")[0].strip()
+        last_time = siblings[-1].time_str.split("–")[-1].strip()
+        suffix = "EVENT" if n == 1 else "EVENTS"
+        lines = [f"{first_time} — {last_time} · {n} {suffix}", "---"]
+        for sib in siblings:
+            lines.append(f"{sib.time_str}  {sib.title}")
+        return "\n".join(lines)
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 

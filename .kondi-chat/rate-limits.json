@@ -1,0 +1,35 @@
+{
+  "limits": {
+    "anthropic": {
+      "rpm": 50,
+      "tpm": 400000,
+      "maxConcurrent": 10,
+      "maxQueueLength": 50
+    },
+    "openai": {
+      "rpm": 30,
+      "tpm": 150000,
+      "maxConcurrent": 10,
+      "maxQueueLength": 50
+    },
+    "deepseek": {
+      "rpm": 60,
+      "tpm": 1000000,
+      "maxConcurrent": 10
+    },
+    "google": {
+      "rpm": 60,
+      "tpm": 1000000,
+      "maxConcurrent": 10
+    },
+    "xai": {
+      "rpm": 60,
+      "tpm": 500000
+    },
+    "ollama": {
+      "rpm": 600,
+      "tpm": 100000000,
+      "maxConcurrent": 4
+    }
+  }
+}

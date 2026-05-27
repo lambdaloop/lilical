@@ -34,6 +34,7 @@ def _build_week_with_single_chip(qapp, inspector):
     )
     view.resize(1200, 800)
     view.show()
+    inspector.show()  # must be visible so _on_event_hovered routes to it
     qapp.processEvents()
 
     ev = make_event("solo", hour=10, minute=0, summary="Lone meeting")
@@ -53,6 +54,7 @@ def _build_week_with_cluster(qapp, inspector):
     )
     view.resize(1200, 800)
     view.show()
+    inspector.show()  # must be visible so hover signals route to it
     qapp.processEvents()
 
     events_data = []
@@ -158,6 +160,7 @@ def _build_day_canvas_with_cluster(qapp, inspector):
     )
     canvas.resize(800, 800)
     canvas.show()
+    inspector.show()  # must be visible so hover signals route to it
     qapp.processEvents()
 
     events_data = []

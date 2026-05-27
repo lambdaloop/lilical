@@ -1,0 +1,40 @@
+<svg viewBox="0 0 280 520" xmlns="http://www.w3.org/2000/svg" style="background:#0e0e0e">
+  <defs>
+    <filter id="paint" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2"/>
+    </filter>
+    <linearGradient id="vfade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.06"/>
+    </linearGradient>
+  </defs>
+  <text x="140" y="20" text-anchor="middle" fill="#fff" font-size="13" font-weight="bold">Fri 29</text>
+  <text x="5" y="65" fill="#888" font-size="9">3 PM</text>
+  <text x="5" y="135" fill="#888" font-size="9">4 PM</text>
+  <text x="5" y="205" fill="#888" font-size="9">5 PM</text>
+  <text x="5" y="275" fill="#888" font-size="9">6 PM</text>
+  <text x="5" y="345" fill="#888" font-size="9">7 PM</text>
+  <text x="5" y="415" fill="#888" font-size="9">8 PM</text>
+  <text x="5" y="485" fill="#888" font-size="9">9 PM</text>
+  <line x1="35" y1="60" x2="275" y2="60" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="130" x2="275" y2="130" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="200" x2="275" y2="200" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="270" x2="275" y2="270" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="340" x2="275" y2="340" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="410" x2="275" y2="410" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="480" x2="275" y2="480" stroke="#2a2a2a" stroke-width="0.5"/>
+  <rect x="40" y="95" width="230" height="30" rx="4" fill="#3b82f6" fill-opacity="0.85"/>
+  <text x="48" y="115" fill="#fff" font-size="10" font-weight="600">Team standup</text>
+  <g filter="url(#paint)">
+    <rect x="38" y="208" width="234" height="78" fill="#ec4899" fill-opacity="0.45"/>
+    <rect x="44" y="220" width="228" height="90" fill="#f97316" fill-opacity="0.38"/>
+    <rect x="40" y="250" width="232" height="110" fill="#a855f7" fill-opacity="0.42"/>
+    <rect x="46" y="290" width="226" height="120" fill="#06b6d4" fill-opacity="0.38"/>
+    <rect x="40" y="330" width="232" height="140" fill="#84cc16" fill-opacity="0.42"/>
+  </g>
+  <rect x="35" y="200" width="240" height="280" fill="url(#vfade)" pointer-events="none"/>
+  <text x="48" y="232" fill="#fff" font-size="11" font-weight="600">Yoga · Heated Vinyasa</text>
+  <text x="48" y="245" fill="#fff" font-size="9" opacity="0.75">5:00 PM</text>
+  <rect x="232" y="216" width="36" height="18" rx="9" fill="#000" fill-opacity="0.55"/>
+  <text x="250" y="229" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">+4</text>
+</svg>

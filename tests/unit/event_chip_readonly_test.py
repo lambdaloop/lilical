@@ -152,9 +152,9 @@ class _StubMenu:
 
 def test_read_only_context_menu_omits_edit_and_delete(qapp, monkeypatch):
     """Right-click on a read-only chip builds a menu without Edit/Delete
-    entries. When the menu would otherwise be empty (no completed toggle
-    available), the menu is never shown — verified by asserting `exec` was
-    not invoked."""
+    entries but always shows 'Copy to calendar…' (available even for
+    read-only sources).  exec() must still be called because the menu is
+    non-empty."""
     from PySide6.QtWidgets import QGraphicsSceneContextMenuEvent
 
     import lilical.ui.widgets.event_chip as event_chip_mod
@@ -170,8 +170,12 @@ def test_read_only_context_menu_omits_edit_and_delete(qapp, monkeypatch):
 
     assert len(_StubMenu.instances) == 1
     menu = _StubMenu.instances[0]
-    assert menu.actions() == []
-    assert menu._exec_called is False
+    action_texts = [a.text() for a in menu.actions()]
+    # Edit / Delete must be absent; only "Copy to calendar…" is present.
+    assert "Edit…" not in action_texts
+    assert "Delete…" not in action_texts
+    assert "Copy to calendar…" in action_texts
+    assert menu._exec_called is True
 
 
 def test_writable_chip_context_menu_has_edit_and_delete(qapp, monkeypatch):

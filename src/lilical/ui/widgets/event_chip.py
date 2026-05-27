@@ -837,6 +837,11 @@ class EventChip(QGraphicsObject):
         super().hoverLeaveEvent(event)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
+        if not self._hovered:
+            self._hovered = True
+            self.update()
+            notes = (self._event.description or "").strip() or None
+            self.hovered.emit(self._to_popover_event(), notes)
         # Show a vertical resize cursor near the top/bottom edge so users
         # discover the resize affordance. All-day chips and tiny timed chips
         # get the default cursor (body-drag-only).
@@ -865,6 +870,10 @@ class EventChip(QGraphicsObject):
         return self._rect.height() >= self.MIN_HEIGHT_FOR_EDGE_RESIZE
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._hovered:
+            self._hovered = False
+            self.update()
+            self.hover_left.emit()
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return

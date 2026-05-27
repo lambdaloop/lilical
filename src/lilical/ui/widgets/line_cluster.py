@@ -264,6 +264,10 @@ class LineCluster(QGraphicsObject):
         super().hoverEnterEvent(event)
 
     def hoverMoveEvent(self, event) -> None:  # noqa: ANN001, N802
+        if not self._hovered:
+            self._hovered = True
+            self.update()
+            self._last_bar_ev = object()
         ev = self._hit_bar(event.pos())
         chip_w = self._rect.width() - self._spine_w
         over_chip = event.pos().x() < chip_w
@@ -278,26 +282,29 @@ class LineCluster(QGraphicsObject):
         super().hoverMoveEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:  # noqa: ANN001, N802
-        if not self.sceneBoundingRect().contains(event.scenePos()):
-            self._hovered = False
-            self._last_bar_ev = None
-            self._chip.set_hovered(False)
-            self.hover_left.emit()
+        self._hovered = False
+        self._last_bar_ev = None
+        self._chip.set_hovered(False)
+        self.hover_left.emit()
         super().hoverLeaveEvent(event)
 
     # ── Mouse ──────────────────────────────────────────────────────────────
 
     def mousePressEvent(self, event) -> None:  # noqa: ANN001, N802
-        if event.button() == Qt.MouseButton.LeftButton:
-            chip_w = self._rect.width() - self._spine_w
-            if event.pos().x() > chip_w:
-                ev = self._hit_bar(event.pos())
-                if ev is not None:
-                    self.event_details_requested.emit(ev)
-                else:
-                    self.spine_clicked.emit(self._cluster_data["events"])
-                event.accept()
-                return
+        chip_w = self._rect.width() - self._spine_w
+        if event.pos().x() > chip_w and self._hovered:
+            self._hovered = False
+            self._last_bar_ev = None
+            self.update()
+            self.hover_left.emit()
+        if event.button() == Qt.MouseButton.LeftButton and event.pos().x() > chip_w:
+            ev = self._hit_bar(event.pos())
+            if ev is not None:
+                self.event_details_requested.emit(ev)
+            else:
+                self.spine_clicked.emit(self._cluster_data["events"])
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def contextMenuEvent(self, event) -> None:  # noqa: ANN001, N802

@@ -1,0 +1,36 @@
+{
+  "name": "orchestra",
+  "description": "Multi-provider role pipeline — GPT-5.4 plans, Gemini codes, GLM-5.1 reviews",
+  "planningPreference": [
+    "planning",
+    "reasoning",
+    "analysis"
+  ],
+  "executionPreference": [
+    "coding",
+    "fast-coding",
+    "general"
+  ],
+  "reviewPreference": [
+    "code-review",
+    "analysis",
+    "reasoning"
+  ],
+  "contextBudget": 40000,
+  "maxIterations": 24,
+  "loopCostCap": 5,
+  "loopIterationCap": 24,
+  "promotionThreshold": 2,
+  "includeReflection": true,
+  "includeVerification": true,
+  "preferLocal": false,
+  "maxOutputTokens": 8192,
+  "rolePinning": {
+    "discuss": "gpt-5.4",
+    "dispatch": "gpt-5.4",
+    "execute": "models/gemini-2.5-pro",
+    "reflect": "glm-5.1",
+    "compress": "glm-4.5-flash",
+    "state_update": "glm-4.5-flash"
+  }
+}

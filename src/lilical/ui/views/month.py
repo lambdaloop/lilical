@@ -765,19 +765,27 @@ class MonthView(QGraphicsView):
     def _on_details_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_details_dialog
 
-        open_details_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_details_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
 
-        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_edit_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_delete_dialog
 
-        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_delete_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_copy_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_copy_dialog
 
-        open_copy_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_copy_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )

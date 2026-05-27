@@ -1,0 +1,26 @@
+<svg viewBox="0 0 280 360" xmlns="http://www.w3.org/2000/svg" style="background:#0e0e0e">
+  <text x="5" y="20" fill="#888" font-size="9">5 PM</text>
+  <text x="5" y="90" fill="#888" font-size="9">6 PM</text>
+  <text x="5" y="160" fill="#888" font-size="9">7 PM</text>
+  <text x="5" y="230" fill="#888" font-size="9">8 PM</text>
+  <text x="5" y="300" fill="#888" font-size="9">9 PM</text>
+  <line x1="35" y1="15" x2="275" y2="15" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="85" x2="275" y2="85" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="155" x2="275" y2="155" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="225" x2="275" y2="225" stroke="#2a2a2a" stroke-width="0.5"/>
+  <line x1="35" y1="295" x2="275" y2="295" stroke="#2a2a2a" stroke-width="0.5"/>
+
+  <!-- Dominant bar (thicker) -->
+  <rect x="38" y="18" width="10" height="88" rx="1" fill="#ec4899"/>
+
+  <!-- Secondary bars packed left, comfortable gap -->
+  <rect x="56" y="53" width="4" height="70" fill="#f97316"/>
+  <rect x="66" y="88" width="4" height="105" fill="#a855f7"/>
+  <rect x="76" y="123" width="4" height="70" fill="#06b6d4"/>
+  <rect x="86" y="158" width="4" height="105" fill="#84cc16"/>
+
+  <!-- Text stack: title, time, location -->
+  <text x="100" y="36" fill="#fff" font-size="12" font-weight="600">Yoga · Heated Vinyasa Flow</text>
+  <text x="100" y="52" fill="#ccc" font-size="10">5:00 – 6:15 PM</text>
+  <text x="100" y="68" fill="#888" font-size="10">Mission Studios</text>
+</svg>

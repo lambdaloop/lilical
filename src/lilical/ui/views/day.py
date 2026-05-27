@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QSizePolicy,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +32,6 @@ from lilical.ui.widgets._popover_rows import (
 )
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
-from lilical.ui.widgets.event_tooltip import EventTooltip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -626,7 +626,6 @@ class _DayCanvas(QGraphicsView):
         self._cached_data: dict | None = None
         self._day = day
         self._inspector = inspector
-        self._tooltip = EventTooltip()
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
@@ -932,22 +931,30 @@ class _DayCanvas(QGraphicsView):
     def _on_details_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_details_dialog
 
-        open_details_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_details_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_edit_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_edit_dialog
 
-        open_edit_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_edit_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_delete_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_delete_dialog
 
-        open_delete_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_delete_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     def _on_copy_requested(self, event, instance_dtstart=None) -> None:
         from lilical.ui.views._recurrence_actions import open_copy_dialog
 
-        open_copy_dialog(self.parent(), self._store, event, instance_dtstart)  # type: ignore[reportArgumentType]
+        open_copy_dialog(  # type: ignore[reportArgumentType]
+            self.parent(), self._store, event, instance_dtstart, refresh_view=self
+        )
 
     # ── Snap / public setter ──────────────────────────────────────────────
 
@@ -1034,10 +1041,14 @@ class _DayCanvas(QGraphicsView):
         if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
         else:
-            self._tooltip.show_event(popover_event, notes, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                f"{popover_event.time_str}\n{popover_event.title}",
+                self.viewport(),
+            )
 
     def _on_event_hover_left(self) -> None:
-        self._tooltip.hide_tooltip()
+        QToolTip.hideText()
         if self._inspector is not None:
             self._inspector.clear()
 
@@ -1060,7 +1071,11 @@ class _DayCanvas(QGraphicsView):
         if self._inspector.isVisible():
             self._inspector.show_cluster(primary, popover_events)
         else:
-            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                self._build_cluster_tooltip(popover_events),
+                self.viewport(),
+            )
 
     def _on_cluster_bar_hovered(
         self, ev_dict: dict, cluster: LineCluster
@@ -1079,7 +1094,22 @@ class _DayCanvas(QGraphicsView):
         if self._inspector.isVisible():
             self._inspector.show_cluster(primary, popover_events)
         else:
-            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
+            QToolTip.showText(
+                QCursor.pos(),
+                f"{primary.time_str}\n{primary.title}",
+                self.viewport(),
+            )
+
+    @staticmethod
+    def _build_cluster_tooltip(siblings: list[PopoverEvent]) -> str:
+        n = len(siblings)
+        first_time = siblings[0].time_str.split("–")[0].strip()
+        last_time = siblings[-1].time_str.split("–")[-1].strip()
+        suffix = "EVENT" if n == 1 else "EVENTS"
+        lines = [f"{first_time} — {last_time} · {n} {suffix}", "---"]
+        for sib in siblings:
+            lines.append(f"{sib.time_str}  {sib.title}")
+        return "\n".join(lines)
 
     def _on_toggle_complete_requested(
         self, inst_key: tuple[str, str, int], completed: bool
