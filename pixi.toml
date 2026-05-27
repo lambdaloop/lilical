@@ -18,6 +18,12 @@ vobject = "*"
 keyring = "*"
 tzdata = "*"
 dateparser = "*"
+ruff = "*"
+basedpyright = "*"
+pytest = "*"
+pytest-qt = "*"
+pytest-asyncio = "*"
+pytest-cov = "*"
 
 [pypi-dependencies]
 lilical = { path = ".", editable = true }
@@ -26,20 +32,10 @@ recurring-ical-events = ">=2.2"
 desktop-notifier = "*"
 msal = "*"
 httpx = ">=0.27,<1.0"
+pytest-recording = "*"
 
 [pypi-options]
 prerelease-mode = "allow"
-
-[feature.dev.dependencies]
-ruff = "*"
-basedpyright = "*"
-pytest = "*"
-pytest-qt = "*"
-pytest-asyncio = "*"
-pytest-cov = "*"
-
-[feature.dev.pypi-dependencies]
-pytest-recording = "*"
 
 [feature.appimage.dependencies]
 font-ttf-noto       = "*"
@@ -49,8 +45,6 @@ font-ttf-noto-emoji = "*"
 pyinstaller = ">=6.0"
 
 [environments]
-default = { features = [], solve-group = "main" }
-dev = { features = ["dev"], solve-group = "main" }
 appimage = { features = ["appimage"], solve-group = "main" }
 
 [tasks]

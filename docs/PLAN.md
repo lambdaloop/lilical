@@ -80,16 +80,15 @@ Python), Tauri, Poetry/PDM/venv (pixi handles native deps better).
 
 Pixi gives us:
 
-- A single, lockfile-driven dev environment that handles **Qt's native
+- A single, lockfile-driven environment that handles **Qt's native
   libraries** cleanly from conda-forge (no system Qt dependency hell, no
   wheel-mismatch on PySide6).
 - Cross-distro reproducibility (`pixi install` works the same on Arch,
   Fedora, Ubuntu).
 - PyPI fallback for the handful of deps not on conda-forge.
-- Pixi **tasks** replace Makefiles for `dev`, `test`, `lint`, `migrate`,
+- Pixi **tasks** replace Makefiles for `test`, `lint`, `migrate`,
   `build`, etc.
-- Multiple **features/environments** (dev, test, flatpak-build) without
-  juggling extras.
+- Multiple **features** (appimage) without juggling extras.
 
 ### `pixi.toml` shape (sketch, not committed)
 
@@ -120,7 +119,6 @@ msgraph-sdk = "*"
 recurring-ical-events = ">=2.2"   # 3.x once released and stable
 desktop-notifier = "*"
 
-[feature.dev.dependencies]
 ruff = "*"
 basedpyright = "*"
 pytest = "*"
@@ -128,12 +126,11 @@ pytest-qt = "*"
 pytest-asyncio = "*"
 pytest-cov = "*"
 
-[feature.dev.pypi-dependencies]
+[pypi-dependencies]
 pytest-recording = "*"   # VCR-style HTTP record/replay for backend tests
 
 [environments]
-default = { features = [], solve-group = "main" }
-dev = { features = ["dev"], solve-group = "main" }
+appimage = { features = ["appimage"], solve-group = "main" }
 
 [tasks]
 run        = "python -m lilical"
@@ -513,11 +510,11 @@ Radicale Docker container.
 | Unit             | `pytest`                                               | Pure logic: recurrence, conflict tiebreakers, serializers |
 | Qt UI            | `pytest-qt`                                            | View interactions, drag→event-update wiring          |
 | Async            | `pytest-asyncio`                                       | Sync engine, scheduler                               |
-| CalDAV           | Real Radicale in Docker via `pixi run radicale`        | Reusable across dev + CI                             |
+| CalDAV           | Real Radicale in Docker via `pixi run radicale`        | Reusable across local dev + CI                       |
 | Google / Graph   | `pytest-recording` (VCR) cassettes                     | Real one-time recording, replay in CI                |
 | End-to-end       | Manual via the smoke script in §11                     | Pre-release checklist                                |
 
-CI: GitHub Actions matrix on `linux-64`, `pixi install && pixi run test`.
+CI: GitHub Actions on `ubuntu-22.04`, `pixi install && pixi run test`.
 
 ---
 

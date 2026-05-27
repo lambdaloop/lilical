@@ -1,7 +1,7 @@
 """Diagnostic: query Graph directly and print event info for a given subject term.
 
 Usage:
-    pixi run -e dev python tools/diagnose_graph_series.py "Katie / Lili"
+    pixi run python tools/diagnose_graph_series.py "Katie / Lili"
 
 Loads the Graph account from the lilical DB + keyring (same path as the
 running app) and prints:
