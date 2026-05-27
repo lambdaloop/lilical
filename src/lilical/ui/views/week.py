@@ -1330,7 +1330,7 @@ class WeekView(QGraphicsView):
             self._inspector.show_event(popover_event, notes)
         elif popover_event.title_elided:
             self._pending_tooltip_event = popover_event
-            self._tooltip_timer.start(300)
+            self._tooltip_timer.start(750)
 
     def _show_delayed_event_tooltip(self) -> None:
         ev = self._pending_tooltip_event
