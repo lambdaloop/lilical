@@ -11,7 +11,7 @@ import urllib.parse
 import zoneinfo
 from collections.abc import AsyncIterator
 from datetime import date as _date_cls
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -664,12 +664,15 @@ class GoogleBackend:
     async def initial_sync(
         self, calendar_id: str
     ) -> AsyncIterator[tuple[list[EventChange], SyncCursor]]:
+        now = datetime.now(timezone.utc)
         async for batch, cursor in self._drain_list(
             calendar_id,
             {
                 "singleEvents": "false",
                 "showDeleted": "true",
                 "maxResults": "2500",
+                "timeMin": (now - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timeMax": (now + timedelta(days=730)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "fields": _EVENTS_LIST_FIELDS,
             },
         ):

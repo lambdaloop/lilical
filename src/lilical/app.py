@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import qasync  # type: ignore[reportMissingTypeStubs]
 from PySide6.QtCore import QTimer
@@ -59,6 +60,8 @@ def main() -> int:
 
     loop = qasync.QEventLoop(qt_app)
     asyncio.set_event_loop(loop)
+    # Increase thread pool so sync writes don't starve UI view refreshes.
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=16))
 
     db_engine = open_engine(config.db_path)
     ensure_schema(db_engine)

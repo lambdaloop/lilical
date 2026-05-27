@@ -103,18 +103,17 @@ class SyncEngine(QObject):
 
     async def _run_account(self, account) -> None:
         backend = await asyncio.to_thread(self._factory, account)
-        wake = self._wake_events[account.id] = asyncio.Event()
-        delay = 0
+        wake = self._wake_events.setdefault(account.id, asyncio.Event())
+        delay = 2  # small grace period before first sync so UI settles
         try:
             while True:
-                if delay:
-                    with contextlib.suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(wake.wait(), timeout=delay)
-                else:
-                    await asyncio.sleep(0)
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=delay)
                 wake.clear()
                 try:
                     await self._tick(account, backend)
+                    # Yield so UI coroutines can process between ticks.
+                    await asyncio.sleep(0)
                     delay = 300
                 except CursorExpired as e:
                     await self._full_resync(account, backend, e.calendar_id)
@@ -283,9 +282,12 @@ class SyncEngine(QObject):
                     cal.id,
                     changes,
                     json.dumps(new_cur.to_json()),
+                    rebuild_batch_size=0,
                 )
                 cal_count += applied
                 self.sync_progress.emit(account_id, cal.display_name, cal_count)
+                # Yield so the event loop can process UI tasks between pages.
+                await asyncio.sleep(0)
         except BaseException:
             fetch.cancel()
             with contextlib.suppress(BaseException):
@@ -416,12 +418,24 @@ class SyncEngine(QObject):
     async def _harvest_contacts(self, account_id: str, contact_store) -> None:
 
         cals = await asyncio.to_thread(self._store.list_calendars, account_id, False)
+        if not cals:
+            return
+        pairs = await asyncio.to_thread(self._gather_harvest_pairs, cals)
+        if pairs:
+            await asyncio.to_thread(contact_store.upsert_harvested, account_id, pairs)
+
+    def _gather_harvest_pairs(
+        self, cals
+    ) -> list[tuple[str, str | None]]:
+        """Synchronous — runs in a thread to avoid blocking the event loop."""
+        import json as _j
+
+        from sqlalchemy.orm import Session
+
+        from lilical.models.event import EventRow
+
         pairs: list[tuple[str, str | None]] = []
         for cal in cals:
-            from sqlalchemy.orm import Session
-
-            from lilical.models.event import EventRow
-
             with Session(self._store._engine) as s:
                 rows = (
                     s.query(EventRow)
@@ -430,8 +444,6 @@ class SyncEngine(QObject):
                 )
             for row in rows:
                 if row.attendees:
-                    import json as _j
-
                     try:
                         for a in _j.loads(row.attendees):
                             if isinstance(a, dict) and a.get("email"):
@@ -439,16 +451,13 @@ class SyncEngine(QObject):
                     except Exception:
                         pass
                 if row.organizer:
-                    import json as _j
-
                     try:
                         o = _j.loads(row.organizer)
                         if isinstance(o, dict) and o.get("email"):
                             pairs.append((o["email"], o.get("display_name")))
                     except Exception:
                         pass
-        if pairs:
-            await asyncio.to_thread(contact_store.upsert_harvested, account_id, pairs)
+        return pairs
 
     async def _full_resync(self, account, backend, calendar_id: str) -> None:
         log.info("full resync for %s / %s", account.id, calendar_id)

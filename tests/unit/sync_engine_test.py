@@ -53,7 +53,9 @@ class FakeStore:
             )
         ]
 
-    def apply_remote_changes(self, calendar_id: str, changes: list, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id: str, changes: list, new_cursor, **kwargs
+    ) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return len(changes)
 
@@ -84,7 +86,9 @@ class FakeStoreMultiCal:
             ),
         ]
 
-    def apply_remote_changes(self, calendar_id: str, changes: list, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id: str, changes: list, new_cursor, **kwargs
+    ) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return len(changes)
 
@@ -233,7 +237,7 @@ async def test_run_account_removes_task_on_cursor_expired_then_auth_expired() ->
     engine._tasks["acc-cursor"] = asyncio.create_task(run_and_signal(account))
 
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(sighup.wait(), timeout=0.5)
+        await asyncio.wait_for(sighup.wait(), timeout=2.5)
 
     assert resync_called
     engine._tasks["acc-cursor"].cancel()
@@ -419,7 +423,9 @@ async def test_tick_with_cursor_expired_propagates_to_run_account() -> None:
     engine._full_resync = tracking_resync
 
     account = SimpleNamespace(id="acc-cursor2")
+    engine._wake_events[account.id] = asyncio.Event()
     engine._tasks[account.id] = asyncio.create_task(engine._run_account(account))
+    engine._wake_events[account.id].set()
     await asyncio.sleep(0.1)
 
     assert "cal-1" in resync_calendar_ids
@@ -447,7 +453,9 @@ class _RecordingStore:
         self.calls.append(f"list_calendars({account_id})")
         return self.calendars
 
-    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id, changes, new_cursor, **kwargs
+    ) -> int:
         self.calls.append(f"apply({calendar_id},n={len(changes)})")
         return len(changes)
 
@@ -621,7 +629,7 @@ async def test_run_account_emits_sync_failed_on_transient_error() -> None:
     # for one iteration via the wake event then cancel.
     engine._wake_events["acc-1"] = asyncio.Event()
     task = asyncio.create_task(engine._run_account(SimpleNamespace(id="acc-1")))
-    # Give it a tick to run.
+    engine._wake_events["acc-1"].set()
     await asyncio.sleep(0.05)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -662,7 +670,9 @@ class _PendingOpStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return []
 
-    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id, changes, new_cursor, **kwargs
+    ) -> int:
         return 0
 
     def upsert_calendars(self, account_id: str, calendars: list) -> None:
@@ -1113,7 +1123,9 @@ class _MultiAccountStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return []
 
-    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id, changes, new_cursor, **kwargs
+    ) -> int:
         return 0
 
     def upsert_calendars(self, account_id: str, calendars: list) -> None:
@@ -1262,6 +1274,7 @@ async def test_tick_bare_exception_emits_sync_failed() -> None:
 
     engine._wake_events["acc-1"] = asyncio.Event()
     task = asyncio.create_task(engine._run_account(SimpleNamespace(id="acc-1")))
+    engine._wake_events["acc-1"].set()
     await asyncio.sleep(0.05)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1307,7 +1320,9 @@ class _IncrementalStore:
             )
         ]
 
-    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id, changes, new_cursor, **kwargs
+    ) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return 0
 
@@ -1373,7 +1388,9 @@ class _FailingCalStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return self.calendars
 
-    def apply_remote_changes(self, calendar_id, changes, new_cursor) -> int:
+    def apply_remote_changes(
+        self, calendar_id, changes, new_cursor, **kwargs
+    ) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return len(changes)
 
