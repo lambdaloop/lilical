@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import override
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView, QSizePolicy
 
 from lilical.storage.event_store import EventStore
@@ -23,6 +23,7 @@ from lilical.ui.widgets._popover_rows import (
 from lilical.ui.widgets.day_events_popover import DayEventsPopover
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.ui.widgets.event_tooltip import EventTooltip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -751,6 +752,8 @@ class WeekView(QGraphicsView):
         self._band_show_timer.timeout.connect(self._show_band_popover)
         # Right-side inspector pane (None in standalone tests).
         self._inspector = inspector
+        # Lightweight tooltip shown when inspector is toggled off.
+        self._tooltip = EventTooltip()
         self._rendered_start: date | None = None
         self._needs_scroll: bool = True
         self._completed_enabled: bool = False
@@ -1304,10 +1307,13 @@ class WeekView(QGraphicsView):
     # ── Inspector pane (hover → right-side details panel) ────────────────
 
     def _on_event_hovered(self, popover_event: PopoverEvent, notes: str | None) -> None:
-        if self._inspector is not None:
+        if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
+        else:
+            self._tooltip.show_event(popover_event, notes, QCursor.pos())
 
     def _on_event_hover_left(self) -> None:
+        self._tooltip.hide_tooltip()
         if self._inspector is not None:
             self._inspector.clear()
 
@@ -1327,7 +1333,10 @@ class WeekView(QGraphicsView):
             (pe for pe in popover_events if pe.uid == primary_uid),
             popover_events[0],
         )
-        self._inspector.show_cluster(primary, popover_events)
+        if self._inspector.isVisible():
+            self._inspector.show_cluster(primary, popover_events)
+        else:
+            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
 
     def _on_cluster_bar_hovered(
         self, ev_dict: dict, cluster: LineCluster
@@ -1343,7 +1352,10 @@ class WeekView(QGraphicsView):
             (pe for pe in popover_events if pe.uid == bar_uid),
             popover_events[0],
         )
-        self._inspector.show_cluster(primary, popover_events)
+        if self._inspector.isVisible():
+            self._inspector.show_cluster(primary, popover_events)
+        else:
+            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
 
     # ── Drag geometry helpers ─────────────────────────────────────────────
 

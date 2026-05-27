@@ -484,6 +484,14 @@ class MainWindow(QMainWindow):
         tb.addWidget(right_spacer)
         tb.addSeparator()
 
+        self._inspector_toggle_btn = QToolButton()
+        self._inspector_toggle_btn.setText("◫")
+        self._inspector_toggle_btn.setToolTip("Toggle inspector  (Ctrl+I)")
+        self._inspector_toggle_btn.setCheckable(True)
+        self._inspector_toggle_btn.setChecked(True)
+        self._inspector_toggle_btn.clicked.connect(self._toggle_inspector)
+        tb.addWidget(self._inspector_toggle_btn)
+
         prefs_btn = QToolButton()
         prefs_btn.setText("⚙")
         prefs_btn.setToolTip("Settings  (Ctrl+,)")
@@ -576,6 +584,9 @@ class MainWindow(QMainWindow):
         sc("Ctrl++", self._zoom_in)
         sc("Ctrl+-", self._zoom_out)
         sc("Ctrl+0", self._zoom_reset)
+
+        # Inspector toggle
+        sc("Ctrl+I", self._toggle_inspector)
 
         # Escape: close any open dialog (Qt dialogs handle this; also hide if minimised)
         sc("Escape", self._on_escape)
@@ -925,6 +936,11 @@ class MainWindow(QMainWindow):
 
     # ── Full-screen / escape ──────────────────────────────────────────────
 
+    def _toggle_inspector(self) -> None:
+        visible = not self._inspector.isVisible()
+        self._inspector.setVisible(visible)
+        self._inspector_toggle_btn.setChecked(visible)
+
     def _toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
@@ -955,6 +971,7 @@ class MainWindow(QMainWindow):
             "Ctrl+0        Reset zoom\n"
             "Ctrl+scroll   Vertical zoom (Week/Day)\n"
             "F11           Toggle full-screen\n"
+            "Ctrl+I        Toggle inspector\n"
             "?             This help\n"
         )
         QMessageBox.information(self, "Keyboard shortcuts", help_text)

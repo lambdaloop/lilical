@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import override
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsScene,
@@ -31,6 +31,7 @@ from lilical.ui.widgets._popover_rows import (
 )
 from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.ui.widgets.event_tooltip import EventTooltip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
 from lilical.utils.timezone import local_iana_tz, local_zoneinfo
@@ -625,6 +626,7 @@ class _DayCanvas(QGraphicsView):
         self._cached_data: dict | None = None
         self._day = day
         self._inspector = inspector
+        self._tooltip = EventTooltip()
         self._px_per_hour = DEFAULT_PX_PER_HOUR
         self._chip_mode: ChipMode = ChipMode.BARS
         self._time_format: str = "24h"
@@ -1029,10 +1031,13 @@ class _DayCanvas(QGraphicsView):
     # ── Inspector pane (hover → right-side details panel) ────────────────
 
     def _on_event_hovered(self, popover_event: PopoverEvent, notes: str | None) -> None:
-        if self._inspector is not None:
+        if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
+        else:
+            self._tooltip.show_event(popover_event, notes, QCursor.pos())
 
     def _on_event_hover_left(self) -> None:
+        self._tooltip.hide_tooltip()
         if self._inspector is not None:
             self._inspector.clear()
 
@@ -1052,7 +1057,10 @@ class _DayCanvas(QGraphicsView):
             (pe for pe in popover_events if pe.uid == primary_uid),
             popover_events[0],
         )
-        self._inspector.show_cluster(primary, popover_events)
+        if self._inspector.isVisible():
+            self._inspector.show_cluster(primary, popover_events)
+        else:
+            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
 
     def _on_cluster_bar_hovered(
         self, ev_dict: dict, cluster: LineCluster
@@ -1068,7 +1076,10 @@ class _DayCanvas(QGraphicsView):
             (pe for pe in popover_events if pe.uid == bar_uid),
             popover_events[0],
         )
-        self._inspector.show_cluster(primary, popover_events)
+        if self._inspector.isVisible():
+            self._inspector.show_cluster(primary, popover_events)
+        else:
+            self._tooltip.show_cluster(primary, popover_events, QCursor.pos())
 
     def _on_toggle_complete_requested(
         self, inst_key: tuple[str, str, int], completed: bool
