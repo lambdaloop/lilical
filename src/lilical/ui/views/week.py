@@ -755,6 +755,13 @@ class WeekView(QGraphicsView):
         self._band_show_timer = QTimer(self)
         self._band_show_timer.setSingleShot(True)
         self._band_show_timer.timeout.connect(self._show_band_popover)
+
+        # Delayed tooltip for event chips with clipped titles (cluster bars instant).
+        self._tooltip_timer = QTimer(self)
+        self._tooltip_timer.setSingleShot(True)
+        self._tooltip_timer.timeout.connect(self._show_delayed_event_tooltip)
+        self._pending_tooltip_event: PopoverEvent | None = None
+
         # Right-side inspector pane (None in standalone tests).
         self._inspector = inspector
         self._rendered_start: date | None = None
@@ -1318,16 +1325,25 @@ class WeekView(QGraphicsView):
     # ── Inspector pane (hover → right-side details panel) ────────────────
 
     def _on_event_hovered(self, popover_event: PopoverEvent, notes: str | None) -> None:
+        self._tooltip_timer.stop()
         if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
         elif popover_event.title_elided:
+            self._pending_tooltip_event = popover_event
+            self._tooltip_timer.start(300)
+
+    def _show_delayed_event_tooltip(self) -> None:
+        ev = self._pending_tooltip_event
+        if ev is not None:
             QToolTip.showText(
                 QCursor.pos(),
-                f"{popover_event.time_str}\n{popover_event.title}",
+                f"{ev.time_str}\n{ev.title}",
                 self.viewport(),
             )
 
     def _on_event_hover_left(self) -> None:
+        self._tooltip_timer.stop()
+        self._pending_tooltip_event = None
         QToolTip.hideText()
         if self._inspector is not None:
             self._inspector.clear()
