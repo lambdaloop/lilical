@@ -86,6 +86,17 @@ def _ellipsize(painter: QPainter, text: str, max_w: float) -> str:
     return fm.elidedText(text, Qt.TextElideMode.ElideRight, max_w)
 
 
+def _text_fits_rect(text: str, font: QFont, width: float, max_height: float) -> bool:
+    """True when *text* fits completely when word-wrapped into the given rect."""
+    fm = QFontMetricsF(font)
+    natural = fm.boundingRect(
+        QRectF(0, 0, width, 10000),
+        int(Qt.TextFlag.TextWordWrap),
+        text,
+    )
+    return natural.height() <= max_height
+
+
 
 def _coerce_dt(value: object) -> datetime | None:
     if isinstance(value, datetime):
@@ -177,6 +188,7 @@ class EventChip(QGraphicsObject):
         self._continues_left = continues_left
         self._continues_right = continues_right
         self._hovered = False
+        self._title_elided = True
         self._instance_dtstart = instance_dtstart
         self._completed: bool = completed
         self._inst_key: tuple[str, str, int] | None = inst_key
@@ -396,6 +408,7 @@ class EventChip(QGraphicsObject):
         h = self._rect.height()
         if h < min_title:
             # Tier 0: no text. Tooltip carries info.
+            self._title_elided = True
             self._draw_continuation_glyphs(painter, text_color)
             return
 
@@ -459,6 +472,9 @@ class EventChip(QGraphicsObject):
                 max(title_fm.height(), available - loc_reserved),
             )
             painter.setFont(title_font)
+            self._title_elided = not _text_fits_rect(
+                title, title_font, text_w, title_rect.height()
+            )
             draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
@@ -517,11 +533,15 @@ class EventChip(QGraphicsObject):
             if remaining_w > 4.0:
                 painter.setFont(title_font)
                 painter.setPen(text_color)
+                elided = _ellipsize(painter, title, remaining_w)
+                self._title_elided = elided != title
                 painter.drawText(
                     QRectF(title_x, cursor_y, remaining_w, title_fm.height()),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    _ellipsize(painter, title, remaining_w),
+                    elided,
                 )
+            else:
+                self._title_elided = True
 
         painter.setClipping(False)
         self._draw_recurrence_glyph(painter, text_color, min_title)
@@ -566,6 +586,7 @@ class EventChip(QGraphicsObject):
 
         h = self._rect.height()
         if h < min_title:
+            self._title_elided = True
             return
 
         pad_l = _bar_w + 5  # bar + 2 px gap + 3 px body pad
@@ -628,6 +649,9 @@ class EventChip(QGraphicsObject):
             )
             painter.setFont(title_font)
             painter.setPen(text_color)
+            self._title_elided = not _text_fits_rect(
+                title, title_font, text_w, title_rect.height()
+            )
             draw_tight_wrapped(painter, title, title_font, title_rect)
 
             if show_location:
@@ -684,11 +708,15 @@ class EventChip(QGraphicsObject):
             if remaining_w > 4.0:
                 painter.setFont(title_font)
                 painter.setPen(text_color)
+                elided = _ellipsize(painter, title, remaining_w)
+                self._title_elided = elided != title
                 painter.drawText(
                     QRectF(title_x, cursor_y, remaining_w, title_fm.height()),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                    _ellipsize(painter, title, remaining_w),
+                    elided,
                 )
+            else:
+                self._title_elided = True
 
         painter.setClipping(False)
         self._draw_recurrence_glyph(painter, text_color, min_title)
@@ -715,11 +743,13 @@ class EventChip(QGraphicsObject):
         if self._is_dimmed():
             dot_font.setStrikeOut(True)
         painter.setFont(dot_font)
+        title = self._event.summary or "(no title)"
         painter.drawText(
             QRectF(text_x, self._rect.y(), text_w, self._rect.height()),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            _ellipsize(painter, self._event.summary or "(no title)", text_w),
+            _ellipsize(painter, title, text_w),
         )
+        self._title_elided = _ellipsize(painter, title, text_w) != title
 
     # ── Continuation arrows for multi-day spans ──────────────────────────
     def _draw_continuation_glyphs(self, painter: QPainter, fg: QColor) -> None:
@@ -813,6 +843,7 @@ class EventChip(QGraphicsObject):
             calendar_color=self._calendar_color,
             uid=self._event.uid or None,
             calendar_id=self._event.calendar_id or None,
+            title_elided=self._title_elided,
         )
 
     # ── Interactivity ────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ class PopoverEvent(NamedTuple):
     calendar_color: str | None
     uid: str | None = None        # propagated so views can look up the source event
     calendar_id: str | None = None  # used by inspector to resolve calendar name
+    title_elided: bool = True  # True when the chip couldn't show the full title
 
 
 def cluster_events_to_popover_events(

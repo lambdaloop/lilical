@@ -302,6 +302,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([240, 760, 200])
         splitter.setChildrenCollapsible(False)
+        self._inspector.setVisible(False)
         main_layout.addWidget(splitter)
 
         # ── Status bar ─────────────────────────────────────────────────────
@@ -488,7 +489,7 @@ class MainWindow(QMainWindow):
         self._inspector_toggle_btn.setText("◫")
         self._inspector_toggle_btn.setToolTip("Toggle inspector  (Ctrl+I)")
         self._inspector_toggle_btn.setCheckable(True)
-        self._inspector_toggle_btn.setChecked(True)
+        self._inspector_toggle_btn.setChecked(False)
         self._inspector_toggle_btn.clicked.connect(self._toggle_inspector)
         tb.addWidget(self._inspector_toggle_btn)
 

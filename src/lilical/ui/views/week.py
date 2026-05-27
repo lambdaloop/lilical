@@ -1320,7 +1320,7 @@ class WeekView(QGraphicsView):
     def _on_event_hovered(self, popover_event: PopoverEvent, notes: str | None) -> None:
         if self._inspector is not None and self._inspector.isVisible():
             self._inspector.show_event(popover_event, notes)
-        else:
+        elif popover_event.title_elided:
             QToolTip.showText(
                 QCursor.pos(),
                 f"{popover_event.time_str}\n{popover_event.title}",
