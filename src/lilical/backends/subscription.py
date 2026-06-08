@@ -293,6 +293,7 @@ class SubscriptionBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         event: Event,
+        if_match: str | None = None,
     ) -> None:
         raise _read_only_error()
 
@@ -301,6 +302,7 @@ class SubscriptionBackend:
         calendar_id: str,
         master_provider_id: str,
         recurrence_id_dt: datetime,
+        if_match: str | None = None,
     ) -> None:
         raise _read_only_error()
 

@@ -697,6 +697,11 @@ class _PendingOpStore:
         # simulate "never synced" override this per-instance.
         return SimpleNamespace(provider_event_id=uid, etag='"mock-etag"')
 
+    def get_override_etag(
+        self, uid: str, calendar_id: str, recurrence_id_str: str
+    ) -> str | None:
+        return None
+
     def get_pending_op(self, op_id: int):
         return None
 
@@ -940,8 +945,12 @@ async def test_tick_dispatches_update_instance_op_to_backend() -> None:
             super().__init__()
             self.instance_updates: list = []
 
-        async def update_instance(self, calendar_id, master_pid, rid, event):
-            self.instance_updates.append((calendar_id, master_pid, rid, event))
+        async def update_instance(
+            self, calendar_id, master_pid, rid, event, if_match=None
+        ):
+            self.instance_updates.append(
+                (calendar_id, master_pid, rid, event, if_match)
+            )
 
     class _InstanceOpStore(_PendingOpStore):
         def get_event(self, uid, calendar_id):
@@ -970,7 +979,7 @@ async def test_tick_dispatches_update_instance_op_to_backend() -> None:
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
     assert len(backend.instance_updates) == 1
-    cal_id, mpid, rid, _ev = backend.instance_updates[0]
+    cal_id, mpid, rid, _ev, _if_match = backend.instance_updates[0]
     assert cal_id == "cal-1"
     assert mpid == "AAMk-master"
     assert rid == recurrence_id
@@ -997,7 +1006,7 @@ async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
             super().__init__()
             self.instance_deletes: list = []
 
-        async def delete_instance(self, calendar_id, master_pid, rid):
+        async def delete_instance(self, calendar_id, master_pid, rid, if_match=None):
             self.instance_deletes.append((calendar_id, master_pid, rid))
 
     class _InstanceOpStore(_PendingOpStore):

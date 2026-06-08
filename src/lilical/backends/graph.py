@@ -1441,11 +1441,35 @@ class GraphBackend:
         master_provider_id: str,
         recurrence_id_dt: "datetime",
         event: Event,
+        if_match: str | None = None,
     ) -> None:
         """Update a single occurrence of a recurring series.
 
         Resolves the Graph occurrence id by listing instances around the
-        recurrence_id datetime, then PATCHes that specific occurrence.
+        recurrence_id datetime, then PATCHes that specific occurrence. Sends
+        If-Match (the override's etag) to avoid clobbering a concurrent edit.
+        """
+        instance_id, instance_etag = await self._resolve_instance(
+            master_provider_id, recurrence_id_dt
+        )
+        etag = if_match or instance_etag
+        headers = {"If-Match": etag} if etag else None
+        await self._request(
+            "PATCH",
+            f"/me/events/{instance_id}",
+            json_body=_event_to_graph_json(event),
+            headers=headers,
+        )
+
+    async def _resolve_instance(
+        self,
+        master_provider_id: str,
+        recurrence_id_dt: "datetime",
+    ) -> tuple[str, str | None]:
+        """Find the Graph occurrence id (and etag) for a recurrence slot.
+
+        Lists instances around recurrence_id_dt and matches within 5 minutes.
+        Raises PermanentError if no occurrence is found.
         """
         from datetime import timedelta
 
@@ -1462,7 +1486,6 @@ class GraphBackend:
             f"&$select=id,start",
         )
         items = resp.json().get("value", [])
-        instance_id: str | None = None
         for item in items:
             start_part = item.get("start") or {}
             start_raw = start_part.get("dateTime", "")
@@ -1480,16 +1503,11 @@ class GraphBackend:
                 except ValueError:
                     continue
             if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
-                instance_id = item.get("id")
-                break
-        if not instance_id:
-            raise PermanentError(
-                f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
-            )
-        await self._request(
-            "PATCH",
-            f"/me/events/{instance_id}",
-            json_body=_event_to_graph_json(event),
+                return cast("str", item.get("id")), cast(
+                    "str | None", item.get("@odata.etag")
+                )
+        raise PermanentError(
+            f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
         )
 
     @_classify_errors
@@ -1520,48 +1538,19 @@ class GraphBackend:
         calendar_id: str,
         master_provider_id: str,
         recurrence_id_dt: "datetime",
+        if_match: str | None = None,
     ) -> None:
-        """Cancel a single occurrence of a recurring series."""
-        from datetime import timedelta
+        """Cancel a single occurrence of a recurring series.
 
-        # Build the lookup window in true UTC. recurrence_id_dt may be tz-aware
-        # in any zone; stamping its wall-clock as "Z" would mislabel the window
-        # and miss the occurrence for UTC-positive offsets.
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        win_start = (rid_utc - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        resp = await self._request(
-            "GET",
-            f"/me/events/{master_provider_id}/instances"
-            f"?startDateTime={win_start}&endDateTime={win_end}"
-            f"&$select=id,start",
+        Sends If-Match (the override's etag) to avoid clobbering a concurrent
+        server-side edit to that occurrence.
+        """
+        instance_id, instance_etag = await self._resolve_instance(
+            master_provider_id, recurrence_id_dt
         )
-        items = resp.json().get("value", [])
-        instance_id: str | None = None
-        for item in items:
-            start_part = item.get("start") or {}
-            start_raw = start_part.get("dateTime", "")
-            item_tz_name = start_part.get("timeZone") or "UTC"
-            try:
-                import zoneinfo as _zi
-
-                item_tz = _zi.ZoneInfo(item_tz_name)
-                item_dt = datetime.fromisoformat(start_raw).replace(tzinfo=item_tz)
-            except Exception:
-                try:
-                    item_dt = datetime.fromisoformat(start_raw.rstrip("Z")).replace(
-                        tzinfo=timezone.utc
-                    )
-                except ValueError:
-                    continue
-            if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
-                instance_id = item.get("id")
-                break
-        if not instance_id:
-            raise PermanentError(
-                f"Could not find Graph occurrence for {recurrence_id_dt.isoformat()}"
-            )
-        await self._request("DELETE", f"/me/events/{instance_id}")
+        etag = if_match or instance_etag
+        headers = {"If-Match": etag} if etag else None
+        await self._request("DELETE", f"/me/events/{instance_id}", headers=headers)
 
     def supported_contact_sources(self) -> tuple[str, ...]:
         if self._include_contacts:

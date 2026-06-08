@@ -362,6 +362,26 @@ class EventStore(QObject):
                 return None
             return _row_to_event(row)
 
+    def get_override_etag(
+        self, uid: str, calendar_id: str, recurrence_id_str: str
+    ) -> str | None:
+        """Return the stored etag of an override row, or None if absent.
+
+        Used to send If-Match on per-occurrence writes so a concurrent server
+        edit to that occurrence isn't silently clobbered. Unlike
+        get_override_events this ignores deleted_locally, since delete_instance
+        needs the etag of the row it just tombstoned.
+        """
+        with Session(self._engine) as s:
+            row = (
+                s.query(EventRow)
+                .filter_by(
+                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
+                )
+                .first()
+            )
+            return row.etag if row else None
+
     def get_event_for_instance(self, inst: "EventInstanceRow") -> "Event | None":
         """Return the Event for a specific instance row.
 

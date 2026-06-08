@@ -1597,6 +1597,110 @@ async def test_delete_instance_matches_occurrence_in_utc_positive_timezone() -> 
 
 
 @pytest.mark.asyncio
+async def test_update_instance_sends_if_match_when_provided() -> None:
+    """A caller-supplied override etag must be sent as If-Match on the PATCH."""
+    from lilical.models.event import Event as _Event
+
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ",
+                "start": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"},
+            }
+        ]
+    }
+    patch_reqs: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "instances" in str(req.url):
+            return httpx.Response(200, json=instances_body)
+        if req.method == "PATCH":
+            patch_reqs.append(req)
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    event = _Event(uid="m@outlook.com", calendar_id="cal-1", summary="x")
+    await backend.update_instance(
+        "cal-1", "AAMk-master", recurrence_id_dt, event, if_match='W/"ov-etag"'
+    )
+
+    assert len(patch_reqs) == 1
+    assert patch_reqs[0].headers.get("If-Match") == 'W/"ov-etag"'
+
+
+@pytest.mark.asyncio
+async def test_update_instance_falls_back_to_instance_etag() -> None:
+    """With no caller etag, the occurrence's own @odata.etag is used as If-Match."""
+    from lilical.models.event import Event as _Event
+
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ",
+                "@odata.etag": 'W/"inst-etag"',
+                "start": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"},
+            }
+        ]
+    }
+    patch_reqs: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "instances" in str(req.url):
+            return httpx.Response(200, json=instances_body)
+        if req.method == "PATCH":
+            patch_reqs.append(req)
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    event = _Event(uid="m@outlook.com", calendar_id="cal-1", summary="x")
+    await backend.update_instance("cal-1", "AAMk-master", recurrence_id_dt, event)
+
+    assert len(patch_reqs) == 1
+    assert patch_reqs[0].headers.get("If-Match") == 'W/"inst-etag"'
+
+
+@pytest.mark.asyncio
+async def test_delete_instance_sends_if_match_when_provided() -> None:
+    """delete_instance sends the supplied override etag as If-Match on DELETE."""
+    recurrence_id_dt = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ",
+                "start": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"},
+            }
+        ]
+    }
+    delete_reqs: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "instances" in str(req.url):
+            return httpx.Response(200, json=instances_body)
+        if req.method == "DELETE":
+            delete_reqs.append(req)
+            return httpx.Response(204)
+        return httpx.Response(404, json={})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    await backend.delete_instance(
+        "cal-1", "AAMk-master", recurrence_id_dt, if_match='W/"ov-etag"'
+    )
+
+    assert len(delete_reqs) == 1
+    assert delete_reqs[0].headers.get("If-Match") == 'W/"ov-etag"'
+
+
+@pytest.mark.asyncio
 async def test_create_event_returns_uid_matching_delta() -> None:
     """create_event returns uid=data['id'] so it matches _graph_event_to_change."""
 

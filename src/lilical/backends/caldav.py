@@ -867,8 +867,13 @@ class CalDavBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         event: Event,
+        if_match: str | None = None,
     ) -> None:
-        """Update one occurrence: append a VEVENT override to the master VCALENDAR."""
+        """Update one occurrence: append a VEVENT override to the master VCALENDAR.
+
+        if_match is accepted for protocol parity; CalDAV edits the master object
+        in place via the library client and does not gate on the override etag.
+        """
         import dataclasses as _dc
 
         from lilical.backends._ical_serializer import (
@@ -922,8 +927,12 @@ class CalDavBackend:
         calendar_id: str,
         master_provider_id: str,
         recurrence_id_dt: datetime,
+        if_match: str | None = None,
     ) -> None:
-        """Delete a single occurrence by appending an EXDATE to the master VCALENDAR."""
+        """Delete a single occurrence by appending an EXDATE to the master VCALENDAR.
+
+        if_match accepted for protocol parity; not used by the CalDAV path.
+        """
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
         raw = await self._run(event_obj.get_data)

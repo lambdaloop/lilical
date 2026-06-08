@@ -773,7 +773,10 @@ class GoogleBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         event: Event,
+        if_match: str | None = None,
     ) -> None:
+        # if_match is accepted for protocol parity; Google's per-instance PATCH
+        # is keyed by recurringEventId+originalStartTime and not gated on etag.
         from lilical.backends._google_serializer import event_to_google_body
 
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
@@ -859,7 +862,9 @@ class GoogleBackend:
         calendar_id: str,
         master_provider_id: str,
         recurrence_id_dt: datetime,
+        if_match: str | None = None,
     ) -> None:
+        # if_match accepted for protocol parity; not used by Google here.
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         original_start = rid_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 

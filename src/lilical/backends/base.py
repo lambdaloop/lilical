@@ -100,6 +100,7 @@ class Backend(Protocol):
         master_provider_id: str,
         recurrence_id_dt: "datetime",
         event: Event,
+        if_match: str | None = None,
     ) -> None: ...
 
     async def delete_instance(
@@ -107,6 +108,7 @@ class Backend(Protocol):
         calendar_id: str,
         master_provider_id: str,
         recurrence_id_dt: "datetime",
+        if_match: str | None = None,
     ) -> None: ...
 
     async def respond_to_event(

@@ -205,8 +205,18 @@ class SyncEngine(QObject):
                 )
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
+                    override_etag = await asyncio.to_thread(
+                        self._store.get_override_etag,
+                        op.uid,
+                        op.calendar_id,
+                        event.recurrence_id.isoformat(),
+                    )
                     await backend.update_instance(
-                        provider_cal_id, master_pid, event.recurrence_id, event
+                        provider_cal_id,
+                        master_pid,
+                        event.recurrence_id,
+                        event,
+                        if_match=override_etag or event.etag,
                     )
                 else:
                     log.warning(
@@ -228,7 +238,15 @@ class SyncEngine(QObject):
                 )
                 master_pid = master.provider_event_id if master else None
                 if master_pid:
-                    await backend.delete_instance(provider_cal_id, master_pid, rid)
+                    override_etag = await asyncio.to_thread(
+                        self._store.get_override_etag,
+                        op.uid,
+                        op.calendar_id,
+                        rid_str,
+                    )
+                    await backend.delete_instance(
+                        provider_cal_id, master_pid, rid, if_match=override_etag
+                    )
                 else:
                     log.warning(
                         "delete_instance: no provider_event_id for master %s", op.uid
