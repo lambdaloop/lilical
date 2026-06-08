@@ -1392,12 +1392,12 @@ class GraphBackend:
         """
         from datetime import timedelta
 
-        win_start = (recurrence_id_dt - timedelta(minutes=1)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        win_end = (recurrence_id_dt + timedelta(hours=25)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        # Build the lookup window in true UTC. recurrence_id_dt may be tz-aware
+        # in any zone; stamping its wall-clock as "Z" would mislabel the window
+        # and miss the occurrence for UTC-positive offsets.
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
+        win_start = (rid_utc - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
         resp = await self._request(
             "GET",
             f"/me/events/{master_provider_id}/instances"
@@ -1406,7 +1406,6 @@ class GraphBackend:
         )
         items = resp.json().get("value", [])
         instance_id: str | None = None
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         for item in items:
             start_part = item.get("start") or {}
             start_raw = start_part.get("dateTime", "")
@@ -1468,12 +1467,12 @@ class GraphBackend:
         """Cancel a single occurrence of a recurring series."""
         from datetime import timedelta
 
-        win_start = (recurrence_id_dt - timedelta(minutes=1)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        win_end = (recurrence_id_dt + timedelta(hours=25)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        # Build the lookup window in true UTC. recurrence_id_dt may be tz-aware
+        # in any zone; stamping its wall-clock as "Z" would mislabel the window
+        # and miss the occurrence for UTC-positive offsets.
+        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
+        win_start = (rid_utc - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
         resp = await self._request(
             "GET",
             f"/me/events/{master_provider_id}/instances"
@@ -1482,7 +1481,6 @@ class GraphBackend:
         )
         items = resp.json().get("value", [])
         instance_id: str | None = None
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
         for item in items:
             start_part = item.get("start") or {}
             start_raw = start_part.get("dateTime", "")

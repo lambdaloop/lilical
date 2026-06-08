@@ -1390,6 +1390,105 @@ async def test_update_instance_matches_occurrence_in_non_utc_timezone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_instance_matches_occurrence_in_utc_positive_timezone() -> None:
+    """The /instances lookup window must be built in true UTC. For a UTC-positive
+    zone (Pacific/Auckland) the pre-fix code stamped local wall-clock as 'Z',
+    placing the window after the occurrence so nothing matched (false 404)."""
+    import zoneinfo
+
+    from lilical.models.event import Event as _Event
+
+    # 21:00 NZST (Pacific/Auckland, UTC+12) == 09:00 UTC.
+    nz = zoneinfo.ZoneInfo("Pacific/Auckland")
+    recurrence_id_dt = datetime(2026, 5, 20, 21, 0, tzinfo=nz)
+
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-nz",
+                "start": {
+                    "dateTime": "2026-05-20T21:00:00.0000000",
+                    "timeZone": "Pacific/Auckland",
+                },
+            }
+        ]
+    }
+    instance_urls: list[str] = []
+    patch_requests: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "instances" in url:
+            instance_urls.append(url)
+            return httpx.Response(200, json=instances_body)
+        if req.method == "PATCH":
+            patch_requests.append(url)
+            return httpx.Response(200, json={})
+        return httpx.Response(404, json={"error": "not found"})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    event = _Event(
+        uid="u-master@outlook.com",
+        calendar_id="cal-1",
+        summary="Updated standup",
+        dtstart=recurrence_id_dt,
+        dtend=datetime(2026, 5, 20, 21, 30, tzinfo=nz),
+    )
+    await backend.update_instance("cal-1", "AAMk-master", recurrence_id_dt, event)
+
+    # Window must be anchored on 09:00 UTC, not 21:00 mislabeled as Z.
+    assert instance_urls, "Expected an /instances GET"
+    assert "startDateTime=2026-05-20T08:59:00Z" in instance_urls[0], instance_urls[0]
+    assert len(patch_requests) == 1, "Expected one PATCH for the matched occurrence"
+    assert "AAMk-occ-nz" in patch_requests[0]
+
+
+@pytest.mark.asyncio
+async def test_delete_instance_matches_occurrence_in_utc_positive_timezone() -> None:
+    """delete_instance twin of the UTC-positive window test."""
+    import zoneinfo
+
+    nz = zoneinfo.ZoneInfo("Pacific/Auckland")
+    recurrence_id_dt = datetime(2026, 5, 20, 21, 0, tzinfo=nz)
+
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-nz",
+                "start": {
+                    "dateTime": "2026-05-20T21:00:00.0000000",
+                    "timeZone": "Pacific/Auckland",
+                },
+            }
+        ]
+    }
+    instance_urls: list[str] = []
+    delete_requests: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "instances" in url:
+            instance_urls.append(url)
+            return httpx.Response(200, json=instances_body)
+        if req.method == "DELETE":
+            delete_requests.append(url)
+            return httpx.Response(204)
+        return httpx.Response(404, json={"error": "not found"})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    await backend.delete_instance("cal-1", "AAMk-master", recurrence_id_dt)
+
+    assert instance_urls, "Expected an /instances GET"
+    assert "startDateTime=2026-05-20T08:59:00Z" in instance_urls[0], instance_urls[0]
+    assert len(delete_requests) == 1, "Expected one DELETE for the matched occurrence"
+    assert "AAMk-occ-nz" in delete_requests[0]
+
+
+@pytest.mark.asyncio
 async def test_create_event_returns_uid_matching_delta() -> None:
     """create_event returns uid=data['id'] so it matches _graph_event_to_change."""
 
