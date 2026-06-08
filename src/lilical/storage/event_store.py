@@ -619,7 +619,13 @@ class EventStore(QObject):
         """
         import uuid as _uuid
 
+        # The delete op belongs to the source calendar's account; the create op
+        # belongs to the *target* calendar's account. For a cross-account move
+        # these differ — using the old account for the create op makes the wrong
+        # backend try to push the event and fail (e.g. CalDAV PUT to a Graph
+        # calendar id -> 404).
         account_id = self._account_id_for_calendar(old_calendar_id)
+        new_account_id = self._account_id_for_calendar(new_calendar_id)
         new_uid = str(_uuid.uuid4())
         with self._write_session() as s:
             # Mark the old event as deleted
@@ -662,10 +668,10 @@ class EventStore(QObject):
             s.add(new_row)
             self._rebuild_instances_for(s, moved)
 
-            if account_id:
+            if new_account_id:
                 s.add(
                     PendingOpRow(
-                        account_id=account_id,
+                        account_id=new_account_id,
                         calendar_id=new_calendar_id,
                         uid=new_uid,
                         op="create",
