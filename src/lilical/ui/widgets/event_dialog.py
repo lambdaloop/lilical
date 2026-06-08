@@ -50,11 +50,19 @@ _EVENT_COLORS: list[tuple[str, str]] = [
 _IANA_ZONES: list[str] = sorted(zoneinfo.available_timezones())
 
 
-def _dt_to_qdatetime(dt: datetime | None) -> QDateTime:
+def _dt_to_qdatetime(dt: datetime | None, tz_name: str | None = None) -> QDateTime:
     if dt is None:
         dt = datetime.now(timezone.utc)
-    # Convert to local for display
-    local = dt.astimezone()
+    # Display the wall-clock in the given zone (the event's own zone), so the
+    # shown time matches the timezone selector. tz_name=None → system local,
+    # used for new events where there is no originating zone yet.
+    zone: zoneinfo.ZoneInfo | None = None
+    if tz_name:
+        try:
+            zone = zoneinfo.ZoneInfo(tz_name)
+        except Exception:
+            zone = None
+    local = dt.astimezone(zone)
     return QDateTime(
         QDate(local.year, local.month, local.day),
         QTime(local.hour, local.minute),
@@ -148,6 +156,15 @@ class EventDialog(QDialog):
             start_default = event.dtstart or start_default
             end_default = event.dtend or end_default
 
+        # Resolve the zone to display the wall-clock in. For an existing event
+        # this is its own zone, so the shown time matches the timezone selector
+        # and an untouched save is a no-op. New events fall back to local.
+        from lilical.utils.timezone import local_iana_tz
+
+        local_iana = local_iana_tz()
+        display_tz = (event.tz if event and event.tz else None) or local_iana
+        self._current_tz = display_tz
+
         _time_format = str(QSettings().value("time_format", "24h") or "24h")
         _is_12h = _time_format == "12h"
         _dt_fmt = "yyyy-MM-dd  h:mm AP" if _is_12h else "yyyy-MM-dd  HH:mm"
@@ -155,12 +172,12 @@ class EventDialog(QDialog):
         self._start_edit = QDateTimeEdit()
         self._start_edit.setDisplayFormat(_dt_fmt)
         self._start_edit.setCalendarPopup(True)
-        self._start_edit.setDateTime(_dt_to_qdatetime(start_default))
+        self._start_edit.setDateTime(_dt_to_qdatetime(start_default, display_tz))
 
         self._end_edit = QDateTimeEdit()
         self._end_edit.setDisplayFormat(_dt_fmt)
         self._end_edit.setCalendarPopup(True)
-        self._end_edit.setDateTime(_dt_to_qdatetime(end_default))
+        self._end_edit.setDateTime(_dt_to_qdatetime(end_default, display_tz))
 
         dt_row = QHBoxLayout()
         dt_row.addWidget(QLabel("Start:"))
@@ -179,10 +196,13 @@ class EventDialog(QDialog):
             self._end_edit.setDisplayFormat("yyyy-MM-dd")
             # dtend uses exclusive RFC 5545 convention (midnight of next day);
             # show the inclusive last day to the user
-            ed_local = end_default.astimezone() if end_default.tzinfo else end_default
+            if end_default.tzinfo:
+                ed_local = end_default.astimezone(zoneinfo.ZoneInfo(display_tz))
+            else:
+                ed_local = end_default
             if ed_local.hour == 0 and ed_local.minute == 0:
                 self._end_edit.setDateTime(
-                    _dt_to_qdatetime(end_default - timedelta(days=1))
+                    _dt_to_qdatetime(end_default - timedelta(days=1), display_tz)
                 )
 
         self._all_day_cb.toggled.connect(self._on_all_day_toggled)
@@ -190,16 +210,16 @@ class EventDialog(QDialog):
         # ── Timezone ───────────────────────────────────────────────────────────
         self._tz_combo = QComboBox()
         self._tz_combo.addItems(_IANA_ZONES)
-        from lilical.utils.timezone import local_iana_tz
-
-        local_iana = local_iana_tz()
-        default_tz = (event.tz if event and event.tz else None) or local_iana
-        if default_tz in _IANA_ZONES:
-            self._tz_combo.setCurrentText(default_tz)
+        if display_tz in _IANA_ZONES:
+            self._tz_combo.setCurrentText(display_tz)
         else:
             self._tz_combo.setCurrentText(
                 local_iana if local_iana in _IANA_ZONES else "UTC"
             )
+        # Sync _current_tz with whatever actually got selected (display_tz may
+        # not be a known IANA zone), then react to user changes.
+        self._current_tz = self._tz_combo.currentText()
+        self._tz_combo.currentTextChanged.connect(self._on_tz_changed)
         self._tz_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -347,6 +367,19 @@ class EventDialog(QDialog):
             fmt = "yyyy-MM-dd  h:mm AP" if _tf == "12h" else "yyyy-MM-dd  HH:mm"
         self._start_edit.setDisplayFormat(fmt)
         self._end_edit.setDisplayFormat(fmt)
+
+    def _on_tz_changed(self, new_tz: str) -> None:
+        # Re-display the Start/End fields at the same absolute instant in the
+        # newly selected zone. For all-day events the wall-clock is local
+        # midnight and has no instant to convert, so just track the zone.
+        if self._all_day_cb.isChecked():
+            self._current_tz = new_tz
+            return
+        old_tz = self._current_tz
+        for edit in (self._start_edit, self._end_edit):
+            instant = _qdatetime_to_dt(edit.dateTime(), old_tz)
+            edit.setDateTime(_dt_to_qdatetime(instant, new_tz))
+        self._current_tz = new_tz
 
     def _select_color(self, clicked_btn: "_ColorButton") -> None:
         for btn in self._color_buttons:

@@ -107,6 +107,78 @@ def test_build_event_includes_rrule(qapp):
     dialog.deleteLater()
 
 
+# ── cross-timezone edit round-trip ───────────────────────────────────────────
+
+
+@pytest.fixture
+def force_berlin_tz():
+    """Force the process-local zone to Europe/Berlin so cross-zone display is
+    exercised regardless of the host machine's timezone."""
+    import time
+
+    prev = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = prev
+        time.tzset()
+
+
+def _ny_event():
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    return _make_event(
+        dtstart=datetime(2026, 6, 8, 14, 30, tzinfo=ny),
+        dtend=datetime(2026, 6, 8, 15, 30, tzinfo=ny),
+        tz="America/New_York",
+    )
+
+
+def test_cross_tz_edit_no_op_save_does_not_move_event(qapp, force_berlin_tz):
+    """Opening a New York event on a Berlin machine and saving without edits
+    must preserve the exact instant and zone (regression: it used to shift)."""
+    event = _ny_event()
+    dialog = _make_dialog(qapp, event=event)
+    dialog._title_edit.setText("NY meeting")
+    built = dialog.build_event("uid-built")
+    assert built.tz == "America/New_York"
+    assert built.dtstart == event.dtstart
+    assert built.dtend == event.dtend
+    dialog.deleteLater()
+
+
+def test_cross_tz_edit_shows_event_local_wall_clock(qapp, force_berlin_tz):
+    """The Start field shows the event's own wall-clock (14:30 NY), not the
+    Berlin-converted time (20:30)."""
+    dialog = _make_dialog(qapp, event=_ny_event())
+    t = dialog._start_edit.dateTime().time()
+    assert (t.hour(), t.minute()) == (14, 30)
+    assert dialog._tz_combo.currentText() == "America/New_York"
+    dialog.deleteLater()
+
+
+def test_changing_tz_converts_to_same_instant(qapp, force_berlin_tz):
+    """Switching the zone selector re-displays the same absolute moment in the
+    new zone (14:30 NY -> 20:30 Berlin) and saves that instant under the new
+    zone."""
+    dialog = _make_dialog(qapp, event=_ny_event())
+    dialog._title_edit.setText("NY meeting")
+    dialog._tz_combo.setCurrentText("Europe/Berlin")
+    t = dialog._start_edit.dateTime().time()
+    assert (t.hour(), t.minute()) == (20, 30)
+    built = dialog.build_event("uid-built")
+    assert built.tz == "Europe/Berlin"
+    # Same absolute instant as the original NY start.
+    assert built.dtstart == _ny_event().dtstart
+    dialog.deleteLater()
+
+
 # ── read-only calendar exclusion in the picker ───────────────────────────────
 
 
