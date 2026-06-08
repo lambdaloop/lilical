@@ -54,12 +54,24 @@ def event_to_vcalendar(
     if event.rrule:
         # icalendar can parse RRULE strings directly
         ve.add("rrule", icalendar.vRecur.from_ical(event.rrule))
+    # EXDATE/RDATE/RECURRENCE-ID value types must match DTSTART (RFC 5545):
+    # DATE for all-day series, DATE-TIME otherwise. A mismatched type is
+    # ignored by many servers, so the exclusion/override silently fails.
     for exdate in event.exdates:
-        ve.add("exdate", exdate)
+        if event.all_day:
+            ve.add("exdate", exdate.date(), parameters={"VALUE": "DATE"})
+        else:
+            ve.add("exdate", exdate)
     for rdate in event.rdates:
-        ve.add("rdate", rdate)
+        if event.all_day:
+            ve.add("rdate", rdate.date(), parameters={"VALUE": "DATE"})
+        else:
+            ve.add("rdate", rdate)
     if event.recurrence_id is not None:
-        _add_dt_with_tzid(ve, "recurrence-id", event.recurrence_id, event.tz)
+        if event.all_day:
+            ve.add("recurrence-id", event.recurrence_id.date())
+        else:
+            _add_dt_with_tzid(ve, "recurrence-id", event.recurrence_id, event.tz)
 
     for att in event.attendees:
         attendee_val = icalendar.vCalAddress(f"mailto:{att.email}")

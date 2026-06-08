@@ -1330,3 +1330,182 @@ async def test_update_event_saves_and_returns_etag() -> None:
     assert result.etag == fake_etag
     # The uid, calendar_id, etc. are preserved from the input event
     assert result.uid == "test-upd"
+
+
+# ── per-occurrence (instance) ops ─────────────────────────────────────────────
+
+
+_VCAL_ALLDAY_MASTER = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//snail//
+BEGIN:VTIMEZONE
+TZID:America/New_York
+BEGIN:STANDARD
+DTSTART:20071104T020000
+TZOFFSETFROM:-0400
+TZOFFSETTO:-0500
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:allday-series@example.com
+DTSTAMP:20260101T000000Z
+DTSTART;VALUE=DATE:20260706
+DTEND;VALUE=DATE:20260707
+RRULE:FREQ=WEEKLY;COUNT=6;BYDAY=MO
+SUMMARY:All-day standup
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def _instance_resource(initial: str):
+    """Build fake resource + client classes capturing the conditional PUT.
+
+    The backend reads the master via CalendarObjectResource.load()/get_data()
+    and writes the rebuilt VCALENDAR via the low-level client.put(url, body,
+    headers) so it can send a real If-Match.
+    """
+    captured: dict[str, object] = {"data": None, "headers": None, "url": None}
+
+    class _FakeResource:
+        def __init__(self, url: str) -> None:
+            self._url = url
+
+        def load(self) -> None:
+            return None
+
+        def get_data(self) -> str:
+            return initial
+
+    class _FakeClient:
+        def put(self, url, body, headers=None):
+            captured["url"] = url
+            captured["data"] = body
+            captured["headers"] = headers
+
+    return _FakeResource, _FakeClient, captured
+
+
+def _wire_instance_backend(backend, fake_resource_cls, fake_client, _caldav) -> None:
+    _caldav.CalendarObjectResource = lambda client, url: fake_resource_cls(url)  # type: ignore[attr-defined]
+    backend._get_client = lambda: _aresult(fake_client)  # type: ignore[method-assign]
+    backend._run = lambda fn, *a, **kw: _aresult(fn(*a, **kw))  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_delete_instance_allday_emits_date_exdate() -> None:
+    """An all-day master must get a DATE-valued EXDATE; a DATE-TIME EXDATE is a
+    value-type mismatch many servers ignore, so the occurrence would reappear."""
+    import caldav as _caldav
+
+    fake_cls, fake_client_cls, captured = _instance_resource(_VCAL_ALLDAY_MASTER)
+    original = _caldav.CalendarObjectResource
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_instance_backend(backend, fake_cls, fake_client_cls(), _caldav)
+        rid = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        await backend.delete_instance(
+            "cal-1", "https://cal/1/series.ics", rid, if_match='"e"', all_day=True
+        )
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    data = captured["data"]
+    assert isinstance(data, str)
+    assert "EXDATE;VALUE=DATE:20260713" in data
+    assert "EXDATE:20260713T" not in data  # no DATE-TIME form
+    assert captured["headers"] == {"If-Match": '"e"'}
+
+
+@pytest.mark.asyncio
+async def test_update_instance_allday_override_is_date_valued() -> None:
+    """An all-day override's RECURRENCE-ID must be DATE-valued and the master's
+    PRODID/VTIMEZONE must survive the rewrite."""
+    import caldav as _caldav
+
+    from lilical.models.event import Event
+
+    fake_cls, fake_client_cls, captured = _instance_resource(_VCAL_ALLDAY_MASTER)
+    original = _caldav.CalendarObjectResource
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_instance_backend(backend, fake_cls, fake_client_cls(), _caldav)
+        rid = datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc)
+        override = Event(
+            uid="allday-series@example.com",
+            calendar_id="cal-1",
+            summary="Moved all-day standup",
+            dtstart=rid,
+            dtend=rid,
+            all_day=True,
+            recurrence_id=rid,
+        )
+        await backend.update_instance(
+            "cal-1", "https://cal/1/series.ics", rid, override, if_match='"e"'
+        )
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    data = captured["data"]
+    assert isinstance(data, str)
+    assert "RECURRENCE-ID;VALUE=DATE:20260713" in data
+    assert "PRODID:-//snail//" in data  # top-level props preserved
+    assert "BEGIN:VTIMEZONE" in data  # VTIMEZONE preserved
+    assert captured["headers"] == {"If-Match": '"e"'}
+
+
+@pytest.mark.asyncio
+async def test_update_instance_dedups_override_across_offsets() -> None:
+    """An existing override stored in a different UTC offset but the same instant
+    must be replaced, not duplicated."""
+    import caldav as _caldav
+
+    from lilical.models.event import Event
+
+    # Existing override at 2026-05-20T12:00:00-07:00 == 19:00Z.
+    master = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//snail//
+BEGIN:VEVENT
+UID:timed-series@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T190000Z
+RRULE:FREQ=WEEKLY;COUNT=6
+SUMMARY:Sync
+END:VEVENT
+BEGIN:VEVENT
+UID:timed-series@example.com
+DTSTAMP:20260101T000000Z
+RECURRENCE-ID;TZID=America/Los_Angeles:20260520T120000
+DTSTART:20260520T193000Z
+SUMMARY:Old override
+END:VEVENT
+END:VCALENDAR
+"""
+    fake_cls, fake_client_cls, captured = _instance_resource(master)
+    original = _caldav.CalendarObjectResource
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_instance_backend(backend, fake_cls, fake_client_cls(), _caldav)
+        # Same instant, expressed in UTC.
+        rid = datetime(2026, 5, 20, 19, 0, tzinfo=timezone.utc)
+        override = Event(
+            uid="timed-series@example.com",
+            calendar_id="cal-1",
+            summary="New override",
+            dtstart=rid,
+            dtend=rid,
+            recurrence_id=rid,
+        )
+        await backend.update_instance(
+            "cal-1", "https://cal/1/series.ics", rid, override
+        )
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    data = captured["data"]
+    assert isinstance(data, str)
+    # Exactly one override VEVENT (RECURRENCE-ID), the old one dropped.
+    assert data.count("RECURRENCE-ID") == 1
+    assert "New override" in data
+    assert "Old override" not in data

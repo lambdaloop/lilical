@@ -136,6 +136,23 @@ def _classify_errors(f):
         return wrapper_coro
 
 
+def _recurrence_id_matches(existing, target: datetime) -> bool:
+    """True if an existing RECURRENCE-ID refers to the same slot as `target`.
+
+    `existing` is an icalendar `.dt` value (a `date` for all-day overrides or a
+    `datetime` for timed ones); `target` is the requested recurrence_id. Timed
+    values are compared as instants (UTC) so an override stored in a different
+    UTC offset still matches; all-day values are compared by calendar date.
+    """
+    if isinstance(existing, datetime):
+        a = existing if existing.tzinfo else existing.replace(tzinfo=timezone.utc)
+        b = target if target.tzinfo else target.replace(tzinfo=timezone.utc)
+        return abs((a - b).total_seconds()) < 60
+    if isinstance(existing, _date_cls):
+        return existing == target.date()
+    return False
+
+
 def _normalise_dt(val, tzid_hint: str | None = None) -> datetime | None:
     """Coerce an icalendar `.dt` value (date or datetime) to a datetime.
 
@@ -871,8 +888,10 @@ class CalDavBackend:
     ) -> None:
         """Update one occurrence: append a VEVENT override to the master VCALENDAR.
 
-        if_match is accepted for protocol parity; CalDAV edits the master object
-        in place via the library client and does not gate on the override etag.
+        Drops any existing override for the same slot (matched by instant, not
+        wall-clock, so an override stored in a different offset is replaced
+        rather than duplicated) and preserves the master VCALENDAR's top-level
+        properties and VTIMEZONE definitions.
         """
         import dataclasses as _dc
 
@@ -882,26 +901,21 @@ class CalDavBackend:
 
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
+        # A freshly-constructed resource is unloaded; get_data returns empty
+        # until load() performs the GET.
+        await self._run(event_obj.load)
         raw = await self._run(event_obj.get_data)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
         master_cal = icalendar.Calendar.from_ical(raw)
-        # Find and remove any existing override for this recurrence-id
+        # Drop any existing override for this recurrence-id, keeping everything
+        # else (base VEVENT, VTIMEZONE, other overrides) intact.
         new_components = []
         for comp in master_cal.subcomponents:
             if comp.name == "VEVENT" and comp.get("RECURRENCE-ID") is not None:
                 rid = comp.get("RECURRENCE-ID")
                 rid_dt = rid.dt if hasattr(rid, "dt") else rid
-                if (
-                    isinstance(rid_dt, datetime)
-                    and abs(
-                        (
-                            rid_dt.replace(tzinfo=None)
-                            - recurrence_id_dt.replace(tzinfo=None)
-                        ).total_seconds()
-                    )
-                    < 60
-                ):
+                if _recurrence_id_matches(rid_dt, recurrence_id_dt):
                     continue  # drop old override
             new_components.append(comp)
 
@@ -911,15 +925,16 @@ class CalDavBackend:
         override_ve = next(
             (c for c in override_cal.subcomponents if c.name == "VEVENT"), None
         )
-
-        rebuilt = icalendar.Calendar()
-        for comp in new_components:
-            rebuilt.add_component(comp)
         if override_ve is not None:
-            rebuilt.add_component(override_ve)
+            new_components.append(override_ve)
 
-        event_obj.data = rebuilt.to_ical().decode()
-        await self._run(event_obj.save)
+        # Reuse master_cal so its PRODID/VERSION/CALSCALE survive the rewrite.
+        master_cal.subcomponents = new_components
+        body = master_cal.to_ical().decode()
+        # Write via a conditional PUT: the library's etag property is read-only,
+        # so If-Match has to go through the low-level client.
+        headers = {"If-Match": if_match} if if_match else None
+        await self._run(client.put, master_provider_id, body, headers)
 
     @_classify_errors
     async def delete_instance(
@@ -938,6 +953,9 @@ class CalDavBackend:
         """
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
+        # A freshly-constructed resource is unloaded; get_data returns empty
+        # until load() performs the GET.
+        await self._run(event_obj.load)
         raw = await self._run(event_obj.get_data)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
@@ -950,14 +968,19 @@ class CalDavBackend:
                     and not isinstance(getattr(base_dt, "dt", None), datetime)
                 )
                 if master_all_day:
-                    comp.add("exdate", recurrence_id_dt.date())
+                    # EXDATE defaults to DATE-TIME, so the VALUE=DATE parameter
+                    # is required for the exclusion to match an all-day occurrence.
+                    comp.add(
+                        "exdate",
+                        recurrence_id_dt.date(),
+                        parameters={"VALUE": "DATE"},
+                    )
                 else:
                     comp.add("exdate", recurrence_id_dt)
 
-        if if_match:
-            event_obj.etag = if_match
-        event_obj.data = master_cal.to_ical().decode()
-        await self._run(event_obj.save)
+        body = master_cal.to_ical().decode()
+        headers = {"If-Match": if_match} if if_match else None
+        await self._run(client.put, master_provider_id, body, headers)
 
     @_classify_errors
     async def respond_to_event(
@@ -980,6 +1003,9 @@ class CalDavBackend:
         event_obj = caldav.CalendarObjectResource(  # type: ignore[reportGeneralTypeIssues]
             client=client, url=event.provider_event_id
         )
+        # A freshly-constructed resource is unloaded; get_data returns empty
+        # until load() performs the GET.
+        await self._run(event_obj.load)
         raw = await self._run(event_obj.get_data)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
