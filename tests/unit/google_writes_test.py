@@ -277,3 +277,135 @@ def test_delete_event_uses_provider_event_id():
     assert req.method == "DELETE"
     assert "/events/pid-456" in req.url.path
     assert "sendUpdates=none" in str(req.url)
+
+
+# ── Per-occurrence (instance) ops ─────────────────────────────────────────────
+
+
+from zoneinfo import ZoneInfo  # noqa: E402
+
+
+def _instance_handler(captured, *, instance_etag='"inst-etag"'):
+    """Mock that answers the instances GET then the PATCH/DELETE."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        if req.method == "GET" and "/instances" in req.url.path:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"id": "master_20260311", "etag": instance_etag}]
+                },
+            )
+        # PATCH returns the instance body; DELETE returns 204
+        if req.method == "PATCH":
+            return httpx.Response(
+                200,
+                json={"iCalUID": "u", "id": "master_20260311", "etag": '"e"'},
+            )
+        return httpx.Response(204)
+
+    return handler
+
+
+def test_update_instance_allday_uses_date_originalstart():
+    captured: list[httpx.Request] = []
+    backend = _make_backend()
+    _attach_mock(backend, _instance_handler(captured))
+
+    rid = datetime(2026, 3, 11, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+    event = Event(
+        uid="m",
+        calendar_id="cal-1",
+        provider_event_id="master",
+        summary="Birthday",
+        dtstart=rid,
+        dtend=rid,
+        all_day=True,
+        recurrence_id=rid,
+    )
+
+    async def _run():
+        try:
+            await backend.update_instance("cal-1", "master", rid, event)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
+
+    get_req = next(r for r in captured if "/instances" in r.url.path)
+    # All-day: originalStart must be a bare date, never a Z dateTime.
+    assert get_req.url.params["originalStart"] == "2026-03-11"
+    patch_req = next(r for r in captured if r.method == "PATCH")
+    assert patch_req.headers.get("If-Match") == '"inst-etag"'
+
+
+def test_update_instance_timed_uses_utc_datetime_originalstart():
+    captured: list[httpx.Request] = []
+    backend = _make_backend()
+    _attach_mock(backend, _instance_handler(captured))
+
+    rid = datetime(2026, 3, 11, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+    event = Event(
+        uid="m",
+        calendar_id="cal-1",
+        provider_event_id="master",
+        summary="Standup",
+        dtstart=rid,
+        dtend=rid,
+        recurrence_id=rid,
+    )
+
+    async def _run():
+        try:
+            await backend.update_instance("cal-1", "master", rid, event)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
+
+    get_req = next(r for r in captured if "/instances" in r.url.path)
+    # Timed: NY 09:00 EDT == 13:00 UTC.
+    assert get_req.url.params["originalStart"] == "2026-03-11T13:00:00Z"
+
+
+def test_delete_instance_allday_uses_date_originalstart():
+    captured: list[httpx.Request] = []
+    backend = _make_backend()
+    _attach_mock(backend, _instance_handler(captured))
+
+    rid = datetime(2026, 3, 11, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    async def _run():
+        try:
+            await backend.delete_instance("cal-1", "master", rid, all_day=True)
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
+
+    get_req = next(r for r in captured if "/instances" in r.url.path)
+    assert get_req.url.params["originalStart"] == "2026-03-11"
+    del_req = next(r for r in captured if r.method == "DELETE")
+    assert del_req.headers.get("If-Match") == '"inst-etag"'
+
+
+def test_delete_event_sends_if_match_when_provided():
+    captured: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.append(req)
+        return httpx.Response(204)
+
+    backend = _make_backend()
+    _attach_mock(backend, handler)
+
+    async def _run():
+        try:
+            await backend.delete_event("cal-1", "pid-789", '"etag-9"')
+        finally:
+            await backend.aclose()
+
+    asyncio.run(_run())
+
+    assert captured[0].headers.get("If-Match") == '"etag-9"'

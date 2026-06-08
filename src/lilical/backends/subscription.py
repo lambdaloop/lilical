@@ -303,6 +303,7 @@ class SubscriptionBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         if_match: str | None = None,
+        all_day: bool = False,
     ) -> None:
         raise _read_only_error()
 

@@ -764,6 +764,7 @@ class GoogleBackend:
             "DELETE",
             f"/calendars/{encoded_cal}/events/{encoded_ev}",
             params={"sendUpdates": "none"},
+            headers={"If-Match": if_match} if if_match else None,
         )
 
     @_classify_errors
@@ -775,14 +776,44 @@ class GoogleBackend:
         event: Event,
         if_match: str | None = None,
     ) -> None:
-        # if_match is accepted for protocol parity; Google's per-instance PATCH
-        # is keyed by recurringEventId+originalStartTime and not gated on etag.
         from lilical.backends._google_serializer import event_to_google_body
 
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        original_start = rid_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
         encoded_cal = urllib.parse.quote(calendar_id, safe="")
+        instance_id, instance_etag = await self._resolve_instance(
+            encoded_cal, master_provider_id, recurrence_id_dt, event.all_day
+        )
+
+        body = event_to_google_body(event)
+        encoded_inst = urllib.parse.quote(instance_id, safe="")
+        etag = if_match or instance_etag
+        await self._request(
+            "PATCH",
+            f"/calendars/{encoded_cal}/events/{encoded_inst}",
+            params={"sendUpdates": "none"},
+            json_body=body,
+            headers={"If-Match": etag} if etag else None,
+        )
+
+    async def _resolve_instance(
+        self,
+        encoded_cal: str,
+        master_provider_id: str,
+        recurrence_id_dt: datetime,
+        all_day: bool,
+    ) -> tuple[str, str | None]:
+        """Resolve a recurrence slot to its Google instance id (and etag).
+
+        Google keys the instances lookup on `originalStart`. Timed occurrences
+        match on a UTC dateTime; all-day occurrences have a date-valued
+        originalStartTime and only match a bare `YYYY-MM-DD` value (a dateTime
+        returns zero items — confirmed against the live API).
+        """
+        if all_day:
+            original_start = recurrence_id_dt.strftime("%Y-%m-%d")
+        else:
+            original_start = recurrence_id_dt.astimezone(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
         encoded_master = urllib.parse.quote(master_provider_id, safe="")
         instances_resp = await self._request(
             "GET",
@@ -794,16 +825,7 @@ class GoogleBackend:
             raise PermanentError(
                 f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
             )
-        instance_id: str = items[0]["id"]
-
-        body = event_to_google_body(event)
-        encoded_inst = urllib.parse.quote(instance_id, safe="")
-        await self._request(
-            "PATCH",
-            f"/calendars/{encoded_cal}/events/{encoded_inst}",
-            params={"sendUpdates": "none"},
-            json_body=body,
-        )
+        return items[0]["id"], items[0].get("etag")
 
     @_classify_errors
     async def respond_to_event(
@@ -863,30 +885,20 @@ class GoogleBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         if_match: str | None = None,
+        all_day: bool = False,
     ) -> None:
-        # if_match accepted for protocol parity; not used by Google here.
-        rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        original_start = rid_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
         encoded_cal = urllib.parse.quote(calendar_id, safe="")
-        encoded_master = urllib.parse.quote(master_provider_id, safe="")
-        instances_resp = await self._request(
-            "GET",
-            f"/calendars/{encoded_cal}/events/{encoded_master}/instances",
-            params={"originalStart": original_start},
+        instance_id, instance_etag = await self._resolve_instance(
+            encoded_cal, master_provider_id, recurrence_id_dt, all_day
         )
-        items = instances_resp.json().get("items", [])
-        if not items:
-            raise PermanentError(
-                f"Could not find Google occurrence for {recurrence_id_dt.isoformat()}"
-            )
-        instance_id: str = items[0]["id"]
 
         encoded_inst = urllib.parse.quote(instance_id, safe="")
+        etag = if_match or instance_etag
         await self._request(
             "DELETE",
             f"/calendars/{encoded_cal}/events/{encoded_inst}",
             params={"sendUpdates": "none"},
+            headers={"If-Match": etag} if etag else None,
         )
 
     def supported_contact_sources(self) -> tuple[str, ...]:

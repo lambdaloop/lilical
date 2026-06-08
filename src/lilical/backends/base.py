@@ -109,6 +109,7 @@ class Backend(Protocol):
         master_provider_id: str,
         recurrence_id_dt: "datetime",
         if_match: str | None = None,
+        all_day: bool = False,
     ) -> None: ...
 
     async def respond_to_event(

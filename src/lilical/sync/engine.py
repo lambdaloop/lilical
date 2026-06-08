@@ -245,7 +245,11 @@ class SyncEngine(QObject):
                         rid_str,
                     )
                     await backend.delete_instance(
-                        provider_cal_id, master_pid, rid, if_match=override_etag
+                        provider_cal_id,
+                        master_pid,
+                        rid,
+                        if_match=override_etag,
+                        all_day=bool(master and master.all_day),
                     )
                 else:
                     log.warning(

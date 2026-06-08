@@ -1006,8 +1006,10 @@ async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
             super().__init__()
             self.instance_deletes: list = []
 
-        async def delete_instance(self, calendar_id, master_pid, rid, if_match=None):
-            self.instance_deletes.append((calendar_id, master_pid, rid))
+        async def delete_instance(
+            self, calendar_id, master_pid, rid, if_match=None, all_day=False
+        ):
+            self.instance_deletes.append((calendar_id, master_pid, rid, all_day))
 
     class _InstanceOpStore(_PendingOpStore):
         def get_event(self, uid, calendar_id):
@@ -1029,11 +1031,60 @@ async def test_tick_dispatches_delete_instance_op_to_backend() -> None:
     await engine._tick(SimpleNamespace(id="acc-1"), backend)
 
     assert len(backend.instance_deletes) == 1
-    cal_id, mpid, rid = backend.instance_deletes[0]
+    cal_id, mpid, rid, all_day = backend.instance_deletes[0]
     assert cal_id == "cal-1"
     assert mpid == "AAMk-master"
+    assert all_day is False
     assert rid == recurrence_id
     assert 2 in store.deleted_op_ids
+
+
+@pytest.mark.asyncio
+async def test_tick_passes_all_day_to_delete_instance_for_allday_master() -> None:
+    """The engine must tell the backend when the master is all-day so backends
+    that resolve occurrences by date (Google) can format the lookup correctly."""
+    import json
+    from datetime import datetime, timezone
+
+    recurrence_id = datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc)
+    master_event = Event(
+        uid="uid-master",
+        calendar_id="cal-1",
+        provider_event_id="AAMk-master",
+        summary="Birthday",
+        all_day=True,
+    )
+
+    class _InstanceDeleteBackend(_WriteBackend):
+        def __init__(self):
+            super().__init__()
+            self.instance_deletes: list = []
+
+        async def delete_instance(
+            self, calendar_id, master_pid, rid, if_match=None, all_day=False
+        ):
+            self.instance_deletes.append((calendar_id, master_pid, rid, all_day))
+
+    class _InstanceOpStore(_PendingOpStore):
+        def get_event(self, uid, calendar_id):
+            return master_event if uid == "uid-master" else None
+
+    op = SimpleNamespace(
+        id=3,
+        op="delete_instance",
+        uid="uid-master",
+        calendar_id="cal-1",
+        payload=json.dumps({"recurrence_id": recurrence_id.isoformat()}),
+        if_match=None,
+    )
+    store = _InstanceOpStore([op])
+    backend = _InstanceDeleteBackend()
+    engine = _make_engine(store, secrets=None, factory=lambda a: backend)
+
+    await engine._tick(SimpleNamespace(id="acc-1"), backend)
+
+    assert len(backend.instance_deletes) == 1
+    assert backend.instance_deletes[0][3] is True
 
 
 @pytest.mark.asyncio

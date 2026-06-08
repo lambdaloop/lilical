@@ -928,10 +928,13 @@ class CalDavBackend:
         master_provider_id: str,
         recurrence_id_dt: datetime,
         if_match: str | None = None,
+        all_day: bool = False,
     ) -> None:
         """Delete a single occurrence by appending an EXDATE to the master VCALENDAR.
 
-        if_match accepted for protocol parity; not used by the CalDAV path.
+        The EXDATE value type must match the master's DTSTART (RFC 5545): a
+        DATE for all-day series, a DATE-TIME otherwise. A mismatched type is
+        silently ignored by many servers, so the occurrence would reappear.
         """
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
@@ -941,8 +944,18 @@ class CalDavBackend:
         master_cal = icalendar.Calendar.from_ical(raw)
         for comp in master_cal.subcomponents:
             if comp.name == "VEVENT" and not comp.get("RECURRENCE-ID"):
-                comp.add("exdate", recurrence_id_dt)
+                base_dt = comp.get("DTSTART")
+                master_all_day = all_day or (
+                    base_dt is not None
+                    and not isinstance(getattr(base_dt, "dt", None), datetime)
+                )
+                if master_all_day:
+                    comp.add("exdate", recurrence_id_dt.date())
+                else:
+                    comp.add("exdate", recurrence_id_dt)
 
+        if if_match:
+            event_obj.etag = if_match
         event_obj.data = master_cal.to_ical().decode()
         await self._run(event_obj.save)
 

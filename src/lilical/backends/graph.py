@@ -1539,11 +1539,14 @@ class GraphBackend:
         master_provider_id: str,
         recurrence_id_dt: "datetime",
         if_match: str | None = None,
+        all_day: bool = False,
     ) -> None:
         """Cancel a single occurrence of a recurring series.
 
         Sends If-Match (the override's etag) to avoid clobbering a concurrent
-        server-side edit to that occurrence.
+        server-side edit to that occurrence. all_day is accepted for protocol
+        parity; the Graph instances window matches occurrences by instant and
+        handles all-day slots without special-casing.
         """
         instance_id, instance_etag = await self._resolve_instance(
             master_provider_id, recurrence_id_dt
