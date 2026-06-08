@@ -103,6 +103,12 @@ class RecurrenceExpander:
         for ov in overrides:
             if ov.recurrence_id is None or ov.dtstart is None:
                 continue
+            # A cancelled override (e.g. a server single-occurrence deletion,
+            # type:"exception" + isCancelled) must leave a clean hole: the base
+            # rrule occurrence at this slot is already suppressed via
+            # override_rid_utc above, so skipping the append yields an exdate.
+            if ov.status == "CANCELLED":
+                continue
             ov_start = ov.dtstart
             ov_end = ov.dtend or ov.dtstart
             ov_start_utc = _dt_to_utc(ov_start)  # type: ignore[reportUnnecessaryIsInstance]

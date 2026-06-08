@@ -1477,6 +1477,11 @@ class EventStore(QObject):
         creates a new series tail starting at split_at_dt with a new UID.
 
         Returns the new tail event UID.
+
+        Caveat: this is lossy. PATCHing a Graph seriesMaster's recurrence drops
+        server-side exceptions on the truncated master, and pre-cutoff local
+        overrides are not migrated onto the tail series. Re-creating those
+        exceptions on both sides is deliberately out of scope here.
         """
         import re as _re
         import uuid
@@ -1493,8 +1498,10 @@ class EventStore(QObject):
 
             master_event = _row_to_event(master_row)
 
-            # Compute UNTIL = one second before the split point (inclusive boundary)
-            until_dt = split_at_dt - timedelta(seconds=1)
+            # Compute UNTIL = one second before the split point (inclusive
+            # boundary). RFC 5545 requires UNTIL in UTC when DTSTART is tz-aware,
+            # so convert before stamping 'Z' — split_at_dt may be in any zone.
+            until_dt = (split_at_dt - timedelta(seconds=1)).astimezone(timezone.utc)
             until_str = until_dt.strftime("%Y%m%dT%H%M%SZ")
 
             # Update master RRULE: remove COUNT, set UNTIL
@@ -1582,7 +1589,8 @@ class EventStore(QObject):
                 raise ValueError(f"No master event {uid} in calendar {calendar_id}")
 
             master_event = _row_to_event(master_row)
-            cut = until_dt - timedelta(seconds=1)
+            # RFC 5545 UNTIL must be UTC for tz-aware DTSTART; convert before 'Z'.
+            cut = (until_dt - timedelta(seconds=1)).astimezone(timezone.utc)
             until_str = cut.strftime("%Y%m%dT%H%M%SZ")
 
             rrule = master_event.rrule or ""

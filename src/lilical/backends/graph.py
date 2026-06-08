@@ -580,7 +580,12 @@ def _graph_event_to_change(
         )
     elif ev_type == "exception":
         # Override instance: store under the master's uid so the expander can
-        # find it as a sibling when rebuilding master instances.
+        # find it as a sibling when rebuilding master instances. A cancelled
+        # exception (isCancelled→status=CANCELLED) becomes a hole in expansion.
+        # TODO(verify): confirm calendarView/delta actually returns cancelled
+        # exceptions. If it instead omits the slot, the master rrule keeps
+        # expanding a phantom occurrence and the deletion must be synthesized as
+        # an exdate in _drain_delta rather than handled here.
         master_id = cast("str", ev_json.get("seriesMasterId") or "")
         if master_id:
             uid = master_id
@@ -630,6 +635,44 @@ def _graph_event_to_change(
 _IANA_TO_WINDOWS_TZ: dict[str, str] = {v: k for k, v in _WINDOWS_TZ_TO_IANA.items()}
 
 
+def _relative_pattern_from_byday(
+    byday: str,
+    bysetpos: str,
+    weekday_map: dict[str, str],
+    index_map: dict[str, str],
+) -> tuple[str, list[str]] | None:
+    """Return (graph_index, daysOfWeek) for a relative monthly/yearly BYDAY,
+    or None when the BYDAY carries no ordinal/setpos (i.e. it's an absolute
+    pattern). Handles a single ordinal-prefixed day ("2TU"), multiple
+    comma-separated days sharing an ordinal ("1MO,1TU,1WE"), and a bare weekday
+    list qualified by BYSETPOS ("MO,TU,WE,TH,FR" + BYSETPOS=-1 → index "last").
+
+    Graph supports only a single `index` across all `daysOfWeek`; rules with
+    mixed ordinals (rare) fall back to the first ordinal seen. Setpos values
+    Graph can't express (anything but the named indices) yield None, so the
+    caller treats the rule as absolute rather than emitting a wrong pattern.
+    """
+    tokens = [t.strip() for t in byday.split(",") if t.strip()]
+    if not tokens:
+        return None
+    first_ordinal = ""
+    days: list[str] = []
+    for tok in tokens:
+        ordinal = "".join(c for c in tok if c.isdigit() or c == "-")
+        day_code = tok.lstrip("-0123456789")
+        if ordinal and not first_ordinal:
+            first_ordinal = ordinal
+        days.append(weekday_map.get(day_code, day_code))
+    if first_ordinal:
+        return index_map.get(first_ordinal, "first"), days
+    setpos = bysetpos.strip()
+    if setpos:
+        index = index_map.get(setpos)
+        if index is not None:
+            return index, days
+    return None
+
+
 def _rrule_to_graph_recurrence(
     rrule: str,
     dtstart: "datetime | None",
@@ -666,17 +709,20 @@ def _rrule_to_graph_recurrence(
             day_name = dtstart.strftime("%A").lower()
             days = [day_name]
         pattern["daysOfWeek"] = days
-        if dtstart:
-            pattern["firstDayOfWeek"] = "sunday"
+        # WKST drives the week boundary; RFC 5545 defaults to Monday.
+        wkst = props.get("WKST", "MO").upper()
+        pattern["firstDayOfWeek"] = _rrule_to_graph_weekday.get(wkst, "monday")
     elif freq == "MONTHLY":
         byday = props.get("BYDAY", "")
-        if byday and (byday[0].isdigit() or byday[0] == "-"):
+        rel = _relative_pattern_from_byday(
+            byday,
+            props.get("BYSETPOS", ""),
+            _rrule_to_graph_weekday,
+            _rrule_to_graph_index,
+        )
+        if rel is not None:
             pattern["type"] = "relativeMonthly"
-            # e.g. "2MO" → index="second", daysOfWeek=["monday"]
-            ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
-            day_code = byday.lstrip("-0123456789")
-            pattern["index"] = _rrule_to_graph_index.get(ordinal, "first")
-            pattern["daysOfWeek"] = [_rrule_to_graph_weekday.get(day_code, day_code)]
+            pattern["index"], pattern["daysOfWeek"] = rel
         else:
             pattern["type"] = "absoluteMonthly"
             dom = props.get("BYMONTHDAY")
@@ -686,12 +732,15 @@ def _rrule_to_graph_recurrence(
                 pattern["dayOfMonth"] = dtstart.day
     elif freq == "YEARLY":
         byday = props.get("BYDAY", "")
-        if byday:
+        rel = _relative_pattern_from_byday(
+            byday,
+            props.get("BYSETPOS", ""),
+            _rrule_to_graph_weekday,
+            _rrule_to_graph_index,
+        )
+        if rel is not None:
             pattern["type"] = "relativeYearly"
-            ordinal = "".join(c for c in byday if c.isdigit() or c == "-")
-            day_code = byday.lstrip("-0123456789")
-            pattern["index"] = _rrule_to_graph_index.get(ordinal, "first")
-            pattern["daysOfWeek"] = [_rrule_to_graph_weekday.get(day_code, day_code)]
+            pattern["index"], pattern["daysOfWeek"] = rel
         else:
             pattern["type"] = "absoluteYearly"
         month = props.get("BYMONTH")
@@ -719,6 +768,14 @@ def _rrule_to_graph_recurrence(
 
             if "T" in until_raw:
                 until_dt = _dt.strptime(until_raw[:15], "%Y%m%dT%H%M%S")
+                # A 'Z'-suffixed UNTIL is UTC. Graph reads endDate in
+                # recurrenceTimeZone (the local Windows zone set below), so
+                # convert the instant into that zone before taking the date —
+                # otherwise a near-midnight UTC UNTIL yields the wrong day.
+                if until_raw.endswith("Z"):
+                    until_dt = until_dt.replace(tzinfo=timezone.utc).astimezone(
+                        local_zoneinfo()
+                    )
             else:
                 until_dt = _dt.strptime(until_raw[:8], "%Y%m%d")
             rng["endDate"] = until_dt.strftime("%Y-%m-%d")

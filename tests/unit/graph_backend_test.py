@@ -20,6 +20,7 @@ from lilical.backends.graph import (
     GraphCursor,
     _graph_event_to_change,
     _graph_recurrence_to_rrule,
+    _rrule_to_graph_recurrence,
 )
 
 
@@ -776,6 +777,85 @@ def test_recurrence_to_rrule_returns_none_for_missing_subobjects() -> None:
     assert _graph_recurrence_to_rrule({"pattern": {"type": "daily"}}) is None
 
 
+# -- _rrule_to_graph_recurrence: reverse direction ---------------------------
+
+
+def _force_local_zone(monkeypatch, iana: str) -> None:
+    """Pin the graph module's notion of the local zone for deterministic tests."""
+    import zoneinfo
+
+    monkeypatch.setattr("lilical.backends.graph.local_iana_tz", lambda: iana)
+    monkeypatch.setattr(
+        "lilical.backends.graph.local_zoneinfo", lambda: zoneinfo.ZoneInfo(iana)
+    )
+
+
+def test_rrule_to_graph_enddate_converts_utc_until_to_local_date(monkeypatch) -> None:
+    """A 'Z'-suffixed UNTIL is a UTC instant; Graph reads endDate in
+    recurrenceTimeZone. For Pacific/Auckland (UTC+12) a late-UTC UNTIL rolls
+    over to the next local day, so endDate must be the local date."""
+    _force_local_zone(monkeypatch, "Pacific/Auckland")
+    dtstart = datetime(2026, 5, 13, 21, 0, tzinfo=timezone.utc)
+    rec = _rrule_to_graph_recurrence("FREQ=DAILY;UNTIL=20260616T230000Z", dtstart, None)
+
+    assert rec is not None
+    rng = rec["range"]
+    # 2026-06-16 23:00 UTC == 2026-06-17 11:00 NZST → local date is the 17th.
+    assert rng["endDate"] == "2026-06-17", rng
+    assert rng["recurrenceTimeZone"] == "New Zealand Standard Time"
+
+
+def test_rrule_to_graph_date_only_until_unchanged(monkeypatch) -> None:
+    """A date-only UNTIL (no time, no Z) is used verbatim."""
+    _force_local_zone(monkeypatch, "Pacific/Auckland")
+    dtstart = datetime(2026, 5, 13, 21, 0, tzinfo=timezone.utc)
+    rec = _rrule_to_graph_recurrence("FREQ=DAILY;UNTIL=20260616", dtstart, None)
+    assert rec is not None
+    assert rec["range"]["endDate"] == "2026-06-16"
+
+
+def test_rrule_to_graph_weekly_wkst_maps_first_day_of_week(monkeypatch) -> None:
+    """WKST must drive firstDayOfWeek; default is monday per RFC 5545."""
+    _force_local_zone(monkeypatch, "UTC")
+    dtstart = datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+
+    rec = _rrule_to_graph_recurrence("FREQ=WEEKLY;BYDAY=MO,WE;WKST=SU", dtstart, None)
+    assert rec is not None
+    assert rec["pattern"]["firstDayOfWeek"] == "sunday"
+
+    rec_default = _rrule_to_graph_recurrence("FREQ=WEEKLY;BYDAY=MO,WE", dtstart, None)
+    assert rec_default is not None
+    assert rec_default["pattern"]["firstDayOfWeek"] == "monday"
+
+
+def test_rrule_to_graph_relative_monthly_multi_byday(monkeypatch) -> None:
+    """Multiple comma-separated BYDAY codes sharing one ordinal map to all
+    daysOfWeek (e.g. 'first weekday-ish' patterns)."""
+    _force_local_zone(monkeypatch, "UTC")
+    dtstart = datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+    rec = _rrule_to_graph_recurrence("FREQ=MONTHLY;BYDAY=1MO,1TU,1WE", dtstart, None)
+    assert rec is not None
+    pat = rec["pattern"]
+    assert pat["type"] == "relativeMonthly"
+    assert pat["index"] == "first"
+    assert pat["daysOfWeek"] == ["monday", "tuesday", "wednesday"]
+
+
+def test_rrule_to_graph_bysetpos_last_weekday(monkeypatch) -> None:
+    """BYDAY=MO,TU,WE,TH,FR + BYSETPOS=-1 → Graph relativeMonthly index 'last'
+    over those weekdays (the common 'last weekday of the month' pattern)."""
+    _force_local_zone(monkeypatch, "UTC")
+    dtstart = datetime(2026, 5, 29, 9, 0, tzinfo=timezone.utc)
+    rec = _rrule_to_graph_recurrence(
+        "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1", dtstart, None
+    )
+    assert rec is not None
+    pat = rec["pattern"]
+    assert pat["type"] == "relativeMonthly"
+    assert pat["index"] == "last"
+    assert pat["daysOfWeek"] == ["monday", "tuesday", "wednesday", "thursday", "friday"]
+
+
 # -- master hydration --------------------------------------------------------
 
 
@@ -1257,6 +1337,34 @@ def test_event_to_change_exception_without_original_start_returns_none() -> None
     }
     change = _graph_event_to_change(data, "cal-1")
     assert change is None
+
+
+def test_event_to_change_cancelled_exception_is_override_with_cancelled_status() -> (
+    None
+):
+    """A server single-occurrence deletion arrives as a cancelled exception
+    (isCancelled:true). It must parse to an override Event anchored at its
+    originalStart with status=CANCELLED, so the expander can hole the slot."""
+    data: dict[str, Any] = {
+        "id": "AAMk-exc-cancelled",
+        "subject": "Standup",
+        "type": "exception",
+        "isCancelled": True,
+        "seriesMasterId": "AAMk-master",
+        "originalStart": {
+            "dateTime": "2026-05-20T09:00:00.0000000",
+            "timeZone": "UTC",
+        },
+        "start": {"dateTime": "2026-05-20T09:00:00.0000000", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-05-20T09:30:00.0000000", "timeZone": "UTC"},
+    }
+    change = _graph_event_to_change(data, "cal-1")
+    assert change is not None
+    ev = change.event
+    assert ev is not None
+    assert ev.uid == "AAMk-master"
+    assert ev.recurrence_id == datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    assert ev.status == "CANCELLED"
 
 
 # ── recurring: event-to-Graph-JSON write path ─────────────────────────────────

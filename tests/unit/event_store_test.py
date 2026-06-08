@@ -1380,6 +1380,90 @@ def test_queue_truncate_series_sets_until(engine) -> None:
     assert ops[0].op == "update"
 
 
+def test_queue_split_series_until_is_utc_for_non_utc_split(engine) -> None:
+    """RFC 5545 requires UNTIL in UTC for a tz-aware DTSTART. Splitting at
+    21:00 NZST (UTC+12) must write UNTIL as the UTC instant one second earlier
+    (08:59:59Z), not the local wall-clock mislabeled as Z."""
+    nz = ZoneInfo("Pacific/Auckland")
+    store = EventStore(engine)
+    store.queue_create(
+        _recurring_event(
+            dtstart=datetime(2026, 6, 2, 21, 0, tzinfo=nz),
+            dtend=datetime(2026, 6, 2, 22, 0, tzinfo=nz),
+            tz="Pacific/Auckland",
+            rrule="FREQ=WEEKLY;COUNT=8",
+        )
+    )
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    split_at = datetime(2026, 6, 16, 21, 0, tzinfo=nz)
+    store.queue_split_series(
+        "series-uid", "cal-1", split_at, _recurring_event(rrule="FREQ=WEEKLY")
+    )
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="series-uid", recurrence_id="").one()
+
+    # 2026-06-16 21:00 NZST == 2026-06-16 09:00 UTC; minus one second.
+    assert "UNTIL=20260616T085959Z" in row.rrule, row.rrule
+
+
+def test_queue_truncate_series_until_is_utc_for_non_utc(engine) -> None:
+    """Truncate twin of the non-UTC UNTIL test."""
+    nz = ZoneInfo("Pacific/Auckland")
+    store = EventStore(engine)
+    store.queue_create(
+        _recurring_event(
+            dtstart=datetime(2026, 6, 2, 21, 0, tzinfo=nz),
+            dtend=datetime(2026, 6, 2, 22, 0, tzinfo=nz),
+            tz="Pacific/Auckland",
+            rrule="FREQ=WEEKLY;COUNT=10",
+        )
+    )
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    until_dt = datetime(2026, 6, 9, 21, 0, tzinfo=nz)
+    store.queue_truncate_series("series-uid", "cal-1", until_dt)
+
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="series-uid", recurrence_id="").one()
+
+    assert "UNTIL=20260609T085959Z" in row.rrule, row.rrule
+
+
+def test_queue_split_series_enqueues_update_master_and_create_tail(engine) -> None:
+    """BUG 5 coverage: split must enqueue an update op for the truncated master
+    (UNTIL present, COUNT gone) and a create op for the tail (fresh uid, dtstart
+    at the split point, no provider id / recurrence id)."""
+    store = EventStore(engine)
+    store.queue_create(_recurring_event(rrule="FREQ=WEEKLY;COUNT=8"))
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).delete()
+
+    split_at = datetime(2026, 6, 16, 9, 0, tzinfo=timezone.utc)
+    new_uid = store.queue_split_series(
+        "series-uid", "cal-1", split_at, _recurring_event(rrule="FREQ=WEEKLY")
+    )
+
+    with Session(engine) as s:
+        ops = {op.op: op for op in s.query(PendingOpRow).all()}
+        tail_row = s.query(EventRow).filter_by(uid=new_uid, recurrence_id="").one()
+
+    assert "update" in ops and "create" in ops
+    update_payload = json.loads(ops["update"].payload)
+    assert "UNTIL=" in update_payload["rrule"]
+    assert "COUNT=" not in update_payload["rrule"]
+
+    create_payload = json.loads(ops["create"].payload)
+    assert create_payload["uid"] == new_uid != "series-uid"
+    assert create_payload["provider_event_id"] is None
+    assert create_payload.get("recurrence_id") in (None, "")
+    assert "2026-06-16" in create_payload["dtstart"]
+    assert "2026-06-16" in tail_row.dtstart
+
+
 def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
     """End-to-end: an all-day event whose dtstart is a local-zone midnight must
     produce an instance whose dtstart_local carries the intended calendar date —

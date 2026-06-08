@@ -201,6 +201,27 @@ def test_until_terminator(expander: RecurrenceExpander) -> None:
     assert len(results) == 2
 
 
+def test_until_terminator_non_utc_boundary(expander: RecurrenceExpander) -> None:
+    """A UTC UNTIL must be honored against a non-UTC dtstart series (the form
+    queue_split_series/queue_truncate_series now emit). 21:00 NZST daily with
+    UNTIL=20260604T085959Z (== Jun 4 20:59:59 NZST) keeps Jun 2 and Jun 3 but
+    drops the Jun 4 21:00 occurrence."""
+    from zoneinfo import ZoneInfo
+
+    nz = ZoneInfo("Pacific/Auckland")
+    e = Event(
+        uid="until-nz",
+        calendar_id="cal-1",
+        rrule="FREQ=DAILY;UNTIL=20260604T085959Z",
+        dtstart=datetime(2026, 6, 2, 21, 0, tzinfo=nz),
+        dtend=datetime(2026, 6, 2, 22, 0, tzinfo=nz),
+    )
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+    results = expander.expand_for_storage(e, start, end)
+    assert len(results) == 2, [r["dtstart"] for r in results]
+
+
 def test_exdate_removes_specific_occurrence(expander: RecurrenceExpander) -> None:
     exdate = datetime(2026, 5, 14, 9, 0, tzinfo=timezone.utc)
     e = Event(
@@ -296,6 +317,76 @@ def test_expander_suppresses_overridden_occurrence(
     override_rows = [r for r in results if r.get("is_override")]
     assert len(override_rows) == 1
     assert override_rows[0]["dtstart"] == week2_moved
+
+
+def test_expander_suppresses_cancelled_override(
+    expander: RecurrenceExpander,
+) -> None:
+    """A cancelled override (server single-occurrence deletion) must remove the
+    slot entirely: the base rrule occurrence is suppressed and the cancelled
+    override is not appended — a clean exdate-like hole."""
+    master = Event(
+        uid="override-cancel",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=4",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+    )
+    week2 = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    cancelled = Event(
+        uid="override-cancel",
+        calendar_id="cal-1",
+        recurrence_id=week2,
+        dtstart=week2,
+        dtend=datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc),
+        status="CANCELLED",
+    )
+    window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+    results = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[cancelled]
+    )
+
+    # COUNT=4 minus the cancelled week-2 slot → 3 occurrences, none at week2.
+    assert len(results) == 3
+    dtstart_values = [r["dtstart"] for r in results]
+    assert week2 not in dtstart_values
+    assert not any(r.get("is_override") for r in results)
+
+
+def test_expander_keeps_confirmed_override(
+    expander: RecurrenceExpander,
+) -> None:
+    """Guard against over-filtering: a CONFIRMED override is still rendered."""
+    master = Event(
+        uid="override-confirmed",
+        calendar_id="cal-1",
+        rrule="FREQ=WEEKLY;COUNT=4",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 9, 30, tzinfo=timezone.utc),
+    )
+    week2 = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    moved = datetime(2026, 5, 20, 11, 0, tzinfo=timezone.utc)
+    override = Event(
+        uid="override-confirmed",
+        calendar_id="cal-1",
+        recurrence_id=week2,
+        dtstart=moved,
+        dtend=datetime(2026, 5, 20, 11, 30, tzinfo=timezone.utc),
+        status="CONFIRMED",
+    )
+    window_start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    window_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+
+    results = expander.expand_for_storage(
+        master, window_start, window_end, overrides=[override]
+    )
+
+    assert len(results) == 4
+    override_rows = [r for r in results if r.get("is_override")]
+    assert len(override_rows) == 1
+    assert override_rows[0]["dtstart"] == moved
 
 
 def test_expander_excludes_overrides_outside_window(
