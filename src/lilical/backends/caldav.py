@@ -58,6 +58,22 @@ def _dav_status(e: DAVError) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# Write ops where a 404 means the target resource/calendar URL is wrong or
+# gone. Retrying never helps, so classify as permanent (the engine drops it and
+# keeps draining the queue) instead of transient (which re-raises and wedges the
+# whole account's outbound queue behind the bad op).
+_WRITE_OPS = frozenset(
+    {
+        "create_event",
+        "update_event",
+        "delete_event",
+        "update_instance",
+        "delete_instance",
+        "respond_to_event",
+    }
+)
+
+
 def _classify_errors(f):
     op = f.__name__
 
@@ -106,6 +122,8 @@ def _classify_errors(f):
                     raise CursorExpired() from e
                 if status == 412:
                     raise ConflictError(msg) from e
+                if status == 404 and op in _WRITE_OPS:
+                    raise PermanentError(msg) from e
                 if status is not None and status >= 500:
                     raise TransientError(msg) from e
                 raise TransientError(msg) from e
