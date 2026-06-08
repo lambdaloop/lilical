@@ -1382,9 +1382,9 @@ def test_queue_truncate_series_sets_until(engine) -> None:
 
 def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
     """End-to-end: an all-day event whose dtstart is a local-zone midnight must
-    produce an instance whose dtstart_local, when parsed and astimezone()'d,
-    gives back the intended calendar date — regardless of how it arrived
-    (UTC midnight, VALUE=DATE naive midnight, etc.)."""
+    produce an instance whose dtstart_local carries the intended calendar date —
+    regardless of how it arrived (UTC midnight, VALUE=DATE naive midnight, etc.)
+    or of the timezone the test happens to run in."""
     from lilical.models.event import EventInstanceRow
 
     ny_zone = ZoneInfo("America/New_York")
@@ -1413,9 +1413,13 @@ def test_all_day_event_instance_stores_correct_local_date(engine) -> None:
     with Session(engine) as s:
         inst = s.query(EventInstanceRow).filter_by(uid="allday-roundtrip").one()
         assert inst.all_day == 1
+        # dtstart_local already encodes the event's own local wall-clock date;
+        # read it directly rather than reinterpreting it in the machine's
+        # timezone (astimezone()), which would roll the date back a day when the
+        # test runs west of the event's zone.
         parsed = datetime.fromisoformat(inst.dtstart_local)
-        assert parsed.astimezone().date() == date(2026, 7, 4), (
-            f"Expected July 4 but got {parsed.astimezone().date()} "
+        assert parsed.date() == date(2026, 7, 4), (
+            f"Expected July 4 but got {parsed.date()} "
             f"(dtstart_local={inst.dtstart_local!r})"
         )
 
