@@ -7,8 +7,11 @@ import inspect
 import logging
 import re
 import zoneinfo
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Callable, cast
+
+import icalendar  # type: ignore[reportMissingTypeStubs]
+import recurring_ical_events  # type: ignore[reportMissingTypeStubs]
 
 from lilical.backends.base import (
     AuthExpired,
@@ -574,10 +577,16 @@ def _graph_event_to_change(
     # recurrence_id and links back to its master.
     rrule: str | None = None
     recurrence_id: "datetime | None" = None
+    exdates: tuple[datetime, ...] = ()
     if ev_type == "seriesmaster":
         rrule = _graph_recurrence_to_rrule(
             cast("dict[str, object] | None", ev_json.get("recurrence"))
         )
+        # EXDATEs synthesized by _synthesize_cancelled_exdates for occurrences
+        # the server silently dropped (single-occurrence cancellations).
+        synth = ev_json.get("__synth_exdates__")
+        if isinstance(synth, list):
+            exdates = tuple(d for d in synth if isinstance(d, datetime))
     elif ev_type == "exception":
         # Override instance: store under the master's uid so the expander can
         # find it as a sibling when rebuilding master instances. A cancelled
@@ -619,6 +628,7 @@ def _graph_event_to_change(
         url=cast("str | None", ev_json.get("webLink")),
         rrule=rrule,
         recurrence_id=recurrence_id,
+        exdates=exdates,
         attendees=tuple(attendees),
         organizer=organizer,
         categories=categories,
@@ -839,6 +849,78 @@ def _delta_window() -> tuple[str, str]:
     start = (now - _DELTA_WINDOW_PAST).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = (now + _DELTA_WINDOW_FUTURE).strftime("%Y-%m-%dT%H:%M:%SZ")
     return start, end
+
+
+def _minute_key(dt: datetime) -> int:
+    """UTC epoch-minute key for matching occurrence instants across tz/DST.
+
+    Two datetimes that name the same instant in different offsets compare equal;
+    sub-minute differences are absorbed.
+    """
+    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return round(aware.timestamp() / 60.0)
+
+
+def _master_start_tz(master_json: dict[str, object]) -> str:
+    """Resolve a seriesMaster's start timezone like _graph_event_to_change does."""
+    start_obj = cast("dict[str, object]", master_json.get("start") or {})
+    raw_tz = str(start_obj.get("timeZone") or "UTC")
+    if raw_tz == "UTC":
+        original = str(master_json.get("originalStartTimeZone") or "")
+        if original and original != "tzone://Microsoft/Custom":
+            raw_tz = _WINDOWS_TZ_TO_IANA.get(original, original)
+    return raw_tz
+
+
+def _master_dtstart(master_json: dict[str, object]) -> datetime | None:
+    """Parse a seriesMaster's DTSTART, applying the same all-day re-anchoring
+    that _graph_event_to_change uses so locally-expanded slots line up with the
+    stored master's expansion."""
+    start_obj = cast("dict[str, object]", master_json.get("start") or {})
+    tz = _master_start_tz(master_json)
+    dtstart = _parse_graph_dt(cast("str | None", start_obj.get("dateTime")), tz)
+    if dtstart is None:
+        return None
+    if bool(master_json.get("isAllDay")):
+        local_zone = local_zoneinfo()
+        naive = dtstart if dtstart.tzinfo is None else dtstart.replace(tzinfo=None)
+        return naive.replace(tzinfo=local_zone)
+    return dtstart
+
+
+def _expand_rrule_starts(
+    dtstart: datetime,
+    rrule: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[datetime]:
+    """Expand an RRULE locally and return the occurrence start datetimes in
+    [window_start, window_end). Mirrors RecurrenceExpander so synthesized
+    EXDATEs target exactly the slots the expander would otherwise materialize."""
+    ical = icalendar.Calendar()
+    ical.add("PRODID", "-//lilical//lilical//EN")
+    ical.add("VERSION", "2.0")
+    ve = icalendar.Event()
+    ve.add("UID", "synth-master")
+    try:
+        ve.add("RRULE", icalendar.vRecur.from_ical(rrule))
+    except Exception:
+        return []
+    ve.add("DTSTART", dtstart)
+    ve.add("DTEND", dtstart)
+    ical.add_component(ve)
+    try:
+        occs = recurring_ical_events.of(ical).between(window_start, window_end)
+    except Exception:
+        return []
+    starts: list[datetime] = []
+    for occ in occs:
+        s = occ.get("DTSTART").dt
+        if isinstance(s, datetime):
+            starts.append(s)
+        elif isinstance(s, date):
+            starts.append(datetime(s.year, s.month, s.day, tzinfo=timezone.utc))
+    return starts
 
 
 # Subset of seriesMaster fields we copy onto occurrences/exceptions whose
@@ -1126,6 +1208,7 @@ class GraphBackend:
             events = data.get("value", [])
             await self._hydrate_and_synthesize_masters(events, masters_cache)
             await self._refresh_organizer_attendee_responses(events)
+            await self._synthesize_cancelled_exdates(events)
             batch = [
                 c
                 for c in (_graph_event_to_change(ev, calendar_id) for ev in events)
@@ -1371,6 +1454,114 @@ class GraphBackend:
                     hydrate = True
                 if hydrate and master.get(field) is not None:
                     ev[field] = master[field]
+
+    async def _synthesize_cancelled_exdates(
+        self, events: list[dict[str, object]]
+    ) -> None:
+        """Synthesize EXDATEs for occurrences Graph silently dropped.
+
+        Graph conveys a single-occurrence deletion ONLY by omitting that
+        instance from the expanded set — it does not return a cancelled
+        exception and does not populate cancelledOccurrences in the default
+        event representation (verified live). So for every recurring
+        seriesMaster in this batch we fetch its authoritative instances over the
+        sync window, expand the RRULE locally, and mark every RRULE slot the
+        server no longer returns (and that isn't a moved exception) as an EXDATE
+        on the master. The downstream _graph_event_to_change reads
+        `__synth_exdates__` and stores them so the expander leaves a clean hole.
+        """
+        masters: list[tuple[str, dict[str, object]]] = []
+        for ev in events:
+            if "@removed" in ev:
+                continue
+            if str(ev.get("type") or "").lower() != "seriesmaster":
+                continue
+            if ev.get("recurrence") is None:
+                continue
+            mid = str(ev.get("id") or "")
+            if mid:
+                masters.append((mid, ev))
+        if not masters:
+            return
+
+        now = datetime.now(timezone.utc)
+        window_start = now - _DELTA_WINDOW_PAST
+        window_end = now + _DELTA_WINDOW_FUTURE
+        # Widen the server instance query slightly so slots at the window edges
+        # are never mistaken for cancellations.
+        margin = timedelta(days=2)
+        q_start = (window_start - margin).strftime("%Y-%m-%dT%H:%M:%SZ")
+        q_end = (window_end + margin).strftime("%Y-%m-%dT%H:%M:%SZ")
+        urls = {
+            mid: (
+                f"/me/events/{mid}/instances"
+                f"?startDateTime={q_start}&endDateTime={q_end}"
+                f"&$top=2000&$select=start,type,originalStart,isCancelled"
+            )
+            for mid, _ in masters
+        }
+        responses = await self._graph_batch_get_urls(urls)
+
+        n_synth = 0
+        n_masters_touched = 0
+        for mid, master_json in masters:
+            body = responses.get(mid)
+            if not body:
+                continue
+            instances = cast("list[dict[str, object]]", body.get("value") or [])
+            if not instances:
+                # No server instances in the window — never blanket-EXDATE a
+                # whole series off a missing/empty response.
+                continue
+            rrule = _graph_recurrence_to_rrule(
+                cast("dict[str, object] | None", master_json.get("recurrence"))
+            )
+            dtstart = _master_dtstart(master_json)
+            if not rrule or dtstart is None:
+                continue
+            all_day = bool(master_json.get("isAllDay"))
+            rrule_starts = _expand_rrule_starts(
+                dtstart, rrule, window_start, window_end
+            )
+            if not rrule_starts:
+                continue
+
+            present_keys: set[int] = set()
+            present_dates: set[date] = set()
+            for inst in instances:
+                for key in ("start", "originalStart"):
+                    obj = cast("dict[str, object]", inst.get(key) or {})
+                    raw = cast("str | None", obj.get("dateTime"))
+                    if not raw:
+                        continue
+                    dt = _parse_graph_dt(raw, str(obj.get("timeZone") or "UTC"))
+                    if dt is None:
+                        continue
+                    present_keys.add(_minute_key(dt))
+                    present_dates.add(dt.date())
+
+            synth: list[datetime] = []
+            for slot in rrule_starts:
+                missing = (
+                    slot.date() not in present_dates
+                    if all_day
+                    else _minute_key(slot) not in present_keys
+                )
+                if missing:
+                    synth.append(slot)
+            if synth:
+                master_json["__synth_exdates__"] = synth
+                n_synth += len(synth)
+                n_masters_touched += 1
+
+        if n_synth:
+            log.info(
+                "graph exdate synthesis: %d cancelled occurrence(s) across "
+                "%d/%d master(s)",
+                n_synth,
+                n_masters_touched,
+                len(masters),
+            )
 
     @_classify_errors
     async def create_event(self, calendar_id: str, event: Event) -> Event:

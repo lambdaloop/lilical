@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -28,6 +28,24 @@ def _attach_mock(backend: GraphBackend, handler) -> None:
     """Wire a MockTransport into the backend's httpx client and stub out auth."""
     backend._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     backend._acquire_token = lambda: "fake-token"  # type: ignore[method-assign]
+
+
+def _is_instances_batch(body: dict) -> bool:
+    """True when a $batch request is the EXDATE-synthesis /instances probe."""
+    return any("/instances" in r.get("url", "") for r in body["requests"])
+
+
+def _empty_instances_response(body: dict) -> httpx.Response:
+    """Answer an /instances $batch with empty value lists (no synthesis effects)."""
+    return httpx.Response(
+        200,
+        json={
+            "responses": [
+                {"id": r["id"], "status": 200, "body": {"value": []}}
+                for r in body["requests"]
+            ]
+        },
+    )
 
 
 # -- mapping ------------------------------------------------------------------
@@ -1778,6 +1796,8 @@ async def test_drain_delta_synthesizes_master_for_unknown_occurrence() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         if "/$batch" in str(req.url):
             body = _json.loads(req.content)
+            if _is_instances_batch(body):
+                return _empty_instances_response(body)
             batch_calls.append(body)
             responses = [
                 {"id": r["id"], "status": 200, "body": master_body}
@@ -1851,6 +1871,8 @@ async def test_drain_delta_synthesized_master_dedup_across_pages() -> None:
         url = str(req.url)
         if "/$batch" in url:
             body = _json.loads(req.content)
+            if _is_instances_batch(body):
+                return _empty_instances_response(body)
             batch_calls.append(body)
             return httpx.Response(
                 200,
@@ -1920,6 +1942,8 @@ async def test_drain_delta_skips_synthesis_when_master_in_page() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         if "/$batch" in str(req.url):
             body = _json.loads(req.content)
+            if _is_instances_batch(body):
+                return _empty_instances_response(body)
             batch_calls.append(body)
             return httpx.Response(200, json={"responses": []})
         return httpx.Response(200, json=delta_body)
@@ -1992,6 +2016,8 @@ async def test_drain_delta_exception_hydration_still_works() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         if "/$batch" in str(req.url):
             body = _json.loads(req.content)
+            if _is_instances_batch(body):
+                return _empty_instances_response(body)
             batch_calls.append(body)
             return httpx.Response(
                 200,
@@ -2033,3 +2059,143 @@ async def test_drain_delta_exception_hydration_still_works() -> None:
     assert overrides[0].event.summary == "Weekly standup"
     assert overrides[0].event.description == "standup notes"
     assert overrides[0].event.location == "Zoom"
+
+
+# -- EXDATE synthesis for silently-dropped occurrences ------------------------
+
+
+def _graph_dt(dt: datetime) -> dict[str, str]:
+    return {
+        "dateTime": dt.strftime("%Y-%m-%dT%H:%M:%S.0000000"),
+        "timeZone": "UTC",
+    }
+
+
+def _weekly_master(base: datetime, count: int, *, all_day: bool = False) -> dict:
+    """Build a Graph seriesMaster JSON for a weekly series of `count` occurrences."""
+    weekday = base.strftime("%A").lower()
+    return {
+        "id": "MASTER-1",
+        "type": "seriesMaster",
+        "subject": "Weekly sync",
+        "isAllDay": all_day,
+        "start": _graph_dt(base),
+        "end": _graph_dt(base + timedelta(hours=1)),
+        "recurrence": {
+            "pattern": {
+                "type": "weekly",
+                "interval": 1,
+                "daysOfWeek": [weekday],
+                "firstDayOfWeek": "sunday",
+            },
+            "range": {
+                "type": "numbered",
+                "startDate": base.strftime("%Y-%m-%d"),
+                "numberOfOccurrences": count,
+            },
+        },
+    }
+
+
+def _instances_batch_handler(value_by_master: dict[str, list[dict]]):
+    """Mock handler answering the /instances $batch with the given per-master items."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if "/$batch" in str(req.url):
+            body = json.loads(req.content)
+            responses = []
+            for r in body["requests"]:
+                mid = r["id"]
+                responses.append(
+                    {
+                        "id": mid,
+                        "status": 200,
+                        "body": {"value": value_by_master.get(mid, [])},
+                    }
+                )
+            return httpx.Response(200, json={"responses": responses})
+        return httpx.Response(200, json={"value": []})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_synthesize_exdates_marks_dropped_occurrence() -> None:
+    """A weekly slot the server's /instances omits becomes an EXDATE on the master."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    base = (now + timedelta(days=14)).replace(hour=11, minute=0, second=0)
+    occ = [base + timedelta(weeks=k) for k in range(5)]
+    dropped = occ[2]
+    present = [d for d in occ if d != dropped]
+
+    master = _weekly_master(base, 5)
+    events = [master]
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(
+        backend,
+        _instances_batch_handler(
+            {
+                "MASTER-1": [
+                    {"type": "occurrence", "start": _graph_dt(d)} for d in present
+                ]
+            }
+        ),
+    )
+
+    await backend._synthesize_cancelled_exdates(events)
+    change = _graph_event_to_change(master, "cal-1")
+
+    assert change is not None and change.event is not None
+    exdates = change.event.exdates
+    assert len(exdates) == 1
+    got = exdates[0]
+    got_key = round(got.astimezone(timezone.utc).timestamp() / 60.0)
+    want_key = round(dropped.timestamp() / 60.0)
+    assert got_key == want_key
+
+
+@pytest.mark.asyncio
+async def test_synthesize_exdates_skips_moved_exception() -> None:
+    """A moved exception's original slot is present (via originalStart) → no EXDATE."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    base = (now + timedelta(days=14)).replace(hour=11, minute=0, second=0)
+    occ = [base + timedelta(weeks=k) for k in range(5)]
+    moved_slot = occ[1]
+    moved_to = moved_slot + timedelta(hours=3)
+    # All slots present; slot[1] arrives as an exception moved by 3h but its
+    # originalStart still names the base slot.
+    items = [
+        {"type": "occurrence", "start": _graph_dt(d)} for d in occ if d != moved_slot
+    ]
+    items.append(
+        {
+            "type": "exception",
+            "start": _graph_dt(moved_to),
+            "originalStart": _graph_dt(moved_slot),
+        }
+    )
+
+    master = _weekly_master(base, 5)
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _instances_batch_handler({"MASTER-1": items}))
+
+    await backend._synthesize_cancelled_exdates([master])
+    change = _graph_event_to_change(master, "cal-1")
+    assert change is not None and change.event is not None
+    assert change.event.exdates == ()
+
+
+@pytest.mark.asyncio
+async def test_synthesize_exdates_empty_instances_no_wipe() -> None:
+    """An empty/missing /instances response must never blanket-EXDATE a series."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    base = (now + timedelta(days=14)).replace(hour=11, minute=0, second=0)
+    master = _weekly_master(base, 5)
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _instances_batch_handler({"MASTER-1": []}))
+
+    await backend._synthesize_cancelled_exdates([master])
+    change = _graph_event_to_change(master, "cal-1")
+    assert change is not None and change.event is not None
+    assert change.event.exdates == ()
