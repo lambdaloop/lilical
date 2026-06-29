@@ -1526,19 +1526,32 @@ class GraphBackend:
             if not rrule_starts:
                 continue
 
-            present_keys: set[int] = set()
-            present_dates: set[date] = set()
+            present: list[datetime] = []
             for inst in instances:
-                for key in ("start", "originalStart"):
-                    obj = cast("dict[str, object]", inst.get(key) or {})
-                    raw = cast("str | None", obj.get("dateTime"))
-                    if not raw:
-                        continue
-                    dt = _parse_graph_dt(raw, str(obj.get("timeZone") or "UTC"))
-                    if dt is None:
-                        continue
-                    present_keys.add(_minute_key(dt))
-                    present_dates.add(dt.date())
+                # `start` is a DateTimeTimeZone object {dateTime, timeZone}.
+                start_obj = cast("dict[str, object]", inst.get("start") or {})
+                raw = cast("str | None", start_obj.get("dateTime"))
+                if raw:
+                    dt = _parse_graph_dt(raw, str(start_obj.get("timeZone") or "UTC"))
+                    if dt is not None:
+                        present.append(dt)
+                # `originalStart` is an Edm.DateTimeOffset string (UTC instant);
+                # for a moved exception it names the original slot so we don't
+                # mistake it for a cancellation.
+                orig = inst.get("originalStart")
+                if isinstance(orig, str) and orig:
+                    dt = _parse_graph_dt(orig, "UTC")
+                    if dt is not None:
+                        present.append(dt)
+                elif isinstance(orig, dict):
+                    oraw = cast("str | None", orig.get("dateTime"))
+                    if oraw:
+                        dt = _parse_graph_dt(oraw, str(orig.get("timeZone") or "UTC"))
+                        if dt is not None:
+                            present.append(dt)
+
+            present_keys = {_minute_key(d) for d in present}
+            present_dates = {d.date() for d in present}
 
             synth: list[datetime] = []
             for slot in rrule_starts:
