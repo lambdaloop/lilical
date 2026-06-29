@@ -691,6 +691,110 @@ def test_parsed_rrule_event_expands_into_event_instances(tmp_path) -> None:
     assert first_utc in starts_utc  # first occurrence
 
 
+_VCAL_EXDATE_AND_CANCELLED_OVERRIDE = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//
+BEGIN:VEVENT
+UID:mixed-1@example.com
+DTSTAMP:20260101T000000Z
+DTSTART:20260513T090000Z
+DTEND:20260513T100000Z
+RRULE:FREQ=WEEKLY;COUNT=5
+EXDATE:20260520T090000Z
+SUMMARY:Standup
+END:VEVENT
+BEGIN:VEVENT
+UID:mixed-1@example.com
+DTSTAMP:20260101T000000Z
+RECURRENCE-ID:20260527T090000Z
+DTSTART:20260527T090000Z
+DTEND:20260527T100000Z
+STATUS:CANCELLED
+SUMMARY:Standup
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def test_exdate_and_cancelled_override_both_leave_holes(tmp_path) -> None:
+    """A master EXDATE and a separate RECURRENCE-ID + STATUS:CANCELLED override
+    must each remove their occurrence from the expanded instances. Covers the
+    two ways a CalDAV server reports a single-occurrence deletion."""
+    from datetime import timezone as _tz
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from lilical.models.account import Account
+    from lilical.models.calendar import Calendar
+    from lilical.models.db import Base
+    from lilical.models.event import EventInstanceRow
+    from lilical.storage.event_store import EventStore
+
+    engine = create_engine(f"sqlite:///{tmp_path}/mixed.db")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session, session.begin():
+        session.add(
+            Account(
+                id="acc-1",
+                kind="caldav",
+                display_name="Test",
+                identity="user@example.com",
+                secret_ref="acc-1",
+                created_at="2026-05-13T00:00:00+00:00",
+            )
+        )
+        session.add(
+            Calendar(
+                id="cal-1",
+                account_id="acc-1",
+                provider_id="https://e/c/",
+                display_name="Test",
+                color="#000000",
+                access_role="owner",
+            )
+        )
+
+    backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+
+    class _FakeEvent:
+        def __init__(self, url: str, data: str, etag: str) -> None:
+            self.url = url
+            self.data = data
+            self.etag = etag
+
+    changes = backend._events_to_changes(
+        [
+            _FakeEvent(
+                url="https://example.com/mixed.ics",
+                data=_VCAL_EXDATE_AND_CANCELLED_OVERRIDE,
+                etag="abc",
+            )
+        ],
+        calendar_id="cal-1",
+    )
+
+    store = EventStore(engine)
+    store.apply_remote_changes(
+        "cal-1", changes, '{"sync_token": null, "ctag": null}'
+    )
+
+    with Session(engine) as session:
+        instances = session.query(EventInstanceRow).all()
+
+    starts_utc = {
+        datetime.fromisoformat(i.dtstart_local).astimezone(_tz.utc) for i in instances
+    }
+    # Both holes: EXDATE 05-20 and cancelled-override 05-27 are absent.
+    assert datetime(2026, 5, 20, 9, tzinfo=_tz.utc) not in starts_utc
+    assert datetime(2026, 5, 27, 9, tzinfo=_tz.utc) not in starts_utc
+    # The other three occurrences remain.
+    assert datetime(2026, 5, 13, 9, tzinfo=_tz.utc) in starts_utc
+    assert datetime(2026, 6, 3, 9, tzinfo=_tz.utc) in starts_utc
+    assert datetime(2026, 6, 10, 9, tzinfo=_tz.utc) in starts_utc
+    assert len(instances) == 3
+
+
 def test_parsed_non_recurring_event_creates_single_instance(tmp_path) -> None:
     """The single-event case: parser → store → exactly one EventInstanceRow."""
     from sqlalchemy import create_engine

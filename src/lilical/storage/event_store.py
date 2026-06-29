@@ -133,6 +133,53 @@ def _dt_tuple_to_json(dts: tuple[datetime, ...]) -> str | None:
     return json.dumps([dt.isoformat() for dt in dts])
 
 
+def _exdate_key(dt: datetime) -> int:
+    """UTC epoch-minute key for deduping EXDATEs across tz/DST representations."""
+    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return round(aware.timestamp() / 60.0)
+
+
+def _merge_exdates(
+    base: tuple[datetime, ...], extra: tuple[datetime, ...]
+) -> tuple[datetime, ...]:
+    """Union two EXDATE tuples, deduping by instant (minute granularity)."""
+    seen = {_exdate_key(d) for d in base}
+    merged = list(base)
+    for d in extra:
+        k = _exdate_key(d)
+        if k not in seen:
+            seen.add(k)
+            merged.append(d)
+    return tuple(merged)
+
+
+def _pending_delete_instance_exdates(
+    s: Session, uid: str, calendar_id: str
+) -> tuple[datetime, ...]:
+    """recurrence_ids of not-yet-pushed delete_instance ops for a master.
+
+    These are local single-occurrence deletions awaiting upload. A remote
+    master upsert must not drop them, or the just-deleted occurrence flickers
+    back until the op pushes. Once the op is uploaded its PendingOpRow is gone,
+    so server state then wins.
+    """
+    rows = (
+        s.query(PendingOpRow)
+        .filter_by(uid=uid, calendar_id=calendar_id, op="delete_instance")
+        .all()
+    )
+    out: list[datetime] = []
+    for r in rows:
+        try:
+            rid = json.loads(r.payload).get("recurrence_id")
+        except (ValueError, AttributeError):
+            continue
+        if rid:
+            with contextlib.suppress(ValueError):
+                out.append(datetime.fromisoformat(rid))
+    return tuple(out)
+
+
 def _event_to_json(event: Event) -> str:
     d = dataclasses.asdict(event)
     # Fix datetime fields (asdict preserves datetime objects, json.dumps won't).
@@ -936,6 +983,21 @@ class EventStore(QObject):
                                 continue
                             setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
+                    # Preserve EXDATEs from not-yet-pushed local delete_instance
+                    # ops so a remote master upsert doesn't resurrect a just-
+                    # deleted occurrence (e.g. Graph masters carry no EXDATE).
+                    # Only for the master row; once the op uploads its PendingOp
+                    # is gone and server state wins.
+                    if recurrence_id_str == "":
+                        pending = _pending_delete_instance_exdates(
+                            s, uid, calendar_id
+                        )
+                        if pending:
+                            merged = _merge_exdates(local_event.exdates, pending)
+                            row.exdates = _dt_tuple_to_json(merged)
+                            local_event = dataclasses.replace(
+                                local_event, exdates=merged
+                            )
                     # Defer instance rebuilds to after this transaction commits so
                     # the write lock is held only for the fast EventRow upserts and
                     # cursor update, not the expensive iCal expansion.

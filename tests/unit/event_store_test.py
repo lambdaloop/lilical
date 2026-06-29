@@ -446,6 +446,43 @@ def test_apply_remote_changes_uses_local_calendar_and_persists_cursor(engine) ->
     assert calendar.sync_cursor == cursor_json
 
 
+def test_apply_remote_changes_preserves_pending_delete_instance_exdate(engine) -> None:
+    """A remote master upsert must not drop an EXDATE from a not-yet-pushed local
+    delete_instance op (else the just-deleted occurrence resurrects). After the
+    op uploads, server state wins."""
+    store = EventStore(engine)
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
+
+    # Seed the master from the server (no EXDATEs yet).
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    # User deletes one occurrence locally → EXDATE on master + pending op.
+    store.queue_delete_instance("event-1", "cal-1", rid)
+
+    # A remote sync re-sends the master WITHOUT the EXDATE (e.g. Graph carries
+    # none). The local deletion must survive.
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="event-1", recurrence_id="").one()
+    assert row.exdates is not None
+    kept = [datetime.fromisoformat(x) for x in json.loads(row.exdates)]
+    assert any(abs((d - rid).total_seconds()) < 60 for d in kept)
+
+    # Once the op has uploaded (PendingOpRow gone), server state wins.
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).filter_by(op="delete_instance").delete()
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    with Session(engine) as s:
+        row = s.query(EventRow).filter_by(uid="event-1", recurrence_id="").one()
+    assert row.exdates is None
+
+
 # -- upsert_calendars (Bug: 400 from /me/calendars/default; placeholder cleanup) --
 
 
