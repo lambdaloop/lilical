@@ -130,6 +130,42 @@ def test_recurring_override_is_stored_with_recurrence_id() -> None:
     assert change.event.summary == "Standup (moved)"
 
 
+def test_cancelled_occurrence_is_stored_as_cancelled_override() -> None:
+    """A single-occurrence deletion carries status=cancelled AND recurringEventId.
+
+    It must become a CANCELLED override (so the expander leaves a hole), NOT a
+    series-wide delete keyed on the master iCalUID."""
+    data: dict[str, Any] = {
+        "id": "evt-rec_20260520T090000Z",
+        "iCalUID": "uid-rec@google.com",
+        "recurringEventId": "evt-rec",
+        "status": "cancelled",
+        "originalStartTime": {"dateTime": "2026-05-20T09:00:00Z", "timeZone": "UTC"},
+    }
+    change = _google_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.kind == "upsert"
+    assert change.event is not None
+    assert change.event.status == "CANCELLED"
+    assert change.event.recurrence_id is not None
+    assert change.event.rrule is None
+    # Keyed under the master's iCalUID so it's a sibling of the master row.
+    assert change.uid == "uid-rec@google.com"
+
+
+def test_cancelled_master_without_recurring_id_still_deletes() -> None:
+    """A cancelled event with no recurringEventId is a real series/event delete."""
+    data: dict[str, Any] = {
+        "id": "evt456",
+        "iCalUID": "uid-xyz@google.com",
+        "status": "cancelled",
+    }
+    change = _google_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.kind == "delete"
+    assert change.uid == "uid-xyz@google.com"
+
+
 def test_transparent_event_maps_to_transparency() -> None:
     data: dict[str, Any] = {
         "id": "evt-free",

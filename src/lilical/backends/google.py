@@ -298,14 +298,20 @@ def _google_event_to_change(
     ev_json: dict[str, object], calendar_id: str
 ) -> EventChange | None:
     status = str(ev_json.get("status", ""))
-    if status == "cancelled":
+    # A cancelled occurrence carries BOTH status=="cancelled" AND a
+    # recurringEventId. Check the override branch FIRST: such an event is a
+    # single-occurrence cancellation, not a series deletion. Treating it as a
+    # delete here would key on the master's iCalUID and wipe the whole series
+    # locally. Only a cancelled event with no recurringEventId is a true delete.
+    if status == "cancelled" and not ev_json.get("recurringEventId"):
         return EventChange(
             kind="delete",
             uid=str(ev_json.get("iCalUID") or ev_json.get("id") or ""),
         )
 
-    # Override (modified instance): store under the master's iCalUID so the
-    # expander can find it as a sibling when rebuilding master instances.
+    # Override (modified or cancelled instance): store under the master's
+    # iCalUID so the expander can find it as a sibling when rebuilding master
+    # instances. A cancelled override (status→"CANCELLED") becomes a hole.
     if ev_json.get("recurringEventId"):
         uid = str(ev_json.get("iCalUID") or ev_json.get("id") or "")
         dtstart, tz_start, all_day = _parse_google_dt(
@@ -317,6 +323,13 @@ def _google_event_to_change(
         original_start_dt, _, _ = _parse_google_dt(
             cast(dict[str, object] | None, ev_json.get("originalStartTime"))
         )
+        if original_start_dt is None:
+            # Without an original start we can't anchor the override to its
+            # occurrence slot; storing recurrence_id="" would collide with and
+            # overwrite the seriesMaster row. Skip — the master's expansion
+            # covers the slot. (Google always sends originalStartTime on
+            # instances, so this is a defensive guard.)
+            return None
         g_status = (
             "CONFIRMED"
             if status == "confirmed"
