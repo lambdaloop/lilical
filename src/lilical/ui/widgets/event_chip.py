@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QGraphicsObject, QGraphicsSceneContextMenuEvent, Q
 
 from lilical.ui import theme
 from lilical.ui._text_layout import draw_tight_wrapped
-from lilical.utils.timezone import local_zoneinfo
+from lilical.utils.timezone import to_display
 
 if TYPE_CHECKING:
     from lilical.models.event import Event
@@ -116,10 +116,8 @@ def _format_time_prefix_from(event: "Event", time_format: str = "24h") -> str | 
     start = _coerce_dt(event.dtstart)
     if start is None:
         return None
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=local_zoneinfo())
     fmt = "%-I:%M %p" if time_format == "12h" else "%H:%M"
-    return start.astimezone().strftime(fmt)
+    return to_display(start).strftime(fmt)
 
 
 class EventChip(QGraphicsObject):
@@ -818,12 +816,8 @@ class EventChip(QGraphicsObject):
             else:
                 end_dt = None
             if start_dt and end_dt:
-                if start_dt.tzinfo is None:
-                    start_dt = start_dt.replace(tzinfo=local_zoneinfo())
-                if end_dt.tzinfo is None:
-                    end_dt = end_dt.replace(tzinfo=local_zoneinfo())
-                local_start = start_dt.astimezone()
-                local_end = end_dt.astimezone()
+                local_start = to_display(start_dt)
+                local_end = to_display(end_dt)
                 if self._time_format == "12h":
                     from lilical.ui._time_fmt import fmt_hm
 

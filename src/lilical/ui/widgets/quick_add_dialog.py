@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from lilical.storage.event_store import EventStore
-from lilical.utils.timezone import local_iana_tz
+from lilical.utils.timezone import display_tz_name, to_display
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,15 @@ def _parse_natural(text: str) -> dict[str, Any] | None:
 
     # Simple extraction: split off a time phrase and use the remainder as title.
     # We try parsing the whole string as a date first, then fall back.
-    settings = {"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": True}
+    # Without TIMEZONE/TO_TIMEZONE dateparser resolves "3pm tomorrow" in the
+    # process zone, ignoring the zone the user is actually looking at.
+    _tz = display_tz_name()
+    settings = {
+        "PREFER_DATES_FROM": "future",
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "TIMEZONE": _tz,
+        "TO_TIMEZONE": _tz,
+    }
     parsed_dt = dateparser.parse(text, settings=settings)
     if parsed_dt:
         # Heuristic: title is the text up to the first time keyword
@@ -108,8 +116,8 @@ class QuickAddDialog(QDialog):
         if result and result.get("dtstart"):
             start: datetime = result["dtstart"]
             end: datetime = result["dtend"]
-            local_start = start.astimezone()
-            local_end = end.astimezone()
+            local_start = to_display(start)
+            local_end = to_display(end)
             title = result.get("title", text)
             _tf = str(QSettings().value("time_format", "24h") or "24h")
             _tfmt = "%-I:%M %p" if _tf == "12h" else "%H:%M"
@@ -153,7 +161,7 @@ class QuickAddDialog(QDialog):
             calendar_id=cal_id,
             dtstart=dtstart,
             dtend=dtend,
-            tz=local_iana_tz(),
+            tz=display_tz_name(),
             summary=summary,
             local_dirty=True,
         )

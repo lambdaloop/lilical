@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm
+from lilical.ui.views._inst_time import inst_end, inst_start
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._week_start import (
     dow_labels,
@@ -25,6 +26,7 @@ from lilical.ui.views._week_start import (
     weekend_columns,
 )
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
+from lilical.utils.timezone import QUERY_PAD, display_midnight, display_today
 
 log = logging.getLogger(__name__)
 
@@ -62,11 +64,6 @@ def apply_scale(factor: float) -> None:
     g["TODAY_RING_RADIUS"] = max(1, round(_BASE_TODAY_RING_RADIUS * factor))
 
 
-def _local_midnight(d: date) -> datetime:
-    """Return midnight of `d` in the system local timezone as a UTC-aware datetime."""
-    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
-
-
 class MonthGrid(QGraphicsItem):
     def __init__(self, year: int, month: int, week_start: str = "monday") -> None:
         super().__init__()
@@ -79,7 +76,6 @@ class MonthGrid(QGraphicsItem):
         else:
             self._last = date(year, month + 1, 1) - timedelta(days=1)
         self._start = start_of_week(self._first, week_start)
-        self._today = date.today()
 
     @override
     def boundingRect(self) -> QRectF:
@@ -145,13 +141,17 @@ class MonthGrid(QGraphicsItem):
         painter.setFont(
             QFont(theme.FONT_FAMILY, theme.FONT_DAY_NUMBER, QFont.Weight.Bold)
         )
+        # Read at paint time rather than caching in __init__: the grid outlives
+        # midnight in a long-running session, and the display zone can change
+        # under it.
+        today = display_today()
         cur = self._start
         for r in range(ROWS):
             for c in range(COLS):
                 x = c * CELL_W + PAD
                 y = HEADER_H + r * CELL_H + PAD
                 in_month = self._first <= cur <= self._last
-                is_today = cur == self._today and in_month
+                is_today = cur == today and in_month
 
                 # Today: hollow ring around the number, not a fill.
                 if is_today:
@@ -223,8 +223,8 @@ def _query_month_data(
     store, grid_start: date, end_day: date, cal_info_snap: dict
 ) -> dict | None:
     """Off-thread: query DB for the month range."""
-    start_dt = _local_midnight(grid_start)
-    end_dt = _local_midnight(end_day)
+    start_dt = display_midnight(grid_start) - QUERY_PAD
+    end_dt = display_midnight(end_day) + QUERY_PAD
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
@@ -265,7 +265,7 @@ class MonthView(QGraphicsView):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        now = date.today()
+        now = display_today()
         self._year = now.year
         self._month = now.month
         self._week_start = "monday"
@@ -331,7 +331,7 @@ class MonthView(QGraphicsView):
         self.refresh()
 
     def go_today(self) -> None:
-        today = date.today()
+        today = display_today()
         self._year, self._month = today.year, today.month
         self.refresh()
 
@@ -355,6 +355,11 @@ class MonthView(QGraphicsView):
     @property
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
+
+    def set_display_tz(self, _name: str) -> None:
+        """Re-render in the new display zone; see WeekView.set_display_tz."""
+        self._grid.update()
+        self.refresh(data_dirty=True)
 
     def set_week_start(self, week_start: str) -> None:
         if week_start == self._week_start:
@@ -441,10 +446,9 @@ class MonthView(QGraphicsView):
             tuple[date, date, object]
         ] = []  # (start, end_inclusive, inst)
         for inst in instances:
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-                et = datetime.fromisoformat(inst.dtend_local).astimezone()
-            except (ValueError, TypeError):
+            t = inst_start(inst)
+            et = inst_end(inst)
+            if t is None or et is None:
                 continue
 
             span = multi_day_span(inst)
@@ -493,10 +497,7 @@ class MonthView(QGraphicsView):
             event = events.get(id(inst))
             if event is None:
                 continue
-            try:
-                inst_t = datetime.fromisoformat(inst.dtstart_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
-            except (ValueError, TypeError):
-                inst_t = None
+            inst_t = inst_start(inst)
             # Clip span to visible grid.
             visible_start = max(s_day, grid_start)
             visible_end = min(e_day, grid_start + timedelta(days=41))

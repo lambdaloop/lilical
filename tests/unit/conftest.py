@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -40,6 +41,34 @@ def _restore_event_loop():
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_display_tz():
+    """Restore the app-wide display zone after every test.
+
+    It is a module global in `lilical.utils.timezone`, so a test that sets it
+    would otherwise leak into every test that runs after it and make failures
+    depend on collection order.
+    """
+    from lilical.utils import timezone as tzmod
+
+    before = tzmod.display_tz_name()
+    yield
+    tzmod.set_display_tz(before)
+
+
+@contextmanager
+def display_tz(name: str):
+    """Temporarily set the app-wide display zone."""
+    from lilical.utils import timezone as tzmod
+
+    before = tzmod.display_tz_name()
+    tzmod.set_display_tz(name)
+    try:
+        yield
+    finally:
+        tzmod.set_display_tz(before)
 
 
 @pytest.fixture(scope="session")

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from lilical.ui import theme
 from lilical.ui.views._week_start import dow_labels_short, start_of_week
+from lilical.utils.timezone import display_today
 
 _BASE_HEADER_H = 20
 _BASE_CELL_H = 24
@@ -35,7 +36,7 @@ class MiniMonthGrid(QGraphicsView):
 
     def __init__(self, year: int | None = None, month: int | None = None) -> None:
         super().__init__()
-        today = date.today()
+        today = display_today()
         self.year = year or today.year
         self.month = month or today.month
         self._selected = today
@@ -94,7 +95,7 @@ class MiniMonthGrid(QGraphicsView):
         ch = _CELL_H
         first = date(self.year, self.month, 1)
         start = start_of_week(first, self._week_start)
-        today = date.today()
+        today = display_today()
         a_start = self._active_start
         a_end = self._active_end
 

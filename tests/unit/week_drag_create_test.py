@@ -13,7 +13,7 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QMouseEvent
 
-from tests.unit.conftest import empty_week_plan, make_fake_store
+from tests.unit.conftest import display_tz, empty_week_plan, make_fake_store
 
 
 class _FakeDialog:
@@ -182,3 +182,72 @@ def test_click_without_drag_still_opens_dialog_for_default_hour(
         view._teardown_preview()
         view.close()
         view.deleteLater()
+
+
+def test_drag_create_uses_display_tz(qapp, patched_dialog) -> None:
+    """A block drawn at a gridline is authored in the zone being viewed.
+
+    Otherwise dragging 09:00 while looking at Tokyo would store some other
+    wall-clock time, which reads as a bug.
+    """
+    with display_tz("Asia/Tokyo"):
+        view = _build_view(qapp)
+        try:
+            _press(view, _body_point(view, vp_y=400))
+            _move(view, _body_point(view, vp_y=520))
+            _release(view, _body_point(view, vp_y=520))
+            qapp.processEvents()
+
+            dlg = patched_dialog.last
+            assert dlg is not None, "EventDialog was not opened"
+            assert isinstance(dlg.default_dt, datetime)
+            assert getattr(dlg.default_dt.tzinfo, "key", None) == "Asia/Tokyo"
+            assert getattr(dlg.default_dtend.tzinfo, "key", None) == "Asia/Tokyo"
+        finally:
+            view._teardown_preview()
+            view.close()
+            view.deleteLater()
+
+
+def test_chip_move_writes_display_tz(qapp) -> None:
+    """Committing a chip drag stamps the event with the display zone.
+
+    Uses a non-recurring event on purpose: dispatch_drag_edit only takes the
+    direct queue_update path when the event has no rrule and no recurrence_id;
+    anything recurring pops RecurrenceActionDialog and would block here.
+    """
+    from unittest.mock import MagicMock
+
+    from PySide6.QtCore import QPointF
+
+    from lilical.models.event import Event
+
+    with display_tz("Asia/Tokyo"):
+        view = _build_view(qapp)
+        try:
+            event = Event(
+                uid="u1",
+                calendar_id="cal-1",
+                summary="Standup",
+                dtstart=datetime.fromisoformat("2026-04-21T09:00:00+09:00"),
+                dtend=datetime.fromisoformat("2026-04-21T10:00:00+09:00"),
+            )
+            view._store.queue_update = MagicMock()
+            view._drag_chip_event = event
+            view._drag_chip_mode = "move"
+            view._drag_chip_origin = (2, 540, 600)
+            view._drag_chip_grab_offset_min = 0.0
+            view._drag_chip_instance_dtstart = None
+            view._press_scene_pos = QPointF(0, 0)
+
+            view._on_chip_drag_committed(event, "move", QPointF(400.0, 700.0))
+            qapp.processEvents()
+
+            assert view._store.queue_update.called, "no update was queued"
+            updated = view._store.queue_update.call_args[0][0]
+            assert updated.tz == "Asia/Tokyo"
+            assert getattr(updated.dtstart.tzinfo, "key", None) == "Asia/Tokyo"
+        finally:
+            view._teardown_preview()
+            view.close()
+            view.deleteLater()

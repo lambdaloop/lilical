@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from lilical.ui._notes_fmt import format_notes_html
 from lilical.ui.widgets.event_chip import _readable_text_color, _resolve_color
 from lilical.utils.names import format_display_name
+from lilical.utils.timezone import to_display
 
 if TYPE_CHECKING:
     from lilical.models.event import Event
@@ -310,9 +311,11 @@ def _format_when(event: "Event", time_fmt: str = "24h") -> str:
     tz_suffix = ""
     if event.tz and event.tz not in ("UTC",):
         try:
-            from lilical.utils.timezone import local_iana_tz
+            from lilical.utils.timezone import display_tz_name
 
-            if event.tz != local_iana_tz():
+            # Flag the zone when it differs from the one being *viewed*,
+            # not from the OS zone.
+            if event.tz != display_tz_name():
                 tz_suffix = f"  ({event.tz})"
         except Exception:
             pass
@@ -338,11 +341,11 @@ def _format_when(event: "Event", time_fmt: str = "24h") -> str:
         return f"{start_d.strftime(_DFMT)}  ·  All day"
 
     # Timed event — compare local dates for same-day detection.
-    start_local = dtstart.astimezone()
+    start_local = to_display(dtstart)
     start_date = start_local.date()
 
     if dtend is not None:
-        end_local = dtend.astimezone()
+        end_local = to_display(dtend)
         end_date = end_local.date()
         if start_date == end_date:
             # Same day: "Mon, May 18, 2026  ·  14:00 – 15:00"

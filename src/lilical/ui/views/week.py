@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
+from lilical.ui.views._inst_time import inst_end, inst_start
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping_lanes
 from lilical.ui.views._week_start import start_of_week
@@ -31,7 +32,14 @@ from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
-from lilical.utils.timezone import local_iana_tz, local_zoneinfo
+from lilical.utils.timezone import (
+    QUERY_PAD,
+    display_midnight,
+    display_now,
+    display_today,
+    display_tz_name,
+    display_zone,
+)
 
 log = logging.getLogger(__name__)
 
@@ -76,11 +84,6 @@ VALID_DAY_COUNTS = (1, 2, 3, 4, 5, 7, 10, 14)
 WORK_START_HOUR = 8
 WORK_END_HOUR = 23
 WORK_END_MINUTE = 45
-
-
-def _local_midnight(d: date) -> datetime:
-    """Return midnight of `d` in the system local timezone as a UTC-aware datetime."""
-    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
 
 
 class WeekGrid(QGraphicsItem):
@@ -142,7 +145,7 @@ class WeekGrid(QGraphicsItem):
         # rendered by `_StickyHeader` so they can stay pinned to the viewport
         # top while the body scrolls underneath.
         col_w = (self._width - TIME_AXIS_WIDTH) / self._day_count
-        today = date.today()
+        today = display_today()
         is_today_visible = (
             self._start <= today < self._start + timedelta(days=self._day_count)
         )
@@ -242,7 +245,7 @@ class _WeekNowLine(QGraphicsItem):
         self.refresh()
 
     def refresh(self) -> None:
-        today = date.today()
+        today = display_today()
         is_today_visible = (
             self._grid._start
             <= today
@@ -250,7 +253,7 @@ class _WeekNowLine(QGraphicsItem):
         )
         self.prepareGeometryChange()
         if is_today_visible:
-            now = datetime.now().astimezone()
+            now = display_now()
             minutes = now.hour * 60 + now.minute
             col_w = (self._grid._width - TIME_AXIS_WIDTH) / self._grid._day_count
             col_index = (today - self._grid._start).days
@@ -328,7 +331,7 @@ class _StickyHeader(QGraphicsItem):
     @override
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
         col_w = (self._width - TIME_AXIS_WIDTH) / self._day_count
-        today = date.today()
+        today = display_today()
         all_day_band_h = self._all_day_band_h
         body_top = DAY_HEADER_H + all_day_band_h
 
@@ -396,8 +399,8 @@ def _query_week_data(
     store, start: date, day_count: int, cal_info_snap: dict
 ) -> dict | None:
     """Off-thread: query DB for the week range."""
-    start_dt = _local_midnight(start)
-    end_dt = _local_midnight(start + timedelta(days=day_count))
+    start_dt = display_midnight(start) - QUERY_PAD
+    end_dt = display_midnight(start + timedelta(days=day_count)) + QUERY_PAD
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
@@ -446,9 +449,8 @@ def _compute_week_placements(
     timed_instances: list[tuple[object, datetime]] = []
 
     for inst in instances:
-        try:
-            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        except (ValueError, TypeError):
+        t = inst_start(inst)
+        if t is None:
             continue
         span = multi_day_span(inst)
         if span is not None:
@@ -474,9 +476,8 @@ def _compute_week_placements(
             elif day_offset == -1:
                 # Event started yesterday; check for a short cross-midnight tail
                 # that bleeds into day 0 of this week.
-                try:
-                    _end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
-                except (ValueError, TypeError):
+                _end_t = inst_end(inst)
+                if _end_t is None:
                     continue
                 if _end_t.date() == start and (
                     _end_t.hour != 0 or _end_t.minute != 0
@@ -585,10 +586,7 @@ def _compute_week_placements(
         event = events.get(id(inst))
         if event is None:
             continue
-        try:
-            end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
-        except (ValueError, TypeError):
-            end_t = t
+        end_t = inst_end(inst) or t
         start_day = t.date()
         end_day = end_t.date()
         # True cross-midnight: end is a later date AND not exactly 00:00
@@ -805,7 +803,7 @@ class WeekView(QGraphicsView):
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
 
-        today = date.today()
+        today = display_today()
         week_start = start_of_week(today, self._week_start_pref)
         self._start = week_start
         # Initial width is a temporary value — resizeEvent will set the real
@@ -902,6 +900,19 @@ class WeekView(QGraphicsView):
     def chip_mode(self) -> ChipMode:
         return self._chip_mode
 
+    def set_display_tz(self, _name: str) -> None:
+        """Re-render in the new display zone.
+
+        Nothing zone-dependent is baked in at construction — the grid,
+        headers and now-line all read the display zone at paint time — so a
+        repaint plus a re-query is enough. `data_dirty=True` because the
+        query window itself moves with the zone.
+        """
+        self._now_line.refresh()
+        self._grid.update()
+        self._sticky.update()
+        self.refresh(data_dirty=True)
+
     def set_time_format(self, fmt: str) -> None:
         if fmt == self._time_format:
             return
@@ -982,7 +993,7 @@ class WeekView(QGraphicsView):
         self.refresh()
 
     def go_today(self) -> None:
-        today = date.today()
+        today = display_today()
         self._start = start_of_week(today, self._week_start_pref)
         self._needs_scroll = True
         self.refresh()
@@ -1626,7 +1637,7 @@ class WeekView(QGraphicsView):
                 if end_min <= start_min:
                     end_min = start_min + self._snap_minutes
             day_date = self._start + timedelta(days=self._drag_day_offset)  # type: ignore[reportArgumentType]
-            tz = local_zoneinfo()
+            tz = display_zone()
             start_dt = datetime(
                 day_date.year,
                 day_date.month,
@@ -1649,7 +1660,7 @@ class WeekView(QGraphicsView):
             start_off, end_off = min(start_off, end_off), max(start_off, end_off)  # type: ignore[reportArgumentType]
             start_date = self._start + timedelta(days=start_off)
             end_date = self._start + timedelta(days=end_off)
-            tz = local_zoneinfo()
+            tz = display_zone()
             start_dt = datetime(
                 start_date.year, start_date.month, start_date.day, tzinfo=tz
             )
@@ -1806,7 +1817,7 @@ class WeekView(QGraphicsView):
                 )
             else:
                 new_day_date = self._start + timedelta(days=new_day)
-                tz_local = local_zoneinfo()
+                tz_local = display_zone()
                 new_dtstart = datetime(
                     new_day_date.year,
                     new_day_date.month,
@@ -1855,7 +1866,7 @@ class WeekView(QGraphicsView):
             new_day = origin_day
 
         new_day_date = self._start + timedelta(days=new_day)
-        local_tz = local_zoneinfo()
+        local_tz = display_zone()
         new_dtstart = datetime(
             new_day_date.year,
             new_day_date.month,
@@ -1875,7 +1886,7 @@ class WeekView(QGraphicsView):
             self._drag_chip_instance_dtstart,
             new_dtstart,
             new_dtend,
-            tz=local_iana_tz(),
+            tz=display_tz_name(),
         )
         self._teardown_preview()
         self._drag_chip_event = None

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
 from lilical.ui._time_fmt import fmt_hm, fmt_hour_label
+from lilical.ui.views._inst_time import inst_end, inst_start
 from lilical.ui.views._multi_day import multi_day_span
 from lilical.ui.views._overlap import pack_overlapping_lanes
 from lilical.ui.widgets._popover_rows import (
@@ -34,7 +35,14 @@ from lilical.ui.widgets.drag_preview import DragPreview
 from lilical.ui.widgets.event_chip import ChipMode, EventChip
 from lilical.ui.widgets.inspector_pane import InspectorPane
 from lilical.ui.widgets.line_cluster import LineCluster
-from lilical.utils.timezone import local_iana_tz, local_zoneinfo
+from lilical.utils.timezone import (
+    QUERY_PAD,
+    display_midnight,
+    display_now,
+    display_today,
+    display_tz_name,
+    display_zone,
+)
 
 log = logging.getLogger(__name__)
 
@@ -71,10 +79,6 @@ def apply_scale(factor: float) -> None:
 WORK_START_HOUR = 8
 WORK_END_HOUR = 23
 WORK_END_MINUTE = 45
-
-
-def _local_midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
 
 
 class DayGrid(QGraphicsItem):
@@ -132,7 +136,7 @@ class DayGrid(QGraphicsItem):
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
         # Body-only painter. The header + all-day band is rendered by
         # `_DayStickyHeader` so it can stay pinned during vertical scroll.
-        is_today = date.today() == self._day
+        is_today = display_today() == self._day
         body_top = self.hour_top()
         body_h = HOURS * self._px_per_hour
 
@@ -212,10 +216,10 @@ class _DayNowLine(QGraphicsItem):
         self.refresh()
 
     def refresh(self) -> None:
-        today = date.today()
+        today = display_today()
         self.prepareGeometryChange()
         if today == self._grid._day:
-            now = datetime.now().astimezone()
+            now = display_now()
             minutes = now.hour * 60 + now.minute
             self._y = self._grid.hour_top() + minutes * self._grid.px_per_hour / 60
             self.setVisible(True)
@@ -276,7 +280,7 @@ class _DayStickyHeader(QGraphicsItem):
 
     @override
     def paint(self, painter: QPainter, option, widget=None) -> None:  # noqa: ANN001
-        is_today = date.today() == self._day
+        is_today = display_today() == self._day
         all_day_band_h = self._all_day_band_h
         body_top = DAY_HEADER_H + all_day_band_h
 
@@ -321,8 +325,8 @@ class _DayStickyHeader(QGraphicsItem):
 
 def _query_day_data(store, day: date, cal_info_snap: dict) -> dict | None:
     """Off-thread: query DB for the day view."""
-    start_dt = _local_midnight(day)
-    end_dt = start_dt + timedelta(hours=28)
+    start_dt = display_midnight(day) - QUERY_PAD
+    end_dt = display_midnight(day) + timedelta(hours=28) + QUERY_PAD
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
@@ -383,9 +387,8 @@ def _compute_day_placements(
         event = events.get(id(inst))
         if event is None:
             continue
-        try:
-            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        except (ValueError, TypeError):
+        t = inst_start(inst)
+        if t is None:
             continue
 
         span = multi_day_span(inst)
@@ -444,10 +447,7 @@ def _compute_day_placements(
             continue
 
         # Timed event: single-day, or cross-midnight split (slice visible today).
-        try:
-            end_t = datetime.fromisoformat(inst.dtend_local).astimezone()
-        except (ValueError, TypeError):
-            end_t = t
+        end_t = inst_end(inst) or t
         start_day = t.date()
         end_day = end_t.date()
         crosses_midnight = end_day > start_day and (
@@ -579,9 +579,8 @@ def _build_mini_agenda_plan(
 
     upcoming: list[tuple[datetime, object]] = []
     for inst in instances:
-        try:
-            t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        except (ValueError, TypeError):
+        t = inst_start(inst)
+        if t is None:
             continue
         if t < now:
             continue
@@ -765,6 +764,20 @@ class _DayCanvas(QGraphicsView):
         self, _cal_id: str, _uid: str, _dtstart_utc: int
     ) -> None:
         self.refresh()
+
+    def set_display_tz(self, _name: str) -> None:
+        """Re-render in the new display zone.
+
+        Nothing zone-dependent is baked in at construction — the grid,
+        headers and now-line all read the display zone at paint time — so a
+        repaint plus a re-query is enough. `data_dirty=True` because the
+        query window itself moves with the zone.
+        """
+        self._now_line.refresh()
+        self._grid.update()
+        self._sticky.update()
+        self.refresh(data_dirty=True)
+        self._refresh_mini_agenda()
 
     def set_time_format(self, fmt: str) -> None:
         if fmt == self._time_format:
@@ -1273,7 +1286,7 @@ class _DayCanvas(QGraphicsView):
                 end_min = self._snap_minutes_ceil(hi)
                 if end_min <= start_min:
                     end_min = start_min + self._snap_minutes
-            tz = local_zoneinfo()
+            tz = display_zone()
             start_dt = datetime(
                 self._day.year,
                 self._day.month,
@@ -1287,7 +1300,7 @@ class _DayCanvas(QGraphicsView):
             self._drag_kind = None
             self._open_create_dialog(start_dt, end_dt, all_day=False)
         else:  # create_allday
-            tz = local_zoneinfo()
+            tz = display_zone()
             start_dt = datetime(
                 self._day.year, self._day.month, self._day.day, tzinfo=tz
             )
@@ -1428,7 +1441,7 @@ class _DayCanvas(QGraphicsView):
             new_end = min(new_end, 1440)
             new_start = origin_start
 
-        local_tz = local_zoneinfo()
+        local_tz = display_zone()
         new_dtstart = datetime(
             self._day.year,
             self._day.month,
@@ -1448,7 +1461,7 @@ class _DayCanvas(QGraphicsView):
             self._drag_chip_instance_dtstart,
             new_dtstart,
             new_dtend,
-            tz=local_iana_tz(),
+            tz=display_tz_name(),
         )
         self._teardown_preview()
         self._drag_chip_event = None
@@ -1490,10 +1503,8 @@ class _DayCanvas(QGraphicsView):
 
 
 def _is_on(inst, d: date) -> bool:
-    try:
-        return datetime.fromisoformat(inst.dtstart_local).astimezone().date() == d
-    except (ValueError, TypeError):
-        return False
+    t = inst_start(inst)
+    return t is not None and t.date() == d
 
 
 class DayView(QWidget):
@@ -1513,7 +1524,7 @@ class DayView(QWidget):
         super().__init__()
         self._store = store
         self._cal_info_provider = cal_info_provider or (lambda: {})
-        self._day = day or date.today()
+        self._day = day or display_today()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1554,7 +1565,7 @@ class DayView(QWidget):
         self._refresh_mini_agenda()
 
     def go_today(self) -> None:
-        self._day = date.today()
+        self._day = display_today()
         self._canvas.set_day(self._day)
         self._refresh_mini_agenda()
 
@@ -1610,12 +1621,15 @@ class DayView(QWidget):
     def set_completed_events_enabled(self, enabled: bool) -> None:
         self._canvas.set_completed_events_enabled(enabled)
 
+    def set_display_tz(self, name: str) -> None:
+        self._canvas.set_display_tz(name)
+
     # ── Mini-agenda ──────────────────────────────────────────────────────
 
     def _refresh_mini_agenda(self) -> None:
         if self._mini_refresh_task and not self._mini_refresh_task.done():
             self._mini_refresh_task.cancel()
-        now = datetime.now().astimezone()
+        now = display_now()
         cal_info_snap = self._cal_info_provider()
         self._mini_refresh_task = asyncio.ensure_future(
             self._mini_refresh_async(now, self.MINI_AGENDA_COUNT, cal_info_snap)

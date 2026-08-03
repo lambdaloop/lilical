@@ -50,6 +50,13 @@ from lilical.ui.views.week import VALID_DAY_COUNTS, WeekView
 from lilical.ui.widgets.account_setup import AccountSetupDialog
 from lilical.ui.widgets.event_chip import ChipMode
 from lilical.ui.widgets.inspector_pane import InspectorPane
+from lilical.ui.widgets.timezone_picker import TimezonePicker
+from lilical.utils.timezone import (
+    display_tz_name,
+    display_zone,
+    local_iana_tz,
+    set_display_tz,
+)
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +232,11 @@ class MainWindow(QMainWindow):
         self._ui_scale: float = (
             _raw_scale if _raw_scale in _theme_module.UI_SCALE_PRESETS else 1.0
         )
+        # Display zone must be set before any view or the sidebar is built —
+        # they read it while laying out their first frame.
+        _saved_tz = str(self._settings.value("display_tz", "") or "")
+        if not _saved_tz or not set_display_tz(_saved_tz):
+            set_display_tz(local_iana_tz())
 
         self.setWindowTitle("lilical")
         self.resize(1200, 800)
@@ -475,6 +487,16 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self._refresh_all)
         tb.addWidget(refresh_btn)
 
+        # Display-timezone picker. Placed here so it eats the *right-hand*
+        # expanding spacer, which exists in every view — the left spacer's slack
+        # shrinks in Week view when the day-count controls appear, so anything
+        # left of the range label would reflow on view switch.
+        tb.addSeparator()
+        self._tz_picker = TimezonePicker()
+        self._tz_picker.setToolTip("Display timezone")
+        self._tz_picker.zone_changed.connect(self._on_display_tz_changed)
+        tb.addWidget(self._tz_picker)
+
         # Pin the settings button to the far right with its own expanding spacer
         # and a divider so it reads visually as a separate "top-right" control,
         # not just another action button.
@@ -636,8 +658,9 @@ class MainWindow(QMainWindow):
         """User double-clicked empty day cell in Month view: open new-event dialog."""
         from datetime import datetime
 
-        dt_start = datetime(d.year, d.month, d.day, 9, 0, 0).astimezone()
-        dt_end = datetime(d.year, d.month, d.day, 10, 0, 0).astimezone()
+        tz = display_zone()
+        dt_start = datetime(d.year, d.month, d.day, 9, 0, 0, tzinfo=tz)
+        dt_end = datetime(d.year, d.month, d.day, 10, 0, 0, tzinfo=tz)
         self._new_event(default_dt=dt_start, default_dtend=dt_end)
 
     # ── View switching ─────────────────────────────────────────────────────
@@ -778,6 +801,25 @@ class MainWindow(QMainWindow):
         for acc in self._store.list_accounts():
             self._sync.force_full_resync(acc.id)
         self._sync_status.set_syncing("all accounts (full resync)")
+
+    # ── Display timezone ───────────────────────────────────────────────────
+
+    def _on_display_tz_changed(self, name: str) -> None:
+        """Switch the zone the whole UI renders in.
+
+        The displayed date is deliberately left where it is, even if the new
+        zone is already on the next day — moving it under the user would be
+        surprising, and the Today button is right there.
+        """
+        if name == display_tz_name() or not set_display_tz(name):
+            return
+        self._settings.setValue("display_tz", name)
+        self._tz_picker.set_zone_name(name)
+        for v in self._views.values():
+            if hasattr(v, "set_display_tz"):
+                v.set_display_tz(name)  # type: ignore[reportAttributeAccessIssue]
+        self._sidebar._mini_month.render()  # type: ignore[reportPrivateUsage]
+        self._update_range_label()
 
     # ── Preferences ────────────────────────────────────────────────────────
 

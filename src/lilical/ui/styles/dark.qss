@@ -474,3 +474,48 @@ QSlider::handle:horizontal:pressed {
     background: #ffffff;
     border-color: #ffffff;
 }
+
+/* ── Display-timezone picker (toolbar) ──────────────────────────────────── */
+QToolButton#tz-picker {
+    background-color: #262626;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    padding: 2px 6px;
+    margin: 0 2px;
+    font-size: 9pt;
+    text-align: left;
+}
+QToolButton#tz-picker:hover {
+    background-color: #333333;
+    border-color: #7a7a7a;
+}
+QToolButton#tz-picker:checked {
+    background-color: #3b82f6;
+    border-color: #3b82f6;
+    color: #ffffff;
+}
+
+/* The popup is a Qt::Popup toplevel, so it inherits nothing from the toolbar. */
+QFrame#tz-popup {
+    background-color: #1a1a1a;
+    border: 1px solid #7a7a7a;
+    border-radius: 4px;
+}
+QListWidget#tz-list {
+    background-color: #0e0e0e;
+    color: #ffffff;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    outline: none;
+}
+QListWidget#tz-list::item {
+    padding: 3px 6px;
+    border: none;
+}
+QListWidget#tz-list::item:hover {
+    background-color: #262626;
+}
+QListWidget#tz-list::item:selected {
+    background-color: #3b82f6;
+    color: #ffffff;
+}

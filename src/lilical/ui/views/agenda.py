@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 
 from lilical.storage.event_store import EventStore
 from lilical.ui import theme
+from lilical.ui.views._inst_time import inst_end, inst_start
+from lilical.utils.timezone import QUERY_PAD, display_midnight, display_today
 
 
 def _color_swatch_icon(color_hex: str | None, size: int = 12) -> QIcon:
@@ -41,10 +43,6 @@ log = logging.getLogger(__name__)
 _DAYS_AHEAD = 30
 
 
-def _local_midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, 0, 0, 0).astimezone()
-
-
 def _query_agenda_data(
     store,
     start: date,
@@ -54,8 +52,8 @@ def _query_agenda_data(
     snapshot_start: "date | None",
 ) -> dict | None:
     """Off-thread: query DB and check snapshot. Returns None if unchanged/error."""
-    start_dt = _local_midnight(start)
-    end_dt = _local_midnight(end)
+    start_dt = display_midnight(start) - QUERY_PAD
+    end_dt = display_midnight(end) + QUERY_PAD
     visible_ids = {ci.id for ci in cal_info_snap.values() if ci.visible}
     try:
         instances = store.list_instances(start_dt, end_dt, calendar_ids=visible_ids)
@@ -86,7 +84,7 @@ class AgendaView(QWidget):
         super().__init__()
         self._store = store
         self._cal_info_provider = cal_info_provider or (lambda: {})
-        self._start = date.today()
+        self._start = display_today()
         self._snapshot: frozenset[tuple] = frozenset()
         self._snapshot_start: "date | None" = None
         self._refresh_task: asyncio.Task | None = None
@@ -124,7 +122,7 @@ class AgendaView(QWidget):
         self.refresh()
 
     def go_today(self) -> None:
-        self._start = date.today()
+        self._start = display_today()
         self.refresh()
 
     def go_to_date(self, d: date) -> None:
@@ -136,6 +134,17 @@ class AgendaView(QWidget):
         super().showEvent(event)
         if self._snapshot_start is None:
             self.refresh()
+
+    def set_display_tz(self, _name: str) -> None:
+        """Re-render in the new display zone.
+
+        The snapshot must be cleared: the instance set is identical after a
+        zone change, so _query_agenda_data's short-circuit would swallow the
+        refresh and leave stale times on screen.
+        """
+        self._snapshot = frozenset()
+        self._snapshot_start = None
+        self.refresh()
 
     def set_time_format(self, fmt: str) -> None:
         if fmt == self._time_format:
@@ -221,9 +230,8 @@ class AgendaView(QWidget):
 
         by_day: dict[date, list[tuple[datetime, object]]] = {}
         for inst in instances:
-            try:
-                t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-            except (ValueError, TypeError):
+            t = inst_start(inst)
+            if t is None:
                 continue
             d = t.date()
             if d < start or d >= end:
@@ -280,11 +288,13 @@ class AgendaView(QWidget):
                 if inst.all_day:  # type: ignore[reportAttributeAccessIssue]
                     row.setText(1, "All day")
                 else:
-                    try:
-                        end_t = datetime.fromisoformat(inst.dtend_local).astimezone()  # type: ignore[reportAttributeAccessIssue]
-                        row.setText(1, f"{t.strftime(tfmt)} – {end_t.strftime(tfmt)}")
-                    except (ValueError, TypeError, AttributeError):
+                    end_t = inst_end(inst)
+                    if end_t is None:
                         row.setText(1, t.strftime(tfmt))
+                    else:
+                        row.setText(
+                            1, f"{t.strftime(tfmt)} – {end_t.strftime(tfmt)}"
+                        )
                 row.setText(2, event.summary or "(no title)")
 
                 cal_name, cal_color = cal_info.get(

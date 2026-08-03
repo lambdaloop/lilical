@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
+from lilical.utils.timezone import to_display
+
 MULTI_DAY_BAND_MIN_HOURS = 12
 
 
@@ -17,9 +19,19 @@ def multi_day_span(inst) -> tuple[date, date] | None:
     Short cross-midnight events (< MULTI_DAY_BAND_MIN_HOURS h) return None so the
     timed renderer can split them across days with continuation indicators.
     """
+    all_day = bool(getattr(inst, "all_day", 0))
     try:
-        t = datetime.fromisoformat(inst.dtstart_local).astimezone()
-        et = datetime.fromisoformat(inst.dtend_local).astimezone()
+        if all_day:
+            # Both endpoints read as bare wall clock — see _inst_time. Converting
+            # them under a foreign display zone breaks both heuristics below: the
+            # half-open midnight adjustment stops firing (inflating spans by a
+            # day) and the 00:00 -> 00:00 check fails, dropping all-day rows
+            # through to the timed renderer.
+            t = datetime.fromisoformat(inst.dtstart_local).replace(tzinfo=None)
+            et = datetime.fromisoformat(inst.dtend_local).replace(tzinfo=None)
+        else:
+            t = to_display(datetime.fromisoformat(inst.dtstart_local))
+            et = to_display(datetime.fromisoformat(inst.dtend_local))
     except (ValueError, TypeError):
         return None
     start_day = t.date()

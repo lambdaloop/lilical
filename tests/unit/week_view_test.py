@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
+
+from lilical.ui.views.week import TIME_AXIS_WIDTH
+from lilical.utils.timezone import QUERY_PAD
+
+from .conftest import display_tz
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,14 +19,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # ── helpers for _compute_week_placements tests ──────────────────────────────
 
 
-def _inst(dtstart_local: str, dtend_local: str, uid: str = "uid", cal_id: str = "cal"):
+def _inst(
+    dtstart_local: str,
+    dtend_local: str,
+    uid: str = "uid",
+    cal_id: str = "cal",
+    all_day: int = 0,
+):
     return type(
         "_Inst",
         (),
         {
             "dtstart_local": dtstart_local,
             "dtend_local": dtend_local,
-            "all_day": 0,
+            "all_day": all_day,
             "calendar_id": cal_id,
             "uid": uid,
             "dtstart_utc": 0,
@@ -147,3 +158,71 @@ def test_long_cross_midnight_goes_to_band(qapp) -> None:
     # All placements for band events contain "band" in their key.
     for key in placements:
         assert "band" in key, f"Expected band key, got {key}"
+
+
+# ── Display timezone ────────────────────────────────────────────────────────
+
+
+def test_timed_chip_follows_display_tz(qapp) -> None:
+    """A late-evening event in one zone is the next day in another."""
+    # 2026-04-21 23:00 -07:00 == 2026-04-22 15:00 in Tokyo.
+    inst = _inst("2026-04-21T23:00:00-07:00", "2026-04-21T23:30:00-07:00")
+    week_start = date(2026, 4, 20)  # Mon
+
+    with display_tz("America/Los_Angeles"):
+        placements = _placements_for(inst, week_start)
+    assert {key[-1] for key in placements} == {1}  # Tue
+
+    with display_tz("Asia/Tokyo"):
+        placements = _placements_for(inst, week_start)
+    assert {key[-1] for key in placements} == {2}  # Wed
+
+
+def test_all_day_chip_does_not_shift_under_foreign_display_tz(qapp) -> None:
+    """All-day rows are anchored at system-local midnight; they must not slide.
+
+    Converting them would move the chip to the previous column and, worse, drop
+    it out of the all-day band into the timed grid.
+    """
+    inst = _inst(
+        "2026-04-21T00:00:00+09:00", "2026-04-22T00:00:00+09:00", all_day=1
+    )
+    week_start = date(2026, 4, 20)  # Mon
+
+    for zone in ("Asia/Tokyo", "America/Los_Angeles", "Etc/GMT+12"):
+        with display_tz(zone):
+            placements = _placements_for(inst, week_start)
+        assert placements, f"no placement in {zone}"
+        for key, pl in placements.items():
+            assert "band" in key, f"{zone}: left the all-day band ({key})"
+            assert pl["is_sticky"]
+        # Still in Tuesday's column (band chips carry a small inset, so derive
+        # the column rather than matching x exactly).
+        cols = {
+            int((pl["rect"].x() - TIME_AXIS_WIDTH) // 100.0)
+            for pl in placements.values()
+        }
+        assert cols == {1}, f"{zone}: wrong column {cols}"
+
+
+def test_query_window_is_padded(qapp) -> None:
+    """All-day rows sit at system-local midnight, so the window needs slack."""
+    from lilical.ui.views.week import _query_week_data
+
+    captured = {}
+
+    class _Store:
+        def list_instances(self, start, end, calendar_ids=None):
+            captured["start"] = start
+            captured["end"] = end
+            return []
+
+        def events_for_instances(self, _insts):
+            return {}
+
+        def completion_for_instances(self, _insts):
+            return frozenset()
+
+    _query_week_data(_Store(), date(2026, 4, 20), 7, {})
+    span = captured["end"] - captured["start"]
+    assert span >= timedelta(days=7) + 2 * QUERY_PAD

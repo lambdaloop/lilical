@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from lilical.utils.timezone import iana_zones
+
 if TYPE_CHECKING:
     from lilical.models.event import Event
     from lilical.storage.event_store import EventStore
@@ -47,7 +49,7 @@ _EVENT_COLORS: list[tuple[str, str]] = [
     ("Default", ""),
 ]
 
-_IANA_ZONES: list[str] = sorted(zoneinfo.available_timezones())
+_IANA_ZONES: list[str] = list(iana_zones())
 
 
 def _dt_to_qdatetime(dt: datetime | None, tz_name: str | None = None) -> QDateTime:
@@ -158,10 +160,11 @@ class EventDialog(QDialog):
 
         # Resolve the zone to display the wall-clock in. For an existing event
         # this is its own zone, so the shown time matches the timezone selector
-        # and an untouched save is a no-op. New events fall back to local.
-        from lilical.utils.timezone import local_iana_tz
+        # and an untouched save is a no-op. New events fall back to the app's
+        # display zone — what you drew on the grid is what you get.
+        from lilical.utils.timezone import display_tz_name
 
-        local_iana = local_iana_tz()
+        local_iana = display_tz_name()
         display_tz = (event.tz if event and event.tz else None) or local_iana
         self._current_tz = display_tz
 
