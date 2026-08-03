@@ -57,16 +57,20 @@ def event_to_vcalendar(
     # EXDATE/RDATE/RECURRENCE-ID value types must match DTSTART (RFC 5545):
     # DATE for all-day series, DATE-TIME otherwise. A mismatched type is
     # ignored by many servers, so the exclusion/override silently fails.
+    # Timed values go through _add_dt_with_tzid rather than a bare add(): the
+    # datetimes reaching here usually carry a fixed-offset tzinfo, and icalendar
+    # renders those as TZID="UTC+02:00" — a TZID naming no VTIMEZONE, which
+    # re-parses as a naive datetime and silently shifts the instant.
     for exdate in event.exdates:
         if event.all_day:
             ve.add("exdate", exdate.date(), parameters={"VALUE": "DATE"})
         else:
-            ve.add("exdate", exdate)
+            _add_dt_with_tzid(ve, "exdate", exdate, event.tz)
     for rdate in event.rdates:
         if event.all_day:
             ve.add("rdate", rdate.date(), parameters={"VALUE": "DATE"})
         else:
-            ve.add("rdate", rdate)
+            _add_dt_with_tzid(ve, "rdate", rdate, event.tz)
     if event.recurrence_id is not None:
         if event.all_day:
             ve.add("recurrence-id", event.recurrence_id.date())

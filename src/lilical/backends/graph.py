@@ -591,10 +591,12 @@ def _graph_event_to_change(
         # Override instance: store under the master's uid so the expander can
         # find it as a sibling when rebuilding master instances. A cancelled
         # exception (isCancelled→status=CANCELLED) becomes a hole in expansion.
-        # TODO(verify): confirm calendarView/delta actually returns cancelled
-        # exceptions. If it instead omits the slot, the master rrule keeps
-        # expanding a phantom occurrence and the deletion must be synthesized as
-        # an exdate in _drain_delta rather than handled here.
+        # Verified: calendarView/delta does NOT reliably return a cancelled
+        # exception — Graph often just omits the slot from the expansion. That
+        # case is handled by _synthesize_cancelled_exdates, which diffs the
+        # master's own rrule against /instances and emits the missing slots as
+        # exdates. This branch covers the times an explicit exception does come
+        # through.
         master_id = cast("str", ev_json.get("seriesMasterId") or "")
         if master_id:
             uid = master_id
@@ -1669,10 +1671,19 @@ class GraphBackend:
         self,
         master_provider_id: str,
         recurrence_id_dt: "datetime",
+        all_day: bool = False,
     ) -> tuple[str, str | None]:
         """Find the Graph occurrence id (and etag) for a recurrence slot.
 
-        Lists instances around recurrence_id_dt and matches within 5 minutes.
+        Lists instances around recurrence_id_dt and matches within 5 minutes,
+        or by calendar date for an all-day series.
+
+        All-day needs the date comparison: Graph reports all-day instance starts
+        at midnight UTC, while _graph_event_to_change re-anchors the master to
+        local midnight, so the recurrence_id we are given is local midnight. For
+        any non-UTC user those differ by the whole offset — far more than the
+        5-minute tolerance — and every all-day occurrence delete would fail.
+
         Raises PermanentError if no occurrence is found.
         """
         from datetime import timedelta
@@ -1681,8 +1692,14 @@ class GraphBackend:
         # in any zone; stamping its wall-clock as "Z" would mislabel the window
         # and miss the occurrence for UTC-positive offsets.
         rid_utc = recurrence_id_dt.astimezone(timezone.utc)
-        win_start = (rid_utc - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rid_date = recurrence_id_dt.date()
+        if all_day:
+            # Widen the window so both midnight spellings of the day land inside.
+            win_start = (rid_utc - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            win_end = (rid_utc + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            win_start = (rid_utc - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            win_end = (rid_utc + timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%SZ")
         resp = await self._request(
             "GET",
             f"/me/events/{master_provider_id}/instances"
@@ -1706,7 +1723,13 @@ class GraphBackend:
                     )
                 except ValueError:
                     continue
-            if abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds()) < 300:
+            matched = (
+                item_dt.date() == rid_date
+                if all_day
+                else abs((item_dt.astimezone(timezone.utc) - rid_utc).total_seconds())
+                < 300
+            )
+            if matched:
                 return cast("str", item.get("id")), cast(
                     "str | None", item.get("@odata.etag")
                 )
@@ -1748,16 +1771,23 @@ class GraphBackend:
         """Cancel a single occurrence of a recurring series.
 
         Sends If-Match (the override's etag) to avoid clobbering a concurrent
-        server-side edit to that occurrence. all_day is accepted for protocol
-        parity; the Graph instances window matches occurrences by instant and
-        handles all-day slots without special-casing.
+        server-side edit to that occurrence. all_day is forwarded because Graph
+        reports all-day instance starts at midnight UTC while our recurrence_id
+        is local midnight — see _resolve_instance.
         """
         instance_id, instance_etag = await self._resolve_instance(
-            master_provider_id, recurrence_id_dt
+            master_provider_id, recurrence_id_dt, all_day
         )
         etag = if_match or instance_etag
         headers = {"If-Match": etag} if etag else None
-        await self._request("DELETE", f"/me/events/{instance_id}", headers=headers)
+        try:
+            await self._request("DELETE", f"/me/events/{instance_id}", headers=headers)
+        except PermanentError as e:
+            # Already cancelled server-side — the outcome we wanted. Swallowing
+            # this keeps the op idempotent, which matters now that ops are
+            # reaped after the pull and so may be retried after a crash.
+            if "404" not in str(e) and "410" not in str(e):
+                raise
 
     def supported_contact_sources(self) -> tuple[str, ...]:
         if self._include_contacts:

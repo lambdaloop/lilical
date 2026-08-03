@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import icalendar
@@ -13,6 +13,7 @@ from lilical.backends.caldav import (
     CalDavCursor,
     _discover_caldav_url,
     _parse_vevents,
+    _prop_dt_tuple,
     _vevent_to_event,
 )
 
@@ -1519,6 +1520,68 @@ async def test_delete_instance_allday_emits_date_exdate() -> None:
     assert "EXDATE;VALUE=DATE:20260713" in data
     assert "EXDATE:20260713T" not in data  # no DATE-TIME form
     assert captured["headers"] == {"If-Match": '"e"'}
+
+
+_VCAL_TIMED_MASTER_TZID = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//snail//
+BEGIN:VTIMEZONE
+TZID:Europe/Paris
+BEGIN:STANDARD
+DTSTART:20071028T030000
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:timed-series@example.com
+DTSTAMP:20260101T000000Z
+DTSTART;TZID=Europe/Paris:20260803T110000
+DTEND;TZID=Europe/Paris:20260803T120000
+RRULE:FREQ=DAILY;COUNT=5
+SUMMARY:Timed standup
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+@pytest.mark.asyncio
+async def test_delete_instance_timed_emits_resolvable_tzid() -> None:
+    """A timed EXDATE must name a real zone (or be UTC), never TZID="UTC+02:00".
+
+    The UI hands us a fixed-offset datetime, and icalendar renders those as
+    TZID="UTC+02:00" — a TZID naming no VTIMEZONE in the object. On re-parse the
+    zone is dropped, the value comes back naive and is stamped UTC, so the
+    exclusion lands two hours off and the occurrence reappears.
+    """
+    import caldav as _caldav
+
+    fake_cls, fake_client_cls, captured = _instance_resource(_VCAL_TIMED_MASTER_TZID)
+    original = _caldav.CalendarObjectResource
+    # Exactly what week.py produces: same instant, fixed-offset tzinfo.
+    rid = datetime(2026, 8, 5, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    try:
+        backend = CalDavBackend("acc-1", "https://example.com", "u", "p")
+        _wire_instance_backend(backend, fake_cls, fake_client_cls(), _caldav)
+        await backend.delete_instance(
+            "cal-1", "https://cal/1/series.ics", rid, if_match='"e"'
+        )
+    finally:
+        _caldav.CalendarObjectResource = original
+
+    data = captured["data"]
+    assert isinstance(data, str)
+    assert 'TZID="UTC+' not in data, "dangling TZID naming no VTIMEZONE"
+
+    # Round-trip: whatever we wrote must read back as the same instant.
+    parsed = icalendar.Calendar.from_ical(data)
+    exdates: list = []
+    for comp in parsed.subcomponents:
+        if comp.name == "VEVENT" and not comp.get("RECURRENCE-ID"):
+            tz = str(comp.get("DTSTART").params.get("TZID", "UTC"))
+            exdates.extend(_prop_dt_tuple(comp.get("EXDATE"), tz))
+    assert len(exdates) == 1
+    assert exdates[0] == rid, f"exclusion moved: {exdates[0]} != {rid}"
 
 
 @pytest.mark.asyncio

@@ -146,7 +146,7 @@ def _status_of(exc: Exception) -> int | None:
     return None
 
 
-def _classify_one(exc: Exception) -> Exception:
+def _classify_one(exc: Exception, *, is_write: bool = False) -> Exception:
     status = _status_of(exc)
     if status in (401, 403):
         # Note: Google returns 403 for some rate-limit responses too, not just
@@ -154,12 +154,39 @@ def _classify_one(exc: Exception) -> Exception:
         # it would require a separate, careful fix.
         return AuthExpired(str(exc))
     if status == 410:
+        # 410 means "sync token expired" only on a list/sync call. On a write
+        # it means the resource is already gone, and mapping that to
+        # CursorExpired triggered a full resync of the whole calendar — which
+        # re-applied every master and wiped local state wholesale.
+        if is_write:
+            return PermanentError(f"410 gone: {exc}")
         return CursorExpired()
     if status == 412:
         return ConflictError(str(exc))
     if status is not None and (status == 429 or status >= 500):
         return TransientError(str(exc))
     return PermanentError(str(exc))
+
+
+def _classify_write_errors(f):
+    """_classify_errors for write ops, where 410 means "gone", not "resync"."""
+
+    @functools.wraps(f)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await f(*args, **kwargs)
+        except (
+            AuthExpired,
+            CursorExpired,
+            ConflictError,
+            TransientError,
+            PermanentError,
+        ):
+            raise
+        except Exception as exc:
+            raise _classify_one(exc, is_write=True) from exc
+
+    return wrapper
 
 
 def _classify_errors(f):
@@ -313,6 +340,11 @@ def _google_event_to_change(
     # iCalUID so the expander can find it as a sibling when rebuilding master
     # instances. A cancelled override (status→"CANCELLED") becomes a hole.
     if ev_json.get("recurringEventId"):
+        # Google strips iCalUID from cancelled-instance payloads. Falling back
+        # to "id" would file the override under the *instance* id, orphaning it
+        # from its master so the deletion never renders as a hole. Pass the
+        # master's provider id along so the store can recover the real uid.
+        master_pid = str(ev_json.get("recurringEventId") or "") or None
         uid = str(ev_json.get("iCalUID") or ev_json.get("id") or "")
         dtstart, tz_start, all_day = _parse_google_dt(
             cast(dict[str, object] | None, ev_json.get("start"))
@@ -366,7 +398,12 @@ def _google_event_to_change(
             sequence=cast(int, ev_json.get("sequence", 0)),
             color=color_id_to_hex(cast(str | None, ev_json.get("colorId"))),
         )
-        return EventChange(kind="upsert", event=override_event, uid=uid)
+        return EventChange(
+            kind="upsert",
+            event=override_event,
+            uid=uid,
+            master_provider_id=master_pid,
+        )
 
     uid = str(ev_json.get("iCalUID") or ev_json.get("id") or "")
 
@@ -891,7 +928,7 @@ class GoogleBackend:
             self_response=response,
         )
 
-    @_classify_errors
+    @_classify_write_errors
     async def delete_instance(
         self,
         calendar_id: str,
@@ -901,18 +938,29 @@ class GoogleBackend:
         all_day: bool = False,
     ) -> None:
         encoded_cal = urllib.parse.quote(calendar_id, safe="")
-        instance_id, instance_etag = await self._resolve_instance(
-            encoded_cal, master_provider_id, recurrence_id_dt, all_day
-        )
+        try:
+            instance_id, instance_etag = await self._resolve_instance(
+                encoded_cal, master_provider_id, recurrence_id_dt, all_day
+            )
+        except PermanentError:
+            # No such instance: either already cancelled or the series no longer
+            # reaches this slot. Both mean the occurrence is gone, which is the
+            # outcome we wanted — and the op must stay idempotent now that it
+            # can be retried after a crash between push and reap.
+            return
 
         encoded_inst = urllib.parse.quote(instance_id, safe="")
         etag = if_match or instance_etag
-        await self._request(
-            "DELETE",
-            f"/calendars/{encoded_cal}/events/{encoded_inst}",
-            params={"sendUpdates": "none"},
-            headers={"If-Match": etag} if etag else None,
-        )
+        try:
+            await self._request(
+                "DELETE",
+                f"/calendars/{encoded_cal}/events/{encoded_inst}",
+                params={"sendUpdates": "none"},
+                headers={"If-Match": etag} if etag else None,
+            )
+        except PermanentError as e:
+            if "410" not in str(e) and "404" not in str(e):
+                raise
 
     def supported_contact_sources(self) -> tuple[str, ...]:
         return ("personal",)

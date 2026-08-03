@@ -183,12 +183,16 @@ def _prop_dt(prop, tzid_hint: str | None = None) -> datetime | None:
     return _normalise_dt(getattr(prop, "dt", None), tzid_hint)
 
 
-def _prop_dt_tuple(prop) -> tuple[datetime, ...]:
+def _prop_dt_tuple(prop, tzid_hint: str | None = None) -> tuple[datetime, ...]:
     """Flatten EXDATE / RDATE into a tuple of datetimes.
 
     Each property may be a single value or a list (multiple EXDATE lines).
     Each property's `.dts` is a list of vDDDTypes whose `.dt` is the value.
     Some flavors expose `.dt` directly for single values; handle both.
+
+    tzid_hint should be the event's own zone: a writer that emitted an
+    unresolvable TZID leaves these values naive on re-parse, and defaulting
+    them to UTC would move the exclusion to the wrong instant.
     """
     if prop is None:
         return ()
@@ -198,11 +202,11 @@ def _prop_dt_tuple(prop) -> tuple[datetime, ...]:
         dts = getattr(p, "dts", None)
         if dts is not None:
             for entry in dts:
-                normalised = _normalise_dt(getattr(entry, "dt", None))
+                normalised = _normalise_dt(getattr(entry, "dt", None), tzid_hint)
                 if normalised is not None:
                     out.append(normalised)
         else:
-            normalised = _normalise_dt(getattr(p, "dt", None))
+            normalised = _normalise_dt(getattr(p, "dt", None), tzid_hint)
             if normalised is not None:
                 out.append(normalised)
     return tuple(out)
@@ -296,9 +300,11 @@ def _vevent_to_event(
     )
 
     exdates = _safe(
-        lambda: _prop_dt_tuple(ve.get("EXDATE")), field="EXDATE", default=()
+        lambda: _prop_dt_tuple(ve.get("EXDATE"), tz), field="EXDATE", default=()
     )
-    rdates = _safe(lambda: _prop_dt_tuple(ve.get("RDATE")), field="RDATE", default=())
+    rdates = _safe(
+        lambda: _prop_dt_tuple(ve.get("RDATE"), tz), field="RDATE", default=()
+    )
 
     # Pre-extract organizer address so attendees can be marked correctly.
     _org_prop_pre = ve.get("ORGANIZER")
@@ -874,6 +880,13 @@ class CalDavBackend:
         self, calendar_id: str, provider_event_id: str, if_match: str | None
     ) -> None:
         client = await self._get_client()
+        if if_match:
+            # The library's delete() sends no If-Match, so go through the
+            # low-level client to keep the conditional-delete guarantee.
+            await self._run(
+                client.request, provider_event_id, "DELETE", "", {"If-Match": if_match}
+            )
+            return
         event_obj = caldav.CalendarObjectResource(client=client, url=provider_event_id)  # type: ignore[reportGeneralTypeIssues]
         await self._run(event_obj.delete)
 
@@ -950,7 +963,14 @@ class CalDavBackend:
         The EXDATE value type must match the master's DTSTART (RFC 5545): a
         DATE for all-day series, a DATE-TIME otherwise. A mismatched type is
         silently ignored by many servers, so the occurrence would reappear.
+
+        For timed series the EXDATE is written in the master's own TZID, or in
+        UTC when that zone cannot be resolved. A bare add() of the incoming
+        datetime would emit TZID="UTC+02:00" — a TZID naming no VTIMEZONE in
+        this object, which re-parses as naive and lands on the wrong instant.
         """
+        from lilical.backends._ical_serializer import _add_dt_with_tzid
+
         client = await self._get_client()
         event_obj = caldav.CalendarObjectResource(client=client, url=master_provider_id)  # type: ignore[reportGeneralTypeIssues]
         # A freshly-constructed resource is unloaded; get_data returns empty
@@ -976,7 +996,10 @@ class CalDavBackend:
                         parameters={"VALUE": "DATE"},
                     )
                 else:
-                    comp.add("exdate", recurrence_id_dt)
+                    tzid = None
+                    if base_dt is not None:
+                        tzid = base_dt.params.get("TZID")
+                    _add_dt_with_tzid(comp, "exdate", recurrence_id_dt, tzid)
 
         body = master_cal.to_ical().decode()
         headers = {"If-Match": if_match} if if_match else None

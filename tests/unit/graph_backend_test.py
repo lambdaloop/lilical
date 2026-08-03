@@ -1615,6 +1615,53 @@ async def test_delete_instance_matches_occurrence_in_utc_positive_timezone() -> 
 
 
 @pytest.mark.asyncio
+async def test_delete_instance_allday_matches_utc_midnight_slot() -> None:
+    """An all-day occurrence must resolve despite the midnight-spelling mismatch.
+
+    Graph reports all-day instance starts at midnight UTC, but the master is
+    re-anchored to local midnight, so the recurrence_id we send is local
+    midnight. Matching those by instant is off by the whole UTC offset — far
+    outside the 5-minute tolerance — so every all-day occurrence delete used to
+    die as PermanentError before reaching the server.
+    """
+    import zoneinfo
+
+    paris = zoneinfo.ZoneInfo("Europe/Paris")
+    # Local midnight, as the store's all-day anchoring produces.
+    recurrence_id_dt = datetime(2026, 7, 13, 0, 0, tzinfo=paris)
+
+    instances_body = {
+        "value": [
+            {
+                "id": "AAMk-occ-allday",
+                # Graph's all-day spelling: midnight UTC.
+                "start": {"dateTime": "2026-07-13T00:00:00.0000000", "timeZone": "UTC"},
+            }
+        ]
+    }
+    delete_requests: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        if "instances" in url:
+            return httpx.Response(200, json=instances_body)
+        if req.method == "DELETE":
+            delete_requests.append(url)
+            return httpx.Response(204)
+        return httpx.Response(404, json={"error": "not found"})
+
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, handler)
+
+    await backend.delete_instance(
+        "cal-1", "AAMk-master", recurrence_id_dt, all_day=True
+    )
+
+    assert len(delete_requests) == 1, "all-day occurrence never reached the server"
+    assert "AAMk-occ-allday" in delete_requests[0]
+
+
+@pytest.mark.asyncio
 async def test_update_instance_sends_if_match_when_provided() -> None:
     """A caller-supplied override etag must be sent as If-Match on the PATCH."""
     from lilical.models.event import Event as _Event

@@ -20,6 +20,11 @@ class EventChange:
     kind: Literal["upsert", "delete"]
     event: Event | None = None
     uid: str = ""
+    # For an override whose uid could not be resolved to the series master's:
+    # the master's provider event id, so the store can adopt the right uid.
+    # Google omits iCalUID from cancelled-instance payloads, and an override
+    # filed under the wrong uid is an orphan that never produces its hole.
+    master_provider_id: str | None = None
 
 
 class CursorExpired(Exception):  # noqa: N818

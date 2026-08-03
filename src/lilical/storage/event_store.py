@@ -1133,11 +1133,34 @@ class EventStore(QObject):
                     s.query(EventRow).filter_by(
                         uid=uid, calendar_id=calendar_id
                     ).delete()
+                    # Instances are a materialized view of the rows; leaving
+                    # them behind renders a deleted event as a ghost chip.
+                    s.query(EventInstanceRow).filter_by(
+                        uid=uid, calendar_id=calendar_id
+                    ).delete()
                     count += 1
                 elif change.kind == "upsert" and change.event is not None:
                     local_event = dataclasses.replace(
                         change.event, calendar_id=calendar_id
                     )
+                    # An override whose uid the backend could not resolve to the
+                    # master's (Google omits iCalUID on cancelled instances).
+                    # Recover it from the master's provider id, or the override
+                    # lands under a uid with no master and produces no hole.
+                    master_pid = getattr(change, "master_provider_id", None)
+                    if master_pid and local_event.recurrence_id is not None:
+                        master_row = (
+                            s.query(EventRow)
+                            .filter_by(
+                                calendar_id=calendar_id,
+                                provider_event_id=master_pid,
+                                recurrence_id="",
+                            )
+                            .first()
+                        )
+                        if master_row is not None and master_row.uid != uid:
+                            uid = master_row.uid
+                            local_event = dataclasses.replace(local_event, uid=uid)
                     recurrence_id_str = (
                         local_event.recurrence_id.isoformat()
                         if local_event.recurrence_id

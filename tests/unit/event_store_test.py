@@ -555,6 +555,80 @@ def test_delete_instance_of_edited_occurrence_leaves_no_instance(engine) -> None
     ), "edited occurrence was re-emitted by the rebuild"
 
 
+def test_remote_delete_removes_materialized_instances(engine) -> None:
+    """A remote delete must clear event_instances too, or chips linger as ghosts."""
+    from lilical.models.event import EventInstanceRow
+
+    store = EventStore(engine)
+    master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    with Session(engine) as s:
+        assert s.query(EventInstanceRow).filter_by(uid="event-1").count() > 0
+
+    store.apply_remote_changes("cal-1", [EventChange(kind="delete", uid="event-1")], "")
+
+    with Session(engine) as s:
+        assert s.query(EventRow).filter_by(uid="event-1").count() == 0
+        assert s.query(EventInstanceRow).filter_by(uid="event-1").count() == 0
+
+
+def test_override_adopts_master_uid_from_master_provider_id(engine) -> None:
+    """An override whose uid the backend couldn't resolve must find its master.
+
+    Google omits iCalUID from cancelled-instance payloads, so the change
+    arrives keyed on the instance id. Filed under that uid it has no master,
+    _rebuild_instances_for bails out, and the deleted occurrence keeps showing.
+    """
+    store = EventStore(engine)
+    master = _event(
+        rrule="FREQ=WEEKLY;COUNT=4",
+        exdates=(),
+        rdates=(),
+        provider_event_id="evt-rec",
+    )
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+
+    cancelled = _event(
+        uid="evt-rec_20260520T090000Z",  # instance id, not the master's uid
+        rrule=None,
+        exdates=(),
+        rdates=(),
+        recurrence_id=rid,
+        provider_event_id="evt-rec_20260520T090000Z",
+        status="CANCELLED",
+        dtstart=rid,
+        dtend=datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    store.apply_remote_changes(
+        "cal-1",
+        [
+            EventChange(
+                kind="upsert",
+                event=cancelled,
+                uid="evt-rec_20260520T090000Z",
+                master_provider_id="evt-rec",
+            )
+        ],
+        "",
+    )
+
+    with Session(engine) as s:
+        overrides = (
+            s.query(EventRow)
+            .filter(EventRow.uid == "event-1", EventRow.recurrence_id != "")
+            .all()
+        )
+    assert len(overrides) == 1, "override was not adopted under the master's uid"
+    assert overrides[0].status == "CANCELLED"
+    # And the cancelled override leaves a hole in the expansion.
+    assert not _has_instance_at(engine, rid)
+
+
 def _ui_recurrence_id(engine, uid: str, nth: int) -> datetime:
     """The recurrence_id the UI actually passes for the nth occurrence.
 

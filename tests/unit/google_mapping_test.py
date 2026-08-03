@@ -153,6 +153,28 @@ def test_cancelled_occurrence_is_stored_as_cancelled_override() -> None:
     assert change.uid == "uid-rec@google.com"
 
 
+def test_cancelled_occurrence_without_icaluid_carries_master_provider_id() -> None:
+    """Google omits iCalUID from cancelled-instance payloads.
+
+    Without a way back to the master, the override is filed under the instance
+    id, has no master row, and never produces a hole — so the deleted
+    occurrence keeps rendering. The change must carry recurringEventId so the
+    store can adopt the master's uid.
+    """
+    data: dict[str, Any] = {
+        "id": "evt-rec_20260520T090000Z",
+        "recurringEventId": "evt-rec",
+        "status": "cancelled",
+        "originalStartTime": {"dateTime": "2026-05-20T09:00:00Z", "timeZone": "UTC"},
+    }
+    change = _google_event_to_change(data, "cal-1")
+    assert change is not None
+    assert change.kind == "upsert"
+    assert change.event is not None
+    assert change.event.status == "CANCELLED"
+    assert change.master_provider_id == "evt-rec"
+
+
 def test_cancelled_master_without_recurring_id_still_deletes() -> None:
     """A cancelled event with no recurringEventId is a real series/event delete."""
     data: dict[str, Any] = {
