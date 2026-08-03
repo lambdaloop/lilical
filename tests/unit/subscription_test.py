@@ -783,9 +783,7 @@ def test_incremental_sync_short_circuits_when_body_none(tmp_path: Path) -> None:
     store = _store_with_calendar(src)
     backend = SubscriptionBackend(account_id="subscriptions", store=store)
 
-    cursor = SubscriptionCursor(
-        etag=None, last_modified=lm, content_sha256="prev-sha"
-    )
+    cursor = SubscriptionCursor(etag=None, last_modified=lm, content_sha256="prev-sha")
     changes, new_cursor = asyncio.run(backend.incremental_sync(src, cursor))
     assert changes == []
     # body=None short-circuit preserves the prior content_sha256 so the diff
@@ -837,11 +835,12 @@ def _real_store():
         conn.exec_driver_sql(
             "CREATE TABLE events (uid TEXT NOT NULL,"
             " calendar_id TEXT NOT NULL REFERENCES calendars(id),"
-            " recurrence_id TEXT NOT NULL DEFAULT '', provider_event_id TEXT,"
+            " recurrence_id TEXT NOT NULL DEFAULT '',"
+            " recurrence_key INTEGER NOT NULL DEFAULT 0, provider_event_id TEXT,"
             " dtstart TEXT NOT NULL, dtend TEXT NOT NULL, tz TEXT NOT NULL,"
             " all_day INTEGER DEFAULT 0, summary TEXT DEFAULT '',"
             " description TEXT DEFAULT '', location TEXT DEFAULT '',"
-            " url TEXT, rrule TEXT, exdates TEXT, rdates TEXT,"
+            " url TEXT, rrule TEXT, exdates TEXT, local_exdates TEXT, rdates TEXT,"
             " attendees TEXT, organizer TEXT, categories TEXT, color TEXT,"
             " status TEXT DEFAULT 'CONFIRMED', self_response TEXT,"
             " transparency TEXT DEFAULT 'OPAQUE', valarms TEXT, etag TEXT,"
@@ -867,7 +866,8 @@ def _real_store():
             " dtstart_utc INTEGER NOT NULL, dtend_utc INTEGER NOT NULL,"
             " dtstart_local TEXT NOT NULL, dtend_local TEXT NOT NULL,"
             " all_day INTEGER DEFAULT 0, is_override INTEGER DEFAULT 0,"
-            " recurrence_id TEXT NOT NULL DEFAULT '')"
+            " recurrence_id TEXT NOT NULL DEFAULT '',"
+            " recurrence_key INTEGER NOT NULL DEFAULT 0)"
         )
         conn.exec_driver_sql(
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"

@@ -453,9 +453,7 @@ class _RecordingStore:
         self.calls.append(f"list_calendars({account_id})")
         return self.calendars
 
-    def apply_remote_changes(
-        self, calendar_id, changes, new_cursor, **kwargs
-    ) -> int:
+    def apply_remote_changes(self, calendar_id, changes, new_cursor, **kwargs) -> int:
         self.calls.append(f"apply({calendar_id},n={len(changes)})")
         return len(changes)
 
@@ -670,9 +668,7 @@ class _PendingOpStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return []
 
-    def apply_remote_changes(
-        self, calendar_id, changes, new_cursor, **kwargs
-    ) -> int:
+    def apply_remote_changes(self, calendar_id, changes, new_cursor, **kwargs) -> int:
         return 0
 
     def upsert_calendars(self, account_id: str, calendars: list) -> None:
@@ -698,8 +694,11 @@ class _PendingOpStore:
         return SimpleNamespace(provider_event_id=uid, etag='"mock-etag"')
 
     def get_override_etag(
-        self, uid: str, calendar_id: str, recurrence_id_str: str
+        self, uid: str, calendar_id: str, recurrence_id_dt, all_day: bool = False
     ) -> str | None:
+        return None
+
+    def mark_delete_instance_pushed(self, uid, calendar_id, recurrence_id_dt) -> None:
         return None
 
     def get_pending_op(self, op_id: int):
@@ -1183,9 +1182,7 @@ class _MultiAccountStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return []
 
-    def apply_remote_changes(
-        self, calendar_id, changes, new_cursor, **kwargs
-    ) -> int:
+    def apply_remote_changes(self, calendar_id, changes, new_cursor, **kwargs) -> int:
         return 0
 
     def upsert_calendars(self, account_id: str, calendars: list) -> None:
@@ -1380,9 +1377,7 @@ class _IncrementalStore:
             )
         ]
 
-    def apply_remote_changes(
-        self, calendar_id, changes, new_cursor, **kwargs
-    ) -> int:
+    def apply_remote_changes(self, calendar_id, changes, new_cursor, **kwargs) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return 0
 
@@ -1448,9 +1443,7 @@ class _FailingCalStore:
     def list_calendars(self, account_id: str, included_only: bool = True) -> list:
         return self.calendars
 
-    def apply_remote_changes(
-        self, calendar_id, changes, new_cursor, **kwargs
-    ) -> int:
+    def apply_remote_changes(self, calendar_id, changes, new_cursor, **kwargs) -> int:
         self.applied.append((calendar_id, changes, new_cursor))
         return len(changes)
 

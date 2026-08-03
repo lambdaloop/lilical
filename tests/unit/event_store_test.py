@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -92,6 +92,7 @@ def _create_test_schema(engine) -> None:
                 uid TEXT NOT NULL,
                 calendar_id TEXT NOT NULL REFERENCES calendars(id),
                 recurrence_id TEXT NOT NULL DEFAULT '',
+                recurrence_key INTEGER NOT NULL DEFAULT 0,
                 provider_event_id TEXT,
                 dtstart TEXT NOT NULL,
                 dtend TEXT NOT NULL,
@@ -103,6 +104,7 @@ def _create_test_schema(engine) -> None:
                 url TEXT,
                 rrule TEXT,
                 exdates TEXT,
+                local_exdates TEXT,
                 rdates TEXT,
                 attendees TEXT,
                 organizer TEXT,
@@ -154,7 +156,8 @@ def _create_test_schema(engine) -> None:
                 dtend_local TEXT NOT NULL,
                 all_day INTEGER DEFAULT 0,
                 is_override INTEGER DEFAULT 0,
-                recurrence_id TEXT NOT NULL DEFAULT ''
+                recurrence_id TEXT NOT NULL DEFAULT '',
+                recurrence_key INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -446,10 +449,22 @@ def test_apply_remote_changes_uses_local_calendar_and_persists_cursor(engine) ->
     assert calendar.sync_cursor == cursor_json
 
 
+def _has_instance_at(engine, dt: datetime, uid: str = "event-1") -> bool:
+    """True when a materialized occurrence exists at that instant."""
+    from lilical.models.event import EventInstanceRow
+
+    with Session(engine) as s:
+        return (
+            s.query(EventInstanceRow)
+            .filter_by(uid=uid, dtstart_utc=int(dt.timestamp()))
+            .count()
+            > 0
+        )
+
+
 def test_apply_remote_changes_preserves_pending_delete_instance_exdate(engine) -> None:
     """A remote master upsert must not drop an EXDATE from a not-yet-pushed local
-    delete_instance op (else the just-deleted occurrence resurrects). After the
-    op uploads, server state wins."""
+    delete_instance op (else the just-deleted occurrence resurrects)."""
     store = EventStore(engine)
     rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
     master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
@@ -466,21 +481,230 @@ def test_apply_remote_changes_preserves_pending_delete_instance_exdate(engine) -
     store.apply_remote_changes(
         "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
     )
-    with Session(engine) as s:
-        row = s.query(EventRow).filter_by(uid="event-1", recurrence_id="").one()
-    assert row.exdates is not None
-    kept = [datetime.fromisoformat(x) for x in json.loads(row.exdates)]
+    kept = store.get_event("event-1", "cal-1").exdates
     assert any(abs((d - rid).total_seconds()) < 60 for d in kept)
+    assert not _has_instance_at(engine, rid)
 
-    # Once the op has uploaded (PendingOpRow gone), server state wins.
+
+def test_delete_instance_survives_op_upload_and_remote_master_upsert(engine) -> None:
+    """A local single-occurrence deletion must outlive its PendingOpRow.
+
+    SyncEngine._tick pushes pending ops and deletes them in phase 1, then pulls
+    incrementals in phase 2 of the SAME tick. Google and Graph masters carry no
+    EXDATE for a cancelled occurrence, so if the local tombstone only lives as
+    long as the pending op, that master upsert resurrects the occurrence the
+    user just deleted. That is the reported bug: it disappears, then comes back.
+    """
+    store = EventStore(engine)
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
+
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    store.queue_delete_instance("event-1", "cal-1", rid)
+    assert not _has_instance_at(engine, rid)
+
+    # The op uploads successfully and is reaped.
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).filter_by(op="delete_instance").delete()
+
+    # The server echoes the master back unchanged — still no EXDATE, because
+    # that is how Google and Graph represent a cancelled occurrence.
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+
+    kept = store.get_event("event-1", "cal-1").exdates
+    assert any(abs((d - rid).total_seconds()) < 60 for d in kept), (
+        "local deletion was dropped once its pending op uploaded"
+    )
+    assert not _has_instance_at(engine, rid), "deleted occurrence resurrected"
+
+
+def test_delete_instance_of_edited_occurrence_leaves_no_instance(engine) -> None:
+    """Deleting an occurrence that was previously edited must remove it locally.
+
+    queue_delete_instance rebuilds instances before tombstoning the override
+    row, and the rebuild's override query filters deleted_locally == 0 — so the
+    override is still visible to the rebuild and its instance row is re-emitted.
+    """
+    store = EventStore(engine)
+    rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+
+    # Edit that occurrence (moves it 30 minutes later), then delete it.
+    edited = _event(
+        rrule=None,
+        exdates=(),
+        rdates=(),
+        dtstart=datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 20, 10, 30, tzinfo=timezone.utc),
+    )
+    store.queue_update_instance("event-1", "cal-1", rid, edited)
+    assert _has_instance_at(engine, datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc))
+
+    store.queue_delete_instance("event-1", "cal-1", rid)
+
+    assert not _has_instance_at(engine, rid), "base occurrence still present"
+    assert not _has_instance_at(
+        engine, datetime(2026, 5, 20, 9, 30, tzinfo=timezone.utc)
+    ), "edited occurrence was re-emitted by the rebuild"
+
+
+def _ui_recurrence_id(engine, uid: str, nth: int) -> datetime:
+    """The recurrence_id the UI actually passes for the nth occurrence.
+
+    Mirrors ui/views/week.py exactly: `fromisoformat(inst.dtstart_local)
+    .astimezone()`. fromisoformat yields a fixed-offset tzinfo and astimezone()
+    with no argument yields another one, so this is never a named zone — which
+    is precisely what the ISO-string comparison sites never see in tests.
+    """
+    from lilical.models.event import EventInstanceRow
+
+    with Session(engine) as s:
+        rows = (
+            s.query(EventInstanceRow)
+            .filter_by(uid=uid)
+            .order_by(EventInstanceRow.dtstart_utc)
+            .all()
+        )
+        return datetime.fromisoformat(rows[nth].dtstart_local).astimezone()
+
+
+@pytest.fixture
+def system_tz(monkeypatch):
+    """Run a test under a chosen system timezone."""
+    import time as _time
+
+    def _set(name: str) -> None:
+        monkeypatch.setenv("TZ", name)
+        _time.tzset()
+        monkeypatch.setattr("lilical.storage.event_store.local_iana_tz", lambda: name)
+
+    yield _set
+    _time.tzset()
+
+
+@pytest.mark.parametrize(
+    "sys_tz, event_tz",
+    [
+        ("America/New_York", "Europe/Paris"),
+        ("Asia/Tokyo", "Europe/Paris"),
+        ("Europe/Paris", "America/New_York"),
+    ],
+)
+def test_delete_occurrence_end_to_end_non_utc(
+    engine, system_tz, sys_tz, event_tz
+) -> None:
+    """Full UI-shaped path: a timed series in one zone, user in another.
+
+    Every existing expander test uses UTC throughout, so the fixed-offset
+    recurrence_id the UI really produces is never exercised.
+    """
+    system_tz(sys_tz)
+    store = EventStore(engine)
+    zone = ZoneInfo(event_tz)
+    master = _event(
+        rrule="FREQ=DAILY;COUNT=5",
+        exdates=(),
+        rdates=(),
+        tz=event_tz,
+        dtstart=datetime(2026, 5, 13, 11, 0, tzinfo=zone),
+        dtend=datetime(2026, 5, 13, 12, 0, tzinfo=zone),
+    )
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+
+    rid = _ui_recurrence_id(engine, "event-1", 2)  # third occurrence
+    store.queue_delete_instance("event-1", "cal-1", rid)
+
+    assert not _has_instance_at(engine, rid)
+    # And it must stay gone once the op uploads and the master echoes back.
     with Session(engine) as s, s.begin():
         s.query(PendingOpRow).filter_by(op="delete_instance").delete()
     store.apply_remote_changes(
         "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
     )
+    assert not _has_instance_at(engine, rid), "occurrence resurrected after sync"
+
+
+def test_delete_occurrence_end_to_end_all_day(engine, system_tz) -> None:
+    """Same, for an all-day series, from a non-UTC system zone."""
+    system_tz("America/New_York")
+    store = EventStore(engine)
+    master = _event(
+        rrule="FREQ=DAILY;COUNT=5",
+        exdates=(),
+        rdates=(),
+        all_day=True,
+        tz="UTC",
+        dtstart=datetime(2026, 5, 13, 0, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 14, 0, 0, tzinfo=timezone.utc),
+    )
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+
+    rid = _ui_recurrence_id(engine, "event-1", 2)
+    store.queue_delete_instance("event-1", "cal-1", rid)
+
+    assert not _has_instance_at(engine, rid)
+    with Session(engine) as s, s.begin():
+        s.query(PendingOpRow).filter_by(op="delete_instance").delete()
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    assert not _has_instance_at(engine, rid), "all-day occurrence resurrected"
+
+
+def test_update_instance_matches_override_across_iso_spellings(engine) -> None:
+    """recurrence_id identity must be by instant, not by ISO string.
+
+    The UI always supplies a fixed-offset datetime (week.py does
+    fromisoformat(...).astimezone(), which can never yield a named zone), while
+    the provider stores its own spelling. Same instant, different string → an
+    exact-string lookup misses and inserts a duplicate override row.
+    """
+    store = EventStore(engine)
+    master = _event(rrule="FREQ=WEEKLY;COUNT=4", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+
+    # Server-spelled override: 09:00+00:00.
+    server_rid = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    store.queue_update_instance(
+        "event-1",
+        "cal-1",
+        server_rid,
+        _event(rrule=None, exdates=(), rdates=(), summary="first edit"),
+    )
+
+    # UI-spelled recurrence_id for the SAME instant: 11:00+02:00.
+    ui_rid = datetime(2026, 5, 20, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    store.queue_update_instance(
+        "event-1",
+        "cal-1",
+        ui_rid,
+        _event(rrule=None, exdates=(), rdates=(), summary="second edit"),
+    )
+
     with Session(engine) as s:
-        row = s.query(EventRow).filter_by(uid="event-1", recurrence_id="").one()
-    assert row.exdates is None
+        overrides = (
+            s.query(EventRow)
+            .filter(EventRow.uid == "event-1", EventRow.recurrence_id != "")
+            .all()
+        )
+    assert len(overrides) == 1, (
+        f"duplicate override rows for one instant: "
+        f"{[o.recurrence_id for o in overrides]}"
+    )
+    assert overrides[0].summary == "second edit"
 
 
 # -- upsert_calendars (Bug: 400 from /me/calendars/default; placeholder cleanup) --
@@ -934,9 +1158,15 @@ def test_queue_delete_instance_appends_exdate_and_enqueues_op(engine) -> None:
             .first()
         )
         assert master is not None
-        assert master.local_dirty == 1
-        exdates = json.loads(master.exdates)
-        assert recurrence_id_dt.isoformat() in exdates
+        # The deletion is a locally-owned tombstone, kept apart from the server's
+        # EXDATE column so it can be reconciled away later. The master is not
+        # marked dirty: no master update op is enqueued for it.
+        assert master.local_dirty == 0
+        assert master.exdates is None
+        local = json.loads(master.local_exdates)
+        assert [e["rid"] for e in local] == [recurrence_id_dt.isoformat()]
+        # …and it reads back as an ordinary EXDATE for every consumer.
+        assert recurrence_id_dt in store.get_event("series-del", "cal-1").exdates
 
         pending = s.query(PendingOpRow).one()
         assert pending.op == "delete_instance"
@@ -1933,14 +2163,20 @@ def test_queue_delete_instance_marks_existing_override(engine) -> None:
     assert override_row is not None
     assert override_row.deleted_locally == 1
     assert override_row.local_dirty == 1
-    master_exdates = json.loads(
+    # The exclusion lives in the local tombstone list, and surfaces through the
+    # effective exdates every consumer reads.
+    master_local = json.loads(
         s.query(EventRow)
         .filter_by(uid="series-del-ov", calendar_id="cal-1", recurrence_id="")
         .first()
-        .exdates
+        .local_exdates
         or "[]"
     )
-    assert rid_iso in master_exdates
+    assert [e["rid"] for e in master_local] == [rid_iso]
+    assert (
+        datetime.fromisoformat(rid_iso)
+        in store.get_event("series-del-ov", "cal-1").exdates
+    )
 
 
 # ── get_event edge cases ──────────────────────────────────────────────────────

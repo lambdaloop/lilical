@@ -3,10 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy import (
+    event as sa_event,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from lilical.models.db import Base
+from lilical.recurrence.identity import parse_recurrence_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +47,7 @@ class EventRow(Base):
             name="uq_events_provider",
         ),
         Index("idx_events_calendar", "calendar_id"),
+        Index("idx_events_rkey", "uid", "calendar_id", "recurrence_key"),
         Index("idx_events_dirty", "local_dirty", sqlite_where=text("local_dirty=1")),
         Index(
             "idx_events_deleted",
@@ -53,6 +66,10 @@ class EventRow(Base):
         String, ForeignKey("calendars.id", ondelete="CASCADE"), primary_key=True
     )
     recurrence_id: Mapped[str] = mapped_column(String, primary_key=True, default="")
+    # Instant-based identity for recurrence_id, so slots match across the many
+    # ISO spellings providers and the UI each use. 0 == master. See
+    # lilical.recurrence.identity.
+    recurrence_key: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     provider_event_id: Mapped[str | None] = mapped_column(Text)
     dtstart: Mapped[str] = mapped_column(Text, nullable=False)
     dtend: Mapped[str] = mapped_column(Text, nullable=False)
@@ -64,6 +81,11 @@ class EventRow(Base):
     url: Mapped[str | None] = mapped_column(Text)
     rrule: Mapped[str | None] = mapped_column(Text)
     exdates: Mapped[str | None] = mapped_column(Text)
+    # Occurrences deleted locally, held until the server independently confirms
+    # the hole. Survives the pending op that pushes the deletion — without this
+    # the next master upsert resurrects the occurrence. JSON list of
+    # {rid, key, since, pushed}. See EventStore._reconcile_local_exdates.
+    local_exdates: Mapped[str | None] = mapped_column(Text)
     rdates: Mapped[str | None] = mapped_column(Text)
     attendees: Mapped[str | None] = mapped_column(Text)
     organizer: Mapped[str | None] = mapped_column(Text)
@@ -87,6 +109,9 @@ class EventRow(Base):
 
 class EventInstanceRow(Base):
     __tablename__ = "event_instances"
+    __table_args__ = (
+        Index("idx_instances_rkey", "uid", "calendar_id", "recurrence_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     uid: Mapped[str] = mapped_column(String, nullable=False)
@@ -98,6 +123,7 @@ class EventInstanceRow(Base):
     all_day: Mapped[int] = mapped_column(Integer, default=0)
     is_override: Mapped[int] = mapped_column(Integer, default=0)
     recurrence_id: Mapped[str] = mapped_column(Text, default="")
+    recurrence_key: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class EventCompletionRow(Base):
@@ -110,6 +136,22 @@ class EventCompletionRow(Base):
     uid: Mapped[str] = mapped_column(String, primary_key=True)
     dtstart_utc: Mapped[int] = mapped_column(Integer, primary_key=True)
     completed_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+def _derive_recurrence_key(_mapper, _connection, target) -> None:
+    """Keep recurrence_key in sync with recurrence_id on every write.
+
+    The key is derived data, so deriving it here means no construction site can
+    forget it and silently break slot matching.
+    """
+    target.recurrence_key = parse_recurrence_key(
+        target.recurrence_id, all_day=bool(target.all_day)
+    )
+
+
+for _model in (EventRow, EventInstanceRow):
+    sa_event.listen(_model, "before_insert", _derive_recurrence_key)
+    sa_event.listen(_model, "before_update", _derive_recurrence_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +169,11 @@ class Event:
     url: str | None = None
     rrule: str | None = None
     recurrence_id: datetime | None = None
+    # Effective EXDATE set: server EXDATEs merged with local_exdates. Readers
+    # (expander, serializers, backends) want this and nothing else.
     exdates: tuple[datetime, ...] = ()
+    # Locally-deleted occurrences not yet confirmed gone by the server.
+    local_exdates: tuple[datetime, ...] = ()
     rdates: tuple[datetime, ...] = ()
     attendees: tuple[Attendee, ...] = ()
     organizer: Organizer | None = None

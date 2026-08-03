@@ -22,6 +22,7 @@ from lilical.models.event import (
     Organizer,
 )
 from lilical.models.pending_op import PendingOpRow
+from lilical.recurrence.identity import MASTER_KEY, recurrence_key
 from lilical.utils.timezone import local_iana_tz
 
 
@@ -96,7 +97,15 @@ def _row_to_event(row: EventRow) -> Event:
         location=row.location or "",
         url=row.url,
         rrule=row.rrule,
-        exdates=_parse_dt_tuple(row.exdates),
+        # exdates is the *effective* set — server EXDATEs plus locally-deleted
+        # occurrences the server has not confirmed yet. Every reader (expander,
+        # serializers, backends) wants that union and nothing else.
+        exdates=_merge_exdates(
+            _parse_dt_tuple(row.exdates),
+            _local_exdate_dts(row.local_exdates),
+            bool(row.all_day),
+        ),
+        local_exdates=_local_exdate_dts(row.local_exdates),
         rdates=_parse_dt_tuple(row.rdates),
         attendees=tuple(
             _attendee_from_json(a)
@@ -133,51 +142,98 @@ def _dt_tuple_to_json(dts: tuple[datetime, ...]) -> str | None:
     return json.dumps([dt.isoformat() for dt in dts])
 
 
-def _exdate_key(dt: datetime) -> int:
+def _exdate_key(dt: datetime, all_day: bool = False) -> int:
     """UTC epoch-minute key for deduping EXDATEs across tz/DST representations."""
-    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-    return round(aware.timestamp() / 60.0)
+    return recurrence_key(dt, all_day=all_day)
 
 
 def _merge_exdates(
-    base: tuple[datetime, ...], extra: tuple[datetime, ...]
+    base: tuple[datetime, ...],
+    extra: tuple[datetime, ...],
+    all_day: bool = False,
 ) -> tuple[datetime, ...]:
     """Union two EXDATE tuples, deduping by instant (minute granularity)."""
-    seen = {_exdate_key(d) for d in base}
+    seen = {_exdate_key(d, all_day) for d in base}
     merged = list(base)
     for d in extra:
-        k = _exdate_key(d)
+        k = _exdate_key(d, all_day)
         if k not in seen:
             seen.add(k)
             merged.append(d)
     return tuple(merged)
 
 
-def _pending_delete_instance_exdates(
-    s: Session, uid: str, calendar_id: str
+def _subtract_exdates(
+    base: tuple[datetime, ...], remove: tuple[datetime, ...], all_day: bool = False
 ) -> tuple[datetime, ...]:
-    """recurrence_ids of not-yet-pushed delete_instance ops for a master.
+    """base minus remove, compared by instant."""
+    drop = {_exdate_key(d, all_day) for d in remove}
+    return tuple(d for d in base if _exdate_key(d, all_day) not in drop)
 
-    These are local single-occurrence deletions awaiting upload. A remote
-    master upsert must not drop them, or the just-deleted occurrence flickers
-    back until the op pushes. Once the op is uploaded its PendingOpRow is gone,
-    so server state then wins.
-    """
-    rows = (
-        s.query(PendingOpRow)
-        .filter_by(uid=uid, calendar_id=calendar_id, op="delete_instance")
-        .all()
-    )
+
+# ── Local occurrence tombstones ───────────────────────────────────────────────
+# A single-occurrence delete has to outlive the pending op that pushes it: the
+# op is reaped as soon as it uploads, but the master upsert that arrives in the
+# same sync tick carries no EXDATE on Google or Graph. Without a durable record
+# the occurrence the user just deleted comes straight back. Entries are stored
+# on the master row as JSON and retired by _reconcile_local_exdates once the
+# server's own representation carries the information.
+
+# Backstop so a tombstone can never hide an occurrence indefinitely.
+_LOCAL_EXDATE_TTL_DAYS = 7
+
+
+def _load_local_exdates(raw: str | None) -> list[dict[str, Any]]:
+    """Parse the tombstone list, tolerating the plain-ISO-list legacy shape."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            if item.get("rid"):
+                out.append(item)
+        elif isinstance(item, str):
+            out.append({"rid": item, "since": _utc_now(), "pushed": False})
+    return out
+
+
+def _dump_local_exdates(entries: list[dict[str, Any]]) -> str | None:
+    return json.dumps(entries) if entries else None
+
+
+def _entry_key(entry: dict[str, Any], all_day: bool = False) -> int:
+    try:
+        return recurrence_key(datetime.fromisoformat(entry["rid"]), all_day=all_day)
+    except (ValueError, TypeError, KeyError):
+        return MASTER_KEY
+
+
+def _local_exdate_dts(raw: str | None) -> tuple[datetime, ...]:
     out: list[datetime] = []
-    for r in rows:
-        try:
-            rid = json.loads(r.payload).get("recurrence_id")
-        except (ValueError, AttributeError):
-            continue
-        if rid:
-            with contextlib.suppress(ValueError):
-                out.append(datetime.fromisoformat(rid))
+    for e in _load_local_exdates(raw):
+        with contextlib.suppress(ValueError, TypeError):
+            out.append(datetime.fromisoformat(e["rid"]))
     return tuple(out)
+
+
+# _pending_delete_instance_exdates used to guard a just-deleted occurrence
+# against a remote master upsert, but only while the op sat in the queue. That
+# window closed the instant the op uploaded, which is exactly when the occurrence
+# came back. local_exdates covers the same window and outlives the op, so the
+# pending-op lookup is gone.
+
+
+def _match_row(query, recurrence_id_str: str, rkey: int):
+    """Pick the master row, or the override row for a slot matched by instant."""
+    if recurrence_id_str == "":
+        return query.filter_by(recurrence_id="").first()
+    return query.filter(
+        EventRow.recurrence_id != "", EventRow.recurrence_key == rkey
+    ).first()
 
 
 def _event_to_json(event: Event) -> str:
@@ -200,6 +256,7 @@ def _event_to_row(event: Event) -> EventRow:
         uid=event.uid,
         calendar_id=event.calendar_id,
         recurrence_id=event.recurrence_id.isoformat() if event.recurrence_id else "",
+        recurrence_key=recurrence_key(event.recurrence_id, all_day=event.all_day),
         provider_event_id=event.provider_event_id,
         dtstart=event.dtstart.isoformat() if event.dtstart else "",
         dtend=event.dtend.isoformat() if event.dtend else "",
@@ -210,7 +267,18 @@ def _event_to_row(event: Event) -> EventRow:
         location=event.location,
         url=event.url,
         rrule=event.rrule,
-        exdates=_dt_tuple_to_json(event.exdates),
+        # Event.exdates is the effective union, so split the local tombstones
+        # back out — otherwise they'd be laundered into the server column and
+        # could never be reconciled away.
+        exdates=_dt_tuple_to_json(
+            _subtract_exdates(event.exdates, event.local_exdates, event.all_day)
+        ),
+        local_exdates=_dump_local_exdates(
+            [
+                {"rid": d.isoformat(), "since": _utc_now(), "pushed": False}
+                for d in event.local_exdates
+            ]
+        ),
         rdates=_dt_tuple_to_json(event.rdates),
         attendees=_json_dumps([dataclasses.asdict(a) for a in event.attendees]) or "",
         organizer=_json_dumps(
@@ -354,6 +422,10 @@ class EventStore(QObject):
                         all_day=int(occ["all_day"]),
                         is_override=int(occ.get("is_override", False)),
                         recurrence_id=occ.get("recurrence_id") or "",
+                        recurrence_key=recurrence_key(
+                            _parse_dt(occ.get("recurrence_id") or None),
+                            all_day=bool(occ["all_day"]),
+                        ),
                     )
                 )
             return
@@ -410,7 +482,11 @@ class EventStore(QObject):
             return _row_to_event(row)
 
     def get_override_etag(
-        self, uid: str, calendar_id: str, recurrence_id_str: str
+        self,
+        uid: str,
+        calendar_id: str,
+        recurrence_id_dt: datetime,
+        all_day: bool = False,
     ) -> str | None:
         """Return the stored etag of an override row, or None if absent.
 
@@ -418,16 +494,35 @@ class EventStore(QObject):
         edit to that occurrence isn't silently clobbered. Unlike
         get_override_events this ignores deleted_locally, since delete_instance
         needs the etag of the row it just tombstoned.
+
+        Matches on recurrence_key rather than the ISO string, so the caller's
+        spelling of the instant doesn't have to equal the provider's.
         """
         with Session(self._engine) as s:
-            row = (
-                s.query(EventRow)
-                .filter_by(
-                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
-                )
-                .first()
+            row = self._find_override_row(
+                s, uid, calendar_id, recurrence_id_dt, all_day
             )
             return row.etag if row else None
+
+    @staticmethod
+    def _find_override_row(
+        session,
+        uid: str,
+        calendar_id: str,
+        recurrence_id_dt: datetime,
+        all_day: bool = False,
+    ) -> "EventRow | None":
+        """The override row for a slot, matched by instant not by ISO string."""
+        return (
+            session.query(EventRow)
+            .filter_by(
+                uid=uid,
+                calendar_id=calendar_id,
+                recurrence_key=recurrence_key(recurrence_id_dt, all_day=all_day),
+            )
+            .filter(EventRow.recurrence_id != "")
+            .first()
+        )
 
     def get_event_for_instance(self, inst: "EventInstanceRow") -> "Event | None":
         """Return the Event for a specific instance row.
@@ -442,8 +537,9 @@ class EventStore(QObject):
                     .filter_by(
                         uid=inst.uid,
                         calendar_id=inst.calendar_id,
-                        recurrence_id=inst.recurrence_id,
+                        recurrence_key=inst.recurrence_key,
                     )
+                    .filter(EventRow.recurrence_id != "")
                     .first()
                 )
                 if row is not None:
@@ -491,10 +587,14 @@ class EventStore(QObject):
             return frozenset()
         keys = [(i.calendar_id, i.uid, i.dtstart_utc) for i in instances]
         with Session(self._engine) as s:
-            rows = s.query(EventCompletionRow).filter(
-                EventCompletionRow.calendar_id.in_({k[0] for k in keys}),
-                EventCompletionRow.dtstart_utc.in_({k[2] for k in keys}),
-            ).all()
+            rows = (
+                s.query(EventCompletionRow)
+                .filter(
+                    EventCompletionRow.calendar_id.in_({k[0] for k in keys}),
+                    EventCompletionRow.dtstart_utc.in_({k[2] for k in keys}),
+                )
+                .all()
+            )
         key_set = {(r.calendar_id, r.uid, r.dtstart_utc) for r in rows}
         return frozenset(k for k in keys if k in key_set)
 
@@ -806,14 +906,18 @@ class EventStore(QObject):
     ) -> None:
         """Update a single instance of a recurring event."""
         account_id = self._account_id_for_calendar(calendar_id)
-        recurrence_id_str = recurrence_id_dt.isoformat()
         with self._write_session() as s:
-            row = (
+            master_row = (
                 s.query(EventRow)
-                .filter_by(
-                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
-                )
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
                 .first()
+            )
+            all_day = bool(master_row.all_day) if master_row is not None else False
+            # Match by instant: the UI's fixed-offset spelling of this slot will
+            # not equal the provider's, and an exact-string miss would insert a
+            # duplicate override row instead of updating the existing one.
+            row = self._find_override_row(
+                s, uid, calendar_id, recurrence_id_dt, all_day
             )
             override = dataclasses.replace(
                 edited,
@@ -827,6 +931,8 @@ class EventStore(QObject):
                 s.add(_event_to_row(override))
             else:
                 updated = _event_to_row(override)
+                # recurrence_id is skipped so the provider's own spelling of the
+                # slot survives for outbound requests.
                 _skip = {"uid", "calendar_id", "recurrence_id", "inserted_at"}
                 for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
                     if col_name in _skip:
@@ -862,7 +968,14 @@ class EventStore(QObject):
         calendar_id: str,
         recurrence_id_dt: datetime,
     ) -> None:
-        """Delete a single occurrence of a recurring event."""
+        """Delete a single occurrence of a recurring event.
+
+        Records a durable local tombstone rather than only an EXDATE guarded by
+        the pending op: the op is reaped the moment it uploads, and the master
+        upsert arriving in the same sync tick carries no EXDATE on Google or
+        Graph. _reconcile_local_exdates retires the tombstone once the server's
+        own representation carries the deletion.
+        """
         account_id = self._account_id_for_calendar(calendar_id)
         recurrence_id_str = recurrence_id_dt.isoformat()
         with self._write_session() as s:
@@ -871,24 +984,32 @@ class EventStore(QObject):
                 .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
                 .first()
             )
-            if master_row is not None:
-                master_event = _row_to_event(master_row)
-                new_exdates = master_event.exdates + (recurrence_id_dt,)
-                master_row.exdates = _dt_tuple_to_json(new_exdates)
-                master_row.local_dirty = True
-                updated_master = dataclasses.replace(master_event, exdates=new_exdates)
-                self._rebuild_instances_for(s, updated_master)
-            # If there's an override row at this recurrence_id, mark it deleted too.
-            override_row = (
-                s.query(EventRow)
-                .filter_by(
-                    uid=uid, calendar_id=calendar_id, recurrence_id=recurrence_id_str
-                )
-                .first()
+            all_day = bool(master_row.all_day) if master_row is not None else False
+            # Tombstone an existing override BEFORE rebuilding. The rebuild only
+            # skips overrides with deleted_locally set, so doing this afterwards
+            # re-emits the instance and the occurrence never disappears.
+            override_row = self._find_override_row(
+                s, uid, calendar_id, recurrence_id_dt, all_day
             )
             if override_row is not None:
                 override_row.deleted_locally = True
                 override_row.local_dirty = True
+            if master_row is not None:
+                k = recurrence_key(recurrence_id_dt, all_day=all_day)
+                entries = _load_local_exdates(master_row.local_exdates)
+                if not any(_entry_key(e, all_day) == k for e in entries):
+                    entries.append(
+                        {
+                            "rid": recurrence_id_str,
+                            "since": _utc_now(),
+                            "pushed": False,
+                        }
+                    )
+                master_row.local_exdates = _dump_local_exdates(entries)
+                # local_dirty is deliberately not set: no master update op is
+                # enqueued for this, and the EXDATE must not be pushed as part
+                # of the master (Google and Graph masters carry none).
+                self._rebuild_instances_for(s, _row_to_event(master_row))
             if account_id:
                 s.add(
                     PendingOpRow(
@@ -904,6 +1025,91 @@ class EventStore(QObject):
         self.events_changed.emit(calendar_id, {uid})
         self.local_events_changed.emit()
 
+    @staticmethod
+    def _reconcile_local_exdates(session, master_row: "EventRow") -> None:
+        """Retire local occurrence tombstones the server now accounts for.
+
+        A tombstone exists only to bridge the gap between "the user deleted this
+        occurrence" and "the server's own representation shows it gone". Drop it
+        as soon as the server carries that information itself:
+
+        * the server master now has an EXDATE at the slot (CalDAV, and Graph via
+          synthesis) — the server column already produces the hole;
+        * a CANCELLED override sits at the slot (Google's cancelled instance,
+          Graph's cancelled exception) — the expander already produces the hole;
+        * an *active* override sits at the slot and our deletion has been pushed
+          — the occurrence was re-created server-side and must become visible
+          again. Gated on `pushed` so we don't release during the window between
+          queueing the delete and uploading it, when the server still legitimately
+          reports the occurrence as present.
+
+        Plus a TTL backstop, so a tombstone can never hide an occurrence forever
+        if none of the above ever arrives.
+        """
+        entries = _load_local_exdates(master_row.local_exdates)
+        if not entries:
+            return
+        all_day = bool(master_row.all_day)
+        server_keys = {
+            _exdate_key(d, all_day) for d in _parse_dt_tuple(master_row.exdates)
+        }
+        override_status: dict[int, str] = {
+            r.recurrence_key: (r.status or "CONFIRMED")
+            for r in session.query(EventRow)
+            .filter(
+                EventRow.uid == master_row.uid,
+                EventRow.calendar_id == master_row.calendar_id,
+                EventRow.recurrence_id != "",
+                EventRow.deleted_locally == 0,
+            )
+            .all()
+        }
+        cutoff = datetime.now(timezone.utc) - timedelta(days=_LOCAL_EXDATE_TTL_DAYS)
+
+        kept: list[dict[str, Any]] = []
+        for e in entries:
+            k = _entry_key(e, all_day)
+            if k in server_keys:
+                continue
+            status = override_status.get(k)
+            if status == "CANCELLED":
+                continue
+            if status is not None and e.get("pushed"):
+                continue
+            since = _parse_dt(e.get("since"))
+            if since is not None and since < cutoff:
+                continue
+            kept.append(e)
+        if len(kept) != len(entries):
+            master_row.local_exdates = _dump_local_exdates(kept)
+
+    def mark_delete_instance_pushed(
+        self, uid: str, calendar_id: str, recurrence_id_dt: datetime
+    ) -> None:
+        """Record that a single-occurrence delete reached the server.
+
+        Only after this can a re-created occurrence release its tombstone; see
+        _reconcile_local_exdates.
+        """
+        with self._write_session() as s:
+            master_row = (
+                s.query(EventRow)
+                .filter_by(uid=uid, calendar_id=calendar_id, recurrence_id="")
+                .first()
+            )
+            if master_row is None:
+                return
+            all_day = bool(master_row.all_day)
+            k = recurrence_key(recurrence_id_dt, all_day=all_day)
+            entries = _load_local_exdates(master_row.local_exdates)
+            changed = False
+            for e in entries:
+                if _entry_key(e, all_day) == k and not e.get("pushed"):
+                    e["pushed"] = True
+                    changed = True
+            if changed:
+                master_row.local_exdates = _dump_local_exdates(entries)
+
     def apply_remote_changes(
         self,
         calendar_id: str,
@@ -917,6 +1123,8 @@ class EventStore(QObject):
         # Keyed by canonical master (uid, calendar_id) to avoid redundant rebuilds
         # when both a master and its override(s) arrive in the same batch.
         masters_to_rebuild: dict[tuple[str, str], Event] = {}
+        # Masters whose local tombstones should be re-checked against the batch.
+        masters_touched: set[tuple[str, str]] = set()
 
         with self._write_session() as s:
             for change in changes:
@@ -935,27 +1143,28 @@ class EventStore(QObject):
                         if local_event.recurrence_id
                         else ""
                     )
-                    row = (
-                        s.query(EventRow)
-                        .filter_by(
-                            uid=uid,
-                            calendar_id=calendar_id,
-                            recurrence_id=recurrence_id_str,
-                        )
-                        .first()
+                    # Match the slot by instant, not by ISO spelling: the same
+                    # occurrence is spelled differently by each provider and by
+                    # the UI, and a string miss creates a duplicate row.
+                    rkey = recurrence_key(
+                        local_event.recurrence_id, all_day=local_event.all_day
+                    )
+                    row = _match_row(
+                        s.query(EventRow).filter_by(uid=uid, calendar_id=calendar_id),
+                        recurrence_id_str,
+                        rkey,
                     )
                     if row is None and local_event.provider_event_id:
                         # Stale local-UUID uid from before mark_synced rewrote
                         # to canonical. Match on (calendar_id, provider_event_id)
                         # and adopt the canonical uid.
-                        row = (
-                            s.query(EventRow)
-                            .filter_by(
+                        row = _match_row(
+                            s.query(EventRow).filter_by(
                                 calendar_id=calendar_id,
                                 provider_event_id=local_event.provider_event_id,
-                                recurrence_id=recurrence_id_str,
-                            )
-                            .first()
+                            ),
+                            recurrence_id_str,
+                            rkey,
                         )
                         if row is not None and row.uid != uid:
                             old_uid = row.uid
@@ -974,7 +1183,16 @@ class EventStore(QObject):
                         s.add(row)
                     else:
                         updated = _event_to_row(local_event)
-                        _skip = {"uid", "calendar_id", "recurrence_id"}
+                        # recurrence_id keeps the local spelling (it is part of
+                        # the PK; the key is what identifies the slot), and
+                        # local_exdates is locally owned — a server that knows
+                        # nothing of our tombstones must not clear them.
+                        _skip = {
+                            "uid",
+                            "calendar_id",
+                            "recurrence_id",
+                            "local_exdates",
+                        }
                         for col_name in EventRow.__table__.columns.keys():  # noqa: SIM118
                             if col_name in _skip:
                                 continue
@@ -983,26 +1201,29 @@ class EventStore(QObject):
                                 continue
                             setattr(row, col_name, getattr(updated, col_name, None))
                         row.local_dirty = 0
-                    # Preserve EXDATEs from not-yet-pushed local delete_instance
-                    # ops so a remote master upsert doesn't resurrect a just-
-                    # deleted occurrence (e.g. Graph masters carry no EXDATE).
-                    # Only for the master row; once the op uploads its PendingOp
-                    # is gone and server state wins.
-                    if recurrence_id_str == "":
-                        pending = _pending_delete_instance_exdates(
-                            s, uid, calendar_id
-                        )
-                        if pending:
-                            merged = _merge_exdates(local_event.exdates, pending)
-                            row.exdates = _dt_tuple_to_json(merged)
-                            local_event = dataclasses.replace(
-                                local_event, exdates=merged
-                            )
+                    # Either a master or one of its overrides can carry the
+                    # evidence that a local tombstone is now redundant.
+                    masters_touched.add((uid, calendar_id))
                     # Defer instance rebuilds to after this transaction commits so
                     # the write lock is held only for the fast EventRow upserts and
                     # cursor update, not the expensive iCal expansion.
                     masters_to_rebuild[(uid, calendar_id)] = local_event
                     count += 1
+
+            # Reconcile local tombstones once every row in the batch is visible,
+            # so a cancelled override arriving alongside its master counts.
+            s.flush()
+            for t_uid, t_cal in masters_touched:
+                master_row = (
+                    s.query(EventRow)
+                    .filter_by(uid=t_uid, calendar_id=t_cal, recurrence_id="")
+                    .first()
+                )
+                if master_row is None:
+                    continue
+                self._reconcile_local_exdates(s, master_row)
+                if (t_uid, t_cal) in masters_to_rebuild:
+                    masters_to_rebuild[(t_uid, t_cal)] = _row_to_event(master_row)
             if new_cursor_json:
                 s.query(Calendar).filter(Calendar.id == calendar_id).update(
                     {"sync_cursor": new_cursor_json}
@@ -1404,11 +1625,7 @@ class EventStore(QObject):
         now = datetime.now(timezone.utc).isoformat()
 
         with self._write_session() as s:
-            acc = (
-                s.query(Account)
-                .filter(Account.id == SUBSCRIPTION_ACCOUNT_ID)
-                .first()
-            )
+            acc = s.query(Account).filter(Account.id == SUBSCRIPTION_ACCOUNT_ID).first()
             if acc is None:
                 s.add(
                     Account(
@@ -1467,9 +1684,9 @@ class EventStore(QObject):
                 .count()
             )
             if remaining == 0:
-                s.query(Account).filter(
-                    Account.id == SUBSCRIPTION_ACCOUNT_ID
-                ).delete(synchronize_session=False)
+                s.query(Account).filter(Account.id == SUBSCRIPTION_ACCOUNT_ID).delete(
+                    synchronize_session=False
+                )
                 return True
         return False
 

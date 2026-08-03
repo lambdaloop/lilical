@@ -209,7 +209,8 @@ class SyncEngine(QObject):
                         self._store.get_override_etag,
                         op.uid,
                         op.calendar_id,
-                        event.recurrence_id.isoformat(),
+                        event.recurrence_id,
+                        bool(master and master.all_day),
                     )
                     await backend.update_instance(
                         provider_cal_id,
@@ -242,7 +243,8 @@ class SyncEngine(QObject):
                         self._store.get_override_etag,
                         op.uid,
                         op.calendar_id,
-                        rid_str,
+                        rid,
+                        bool(master and master.all_day),
                     )
                     await backend.delete_instance(
                         provider_cal_id,
@@ -251,12 +253,24 @@ class SyncEngine(QObject):
                         if_match=override_etag,
                         all_day=bool(master and master.all_day),
                     )
+                    # The tombstone may now release itself if the server ever
+                    # reports this occurrence as present again.
+                    await asyncio.to_thread(
+                        self._store.mark_delete_instance_pushed,
+                        op.uid,
+                        op.calendar_id,
+                        rid,
+                    )
                 else:
-                    log.warning(
-                        "delete_instance: no provider_event_id for master %s", op.uid
+                    # Do not swallow this: falling through would reap the op as
+                    # though it had succeeded, silently losing the deletion.
+                    raise PermanentError(
+                        f"delete_instance: no provider_event_id for master {op.uid}"
                     )
             else:
-                log.warning("delete_instance op missing recurrence_id for %s", op.uid)
+                raise PermanentError(
+                    f"delete_instance op missing recurrence_id for {op.uid}"
+                )
         elif op.op == "respond":
             import json as _json
 
@@ -326,11 +340,16 @@ class SyncEngine(QObject):
         remote_cals = await backend.list_calendars()
         await asyncio.to_thread(self._store.upsert_calendars, account.id, remote_cals)
 
-        # 1) Drain pending writes
+        # 1) Drain pending writes.
+        # Successful ops are reaped only after the pull below, not here: an op
+        # is the last thing protecting a local change from being overwritten by
+        # the server state pulled in this same tick. Reaping late costs nothing
+        # (the op is not re-sent) and closes that window.
+        reap_after_pull: list[int] = []
         for op in await asyncio.to_thread(self._store.list_pending_ops, account.id):
             try:
                 await self._apply_pending_op(backend, op)
-                await asyncio.to_thread(self._store.delete_pending_op, op.id)
+                reap_after_pull.append(op.id)
             except ConflictError:
                 log.warning("conflict on %s op for %s; dropping", op.op, op.uid)
                 await asyncio.to_thread(self._store.delete_pending_op, op.id)
@@ -378,7 +397,13 @@ class SyncEngine(QObject):
             if isinstance(r, int):
                 n_changes += r
             else:
+                # Keep the ops: the pull failed, so nothing has overwritten the
+                # local state and a retry is harmless.
                 raise r
+
+        # The pull is done and local state survived it — now the ops can go.
+        for op_id in reap_after_pull:
+            await asyncio.to_thread(self._store.delete_pending_op, op_id)
 
         # 3) Sync contacts (lower-frequency — once per 24 h per source).
         contact_store = getattr(self._store, "contacts", None)
@@ -446,9 +471,7 @@ class SyncEngine(QObject):
         if pairs:
             await asyncio.to_thread(contact_store.upsert_harvested, account_id, pairs)
 
-    def _gather_harvest_pairs(
-        self, cals
-    ) -> list[tuple[str, str | None]]:
+    def _gather_harvest_pairs(self, cals) -> list[tuple[str, str | None]]:
         """Synchronous — runs in a thread to avoid blocking the event loop."""
         import json as _j
 

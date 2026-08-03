@@ -65,6 +65,7 @@ def _create_test_schema(engine) -> None:
                 uid TEXT NOT NULL,
                 calendar_id TEXT NOT NULL REFERENCES calendars(id),
                 recurrence_id TEXT NOT NULL DEFAULT '',
+                recurrence_key INTEGER NOT NULL DEFAULT 0,
                 provider_event_id TEXT,
                 dtstart TEXT NOT NULL,
                 dtend TEXT NOT NULL,
@@ -76,6 +77,7 @@ def _create_test_schema(engine) -> None:
                 url TEXT,
                 rrule TEXT,
                 exdates TEXT,
+                local_exdates TEXT,
                 rdates TEXT,
                 attendees TEXT,
                 organizer TEXT,
@@ -127,7 +129,8 @@ def _create_test_schema(engine) -> None:
                 dtend_local TEXT NOT NULL,
                 all_day INTEGER DEFAULT 0,
                 is_override INTEGER DEFAULT 0,
-                recurrence_id TEXT NOT NULL DEFAULT ''
+                recurrence_id TEXT NOT NULL DEFAULT '',
+                recurrence_key INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -200,9 +203,7 @@ def test_create_subscription_reuses_existing_account(store: EventStore) -> None:
         content_sha256="sha-b",
     )
     with Session(store._engine) as s:
-        accounts = (
-            s.query(Account).filter(Account.id == SUBSCRIPTION_ACCOUNT_ID).all()
-        )
+        accounts = s.query(Account).filter(Account.id == SUBSCRIPTION_ACCOUNT_ID).all()
     assert len(accounts) == 1
 
 
