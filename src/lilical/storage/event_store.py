@@ -244,6 +244,7 @@ def _event_to_json(event: Event) -> str:
     d["recurrence_id"] = _to_iso(event.recurrence_id)
     d["last_modified"] = _to_iso(event.last_modified)
     d["exdates"] = [dt.isoformat() for dt in event.exdates]
+    d["local_exdates"] = [dt.isoformat() for dt in event.local_exdates]
     d["rdates"] = [dt.isoformat() for dt in event.rdates]
     # attendees / organizer are already dicts via dataclasses.asdict — keep them.
     d["categories"] = list(event.categories)
@@ -1800,10 +1801,15 @@ class EventStore(QObject):
 
         Returns the new tail event UID.
 
-        Caveat: this is lossy. PATCHing a Graph seriesMaster's recurrence drops
-        server-side exceptions on the truncated master, and pre-cutoff local
-        overrides are not migrated onto the tail series. Re-creating those
-        exceptions on both sides is deliberately out of scope here.
+        Post-cutoff EXDATEs and override rows are migrated onto the tail. Left
+        on the truncated master they would be unreachable by its RRULE, and the
+        expander appends overrides unconditionally — so previously-deleted
+        occurrences came back and previously-edited ones rendered as ghosts
+        detached from any series.
+
+        Caveat: PATCHing a Graph seriesMaster's recurrence drops server-side
+        exceptions on the truncated master. That is a provider limitation, not
+        something this can repair locally.
         """
         import re as _re
         import uuid
@@ -1835,8 +1841,29 @@ class EventStore(QObject):
             master_row.rrule = rrule
             master_row.local_dirty = True
 
+            # Partition exclusions at the cut. Anything at or after it belongs
+            # to the tail; leaving it on the master silently un-deletes it.
+            all_day = bool(master_row.all_day)
+            cut_key = recurrence_key(split_at_dt, all_day=all_day)
+            keep_exdates = tuple(
+                d for d in master_event.exdates if _exdate_key(d, all_day) < cut_key
+            )
+            tail_exdates = tuple(
+                d for d in master_event.exdates if _exdate_key(d, all_day) >= cut_key
+            )
+            master_row.exdates = _dt_tuple_to_json(
+                _subtract_exdates(keep_exdates, master_event.local_exdates, all_day)
+            )
+            master_row.local_exdates = _dump_local_exdates(
+                [
+                    e
+                    for e in _load_local_exdates(master_row.local_exdates)
+                    if _entry_key(e, all_day) < cut_key
+                ]
+            )
+
             # Rebuild instances for the truncated master
-            updated_master = dataclasses.replace(master_event, rrule=rrule)
+            updated_master = _row_to_event(master_row)
             self._rebuild_instances_for(s, updated_master)
 
             if account_id:
@@ -1863,12 +1890,13 @@ class EventStore(QObject):
                 etag=None,
                 sequence=0,
                 dtstart=split_at_dt,
+                exdates=tail_exdates,
+                local_exdates=(),
                 local_dirty=True,
             )
             tail_row = _event_to_row(tail)
             tail_row.local_dirty = True
             s.add(tail_row)
-            self._rebuild_instances_for(s, tail)
 
             if account_id:
                 s.add(
@@ -1882,6 +1910,38 @@ class EventStore(QObject):
                         created_at=_utc_now(),
                     )
                 )
+
+            # Re-parent post-cutoff overrides onto the tail. Ops are drained
+            # FIFO, so the create above lands (and mark_synced fills in the
+            # tail's provider id) before these update_instance ops run.
+            for ov_row in (
+                s.query(EventRow)
+                .filter(
+                    EventRow.uid == uid,
+                    EventRow.calendar_id == calendar_id,
+                    EventRow.recurrence_id != "",
+                    EventRow.recurrence_key >= cut_key,
+                )
+                .all()
+            ):
+                ov_row.uid = new_uid
+                ov_row.provider_event_id = None
+                ov_row.etag = None
+                ov_row.local_dirty = True
+                if account_id and not ov_row.deleted_locally:
+                    s.add(
+                        PendingOpRow(
+                            account_id=account_id,
+                            calendar_id=calendar_id,
+                            uid=new_uid,
+                            op="update_instance",
+                            payload=_event_to_json(_row_to_event(ov_row)),
+                            if_match=None,
+                            created_at=_utc_now(),
+                        )
+                    )
+            s.flush()
+            self._rebuild_instances_for(s, tail)
 
         self.events_changed.emit(calendar_id, {uid, new_uid})
         self.local_events_changed.emit()

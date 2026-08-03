@@ -641,6 +641,8 @@ class _DayCanvas(QGraphicsView):
         self._drag_start_min: float | None = None
         self._drag_current_min: float | None = None
         self._drag_chip_event = None
+        # Which occurrence of a series is being dragged; None for one-offs.
+        self._drag_chip_instance_dtstart = None
         self._drag_chip_mode: str | None = None
         self._drag_chip_origin: tuple[int, int, int] | None = None
         self._drag_chip_grab_offset_min: float | None = None
@@ -1334,6 +1336,8 @@ class _DayCanvas(QGraphicsView):
             for chip in self._chips.values():
                 if chip._event is event:  # type: ignore[reportPrivateUsage]
                     r = chip.sceneBoundingRect()
+                    # Needed to move just this occurrence of a series.
+                    self._drag_chip_instance_dtstart = chip.instance_dtstart
                     self._press_scene_pos = chip._press_scene_pos  # type: ignore[reportPrivateUsage]
                     origin_start = int((r.top() - body_top) * 60 / pph)
                     origin_end = int((r.bottom() - body_top) * 60 / pph)
@@ -1391,7 +1395,6 @@ class _DayCanvas(QGraphicsView):
             self._drag_preview.set_label(label)
 
     def _on_chip_drag_committed(self, event, mode: str, scene_pos: QPointF) -> None:
-        import dataclasses
 
         if self._drag_chip_event is None or self._drag_chip_origin is None:
             self._teardown_preview()
@@ -1436,15 +1439,17 @@ class _DayCanvas(QGraphicsView):
             tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
-        updated = dataclasses.replace(
+        from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+        dispatch_drag_edit(
+            self.parent(),  # type: ignore[arg-type]
+            self._store,
             event,
-            dtstart=new_dtstart,
-            dtend=new_dtend,
+            self._drag_chip_instance_dtstart,
+            new_dtstart,
+            new_dtend,
             tz=local_iana_tz(),
-            sequence=event.sequence + 1,
-            local_dirty=True,
         )
-        self._store.queue_update(updated, event.etag)
         self._teardown_preview()
         self._drag_chip_event = None
         self._drag_chip_mode = None

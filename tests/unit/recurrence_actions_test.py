@@ -262,3 +262,146 @@ def test_dispatch_delete_following_with_recurrence_id(qapp):
 
     assert len(store.truncate_calls) == 1
     parent.deleteLater()
+
+
+# ── dispatch_drag_edit: dragging a recurring chip must prompt for scope ───────
+
+
+def _drag_dialog(monkeypatch, choice: str | None, *, accepted: bool = True):
+    """Stub RecurrenceActionDialog so the drag dispatch runs headless."""
+    import lilical.ui.widgets.recurrence_action_dialog as rad_mod
+
+    class _StubDialog:
+        def __init__(self, parent=None, *, action="edit"):
+            self.action = action
+
+        def exec(self):
+            return 1 if accepted else 0
+
+        @property
+        def choice(self):
+            return choice
+
+    monkeypatch.setattr(rad_mod, "RecurrenceActionDialog", _StubDialog)
+
+
+def test_drag_recurring_chip_prompts_and_updates_only_the_occurrence(
+    qapp, monkeypatch
+) -> None:
+    """Dragging one occurrence must not rewrite the whole series.
+
+    This used to call queue_update directly on the master, so dragging a single
+    occurrence of a weekly meeting moved every occurrence — with no prompt.
+    """
+    from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+    _drag_dialog(monkeypatch, "occurrence")
+    store = _FakeStore()
+    inst = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    new_start = datetime(2026, 5, 20, 14, 0, tzinfo=timezone.utc)
+    new_end = datetime(2026, 5, 20, 15, 0, tzinfo=timezone.utc)
+
+    ok = dispatch_drag_edit(
+        cast(Any, None),
+        cast(EventStore, store),
+        event,
+        inst,
+        new_start,
+        new_end,
+    )
+
+    assert ok
+    assert store.update_calls == [], "the whole series was rewritten"
+    assert len(store.update_instance_calls) == 1
+    uid, cal, rid, edited = store.update_instance_calls[0]
+    assert rid == inst
+    assert edited.dtstart == new_start
+    assert edited.rrule is None
+
+
+def test_drag_recurring_chip_series_shifts_master_by_delta(qapp, monkeypatch) -> None:
+    """'Entire series' must shift the master, not stamp the dragged date onto it.
+
+    Stamping the absolute date would drag the series' start to whichever
+    occurrence happened to be on screen.
+    """
+    from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+    _drag_dialog(monkeypatch, "series")
+    store = _FakeStore()
+    master_start = datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc)
+    event = _make_event(
+        dtstart=master_start,
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    # User drags the 20 May occurrence five hours later.
+    inst = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
+    new_start = datetime(2026, 5, 20, 14, 0, tzinfo=timezone.utc)
+    new_end = datetime(2026, 5, 20, 15, 0, tzinfo=timezone.utc)
+
+    dispatch_drag_edit(
+        cast(Any, None), cast(EventStore, store), event, inst, new_start, new_end
+    )
+
+    assert len(store.update_calls) == 1
+    updated, _etag = store.update_calls[0]
+    # Same day as the master, five hours later — not moved to 20 May.
+    assert updated.dtstart == master_start.replace(hour=14)
+    assert updated.dtend == master_start.replace(hour=15)
+
+
+def test_drag_non_recurring_chip_does_not_prompt(qapp, monkeypatch) -> None:
+    """One-off events keep the old direct-update path."""
+    from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+    _drag_dialog(monkeypatch, None, accepted=False)  # would cancel if consulted
+    store = _FakeStore()
+    event = _make_event(
+        rrule=None,
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    new_start = datetime(2026, 5, 13, 14, 0, tzinfo=timezone.utc)
+
+    ok = dispatch_drag_edit(
+        cast(Any, None),
+        cast(EventStore, store),
+        event,
+        None,
+        new_start,
+        new_start.replace(hour=15),
+    )
+
+    assert ok
+    assert len(store.update_calls) == 1
+    assert store.update_instance_calls == []
+
+
+def test_drag_recurring_chip_cancelled_makes_no_change(qapp, monkeypatch) -> None:
+    """Cancelling the scope prompt must leave the event untouched."""
+    from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+    _drag_dialog(monkeypatch, None, accepted=False)
+    store = _FakeStore()
+    event = _make_event(
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    new_start = datetime(2026, 5, 20, 14, 0, tzinfo=timezone.utc)
+
+    ok = dispatch_drag_edit(
+        cast(Any, None),
+        cast(EventStore, store),
+        event,
+        datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+        new_start,
+        new_start.replace(hour=15),
+    )
+
+    assert ok is False
+    assert store.update_calls == []
+    assert store.update_instance_calls == []

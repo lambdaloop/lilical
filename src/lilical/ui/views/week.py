@@ -779,6 +779,8 @@ class WeekView(QGraphicsView):
         self._drag_current_min: float | None = None
         self._drag_end_day_offset: int | None = None
         self._drag_chip_event = None  # the Event being dragged
+        # Which occurrence of a series is being dragged; None for one-offs.
+        self._drag_chip_instance_dtstart = None
         self._drag_chip_mode: str | None = (
             None  # "move" / "resize_top" / "resize_bottom"
         )
@@ -1698,6 +1700,8 @@ class WeekView(QGraphicsView):
             for chip in self._chips.values():
                 if chip._event is event:  # type: ignore[reportPrivateUsage]
                     r = chip.sceneBoundingRect()
+                    # Needed to move just this occurrence of a series.
+                    self._drag_chip_instance_dtstart = chip.instance_dtstart
                     self._press_scene_pos = chip._press_scene_pos  # type: ignore[reportPrivateUsage]
                     origin_day = int((r.left() - TIME_AXIS_WIDTH) / col_w)
                     if event.all_day:
@@ -1776,7 +1780,6 @@ class WeekView(QGraphicsView):
             self._drag_preview.set_label(label)
 
     def _on_chip_drag_committed(self, event, mode: str, scene_pos: QPointF) -> None:
-        import dataclasses
 
         if self._drag_chip_event is None or self._drag_chip_origin is None:
             self._teardown_preview()
@@ -1811,14 +1814,16 @@ class WeekView(QGraphicsView):
                     tzinfo=tz_local,
                 )
                 new_dtend = new_dtstart + timedelta(days=1)
-            updated = dataclasses.replace(
+            from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+            dispatch_drag_edit(
+                self.parent(),  # type: ignore[arg-type]
+                self._store,
                 event,
-                dtstart=new_dtstart,
-                dtend=new_dtend,
-                sequence=event.sequence + 1,
-                local_dirty=True,
+                self._drag_chip_instance_dtstart,
+                new_dtstart,
+                new_dtend,
             )
-            self._store.queue_update(updated, event.etag)
             self._teardown_preview()
             self._drag_chip_event = None
             self._drag_chip_mode = None
@@ -1861,15 +1866,17 @@ class WeekView(QGraphicsView):
             tzinfo=local_tz,
         )
         new_dtend = new_dtstart + timedelta(minutes=new_end - new_start)
-        updated = dataclasses.replace(
+        from lilical.ui.views._recurrence_actions import dispatch_drag_edit
+
+        dispatch_drag_edit(
+            self.parent(),  # type: ignore[arg-type]
+            self._store,
             event,
-            dtstart=new_dtstart,
-            dtend=new_dtend,
+            self._drag_chip_instance_dtstart,
+            new_dtstart,
+            new_dtend,
             tz=local_iana_tz(),
-            sequence=event.sequence + 1,
-            local_dirty=True,
         )
-        self._store.queue_update(updated, event.etag)
         self._teardown_preview()
         self._drag_chip_event = None
         self._drag_chip_mode = None

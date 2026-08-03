@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import datetime, timezone
 
 import pytest
@@ -530,3 +531,27 @@ def test_expander_cache_invalidates_on_override_change(
     no_ov_starts = {r["dtstart"] for r in no_overrides}
     ov_starts = {r["dtstart"] for r in with_override}
     assert no_ov_starts != ov_starts
+
+
+def test_cache_key_includes_exdates(expander: RecurrenceExpander) -> None:
+    """Adding an EXDATE must invalidate the cached expansion.
+
+    The key omitted exdates, so a long-lived expander kept serving the
+    occurrence the user had just deleted.
+    """
+    base = Event(
+        uid="cache-exdate",
+        calendar_id="cal-1",
+        rrule="FREQ=DAILY;COUNT=5",
+        dtstart=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 31, tzinfo=timezone.utc)
+
+    assert len(expander.expand_for_storage(base, start, end)) == 5
+
+    excluded = dataclasses.replace(
+        base, exdates=(datetime(2026, 5, 14, 9, 0, tzinfo=timezone.utc),)
+    )
+    assert len(expander.expand_for_storage(excluded, start, end)) == 4

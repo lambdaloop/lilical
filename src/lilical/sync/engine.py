@@ -536,7 +536,7 @@ def _event_from_payload(payload: str | None):
             except ValueError:
                 data[field] = None
     # Deserialize datetime tuple fields.
-    for field in ("exdates", "rdates"):
+    for field in ("exdates", "local_exdates", "rdates"):
         raw = data.get(field)
         if isinstance(raw, list):
             parsed = []

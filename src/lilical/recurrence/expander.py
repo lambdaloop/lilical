@@ -17,6 +17,8 @@ def _dt_to_utc(dt: datetime) -> datetime:
 
 
 class RecurrenceExpander:
+    _cache_limit = 512
+
     def __init__(self, store: EventStore) -> None:
         self._store = store
         self._cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
@@ -43,9 +45,17 @@ class RecurrenceExpander:
 
         cache_key = (
             event.uid,
+            event.calendar_id,
             event.dtstart.isoformat() if event.dtstart else "",
             event.dtend.isoformat() if event.dtend else "",
             event.rrule or "",
+            # Without these, deleting an occurrence leaves the cached expansion
+            # in place and the occurrence keeps rendering. Harmless today only
+            # because _rebuild_instances_for builds a throwaway expander per
+            # call; the long-lived one in app.py would serve stale results.
+            ",".join(d.isoformat() for d in event.exdates),
+            ",".join(d.isoformat() for d in event.rdates),
+            event.all_day,
             window_start.isoformat(),
             window_end.isoformat(),
             override_hash,
@@ -130,5 +140,9 @@ class RecurrenceExpander:
                     }
                 )
 
+        # Bound the cache: the key now varies with exdates, so an unbounded
+        # dict would grow with every occurrence the user deletes.
+        if len(self._cache) >= self._cache_limit:
+            self._cache.clear()
         self._cache[cache_key] = results
         return results

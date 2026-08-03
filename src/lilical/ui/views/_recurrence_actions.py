@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import QMessageBox, QWidget
@@ -17,6 +18,18 @@ if TYPE_CHECKING:
 
     from lilical.models.event import Event
     from lilical.storage.event_store import EventStore
+
+
+class RecurrenceScope(StrEnum):
+    """Which occurrences of a series an action applies to.
+
+    StrEnum so the values still compare equal to the plain strings this was
+    before.
+    """
+
+    OCCURRENCE = "occurrence"
+    FOLLOWING = "following"
+    SERIES = "series"
 
 
 def _refresh_hover_under_cursor(hint_view: "QGraphicsView | None" = None) -> None:
@@ -168,17 +181,19 @@ def open_edit_dialog(
 
     _v = refresh_view
     is_recurring = bool(event.rrule or event.recurrence_id is not None)
-    choice = "series"
+    choice: RecurrenceScope = RecurrenceScope.SERIES
 
     if is_recurring:
         rad = RecurrenceActionDialog(parent, action="edit")
         if not rad.exec():
             QTimer.singleShot(0, lambda: _refresh_hover_under_cursor(_v))
             return
-        choice = rad.choice or "series"
+        if rad.choice is None:
+            return
+        choice = RecurrenceScope(rad.choice)
 
     # Resolve which event data to show in the dialog
-    if choice == "occurrence":
+    if choice == RecurrenceScope.OCCURRENCE:
         edit_event = event  # show this occurrence's data (may be an override)
     else:
         # For "series" and "following", show the master
@@ -224,17 +239,19 @@ def open_copy_dialog(
 
     _v = refresh_view
     is_recurring = bool(event.rrule or event.recurrence_id is not None)
-    choice = "series"
+    choice: RecurrenceScope = RecurrenceScope.SERIES
 
     if is_recurring:
         rad = RecurrenceActionDialog(parent, action="copy")
         if not rad.exec():
             QTimer.singleShot(0, lambda: _refresh_hover_under_cursor(_v))
             return
-        choice = rad.choice or "series"
+        if rad.choice is None:
+            return
+        choice = RecurrenceScope(rad.choice)
 
     # Build the event to copy based on scope choice
-    if choice == "occurrence":
+    if choice == RecurrenceScope.OCCURRENCE:
         # Resolve to a one-off: strip recurrence, anchor to the clicked date
         if event.recurrence_id is not None:
             # Already an override row — use it directly but strip recurrence fields
@@ -260,7 +277,7 @@ def open_copy_dialog(
             )
         else:
             src = event
-    elif choice == "following":
+    elif choice == RecurrenceScope.FOLLOWING:
         # Copy master series starting at the clicked occurrence date
         master = event
         if event.recurrence_id is not None:
@@ -315,14 +332,16 @@ def open_delete_dialog(
 
     _v = refresh_view
     is_recurring = bool(event.rrule or event.recurrence_id is not None)
-    choice = "series"
+    choice: RecurrenceScope = RecurrenceScope.SERIES
 
     if is_recurring:
         rad = RecurrenceActionDialog(parent, action="delete")
         if not rad.exec():
             QTimer.singleShot(0, lambda: _refresh_hover_under_cursor(_v))
             return
-        choice = rad.choice or "series"
+        if rad.choice is None:
+            return
+        choice = RecurrenceScope(rad.choice)
 
     _dispatch_delete(parent, store, event, instance_dtstart, choice)
     QTimer.singleShot(0, lambda: _refresh_hover_under_cursor(_v))
@@ -336,7 +355,7 @@ def _dispatch_edit(
     edited: "Event",
     choice: str,
 ) -> None:
-    if choice == "occurrence":
+    if choice == RecurrenceScope.OCCURRENCE:
         if instance_dtstart is None and event.recurrence_id is None:
             QMessageBox.warning(
                 parent, "Edit failed", "Could not determine occurrence date."
@@ -351,7 +370,7 @@ def _dispatch_edit(
             recurrence_id_dt=rid,  # type: ignore[reportArgumentType]
             edited=edited,
         )
-    elif choice == "following":
+    elif choice == RecurrenceScope.FOLLOWING:
         if instance_dtstart is None and event.recurrence_id is None:
             QMessageBox.warning(
                 parent, "Edit failed", "Could not determine split date."
@@ -391,6 +410,98 @@ def _dispatch_edit(
             store.queue_update(updated, master.etag)
 
 
+def dispatch_drag_edit(
+    parent: QWidget,
+    store: "EventStore",
+    event: "Event",
+    instance_dtstart: datetime | None,
+    new_dtstart: datetime,
+    new_dtend: datetime,
+    *,
+    tz: str | None = None,
+) -> bool:
+    """Commit a chip drag/resize, asking for scope when the event recurs.
+
+    Dragging used to call queue_update directly, which rewrote the *whole
+    series* — dragging one occurrence of a weekly meeting moved every
+    occurrence, with no prompt. Worse, for an override chip the update was
+    routed to the master's provider id (get_event prefers the master row),
+    corrupting the series server-side.
+
+    Returns False when the user cancelled, so the caller can restore the chip.
+    """
+    from lilical.ui.widgets.recurrence_action_dialog import RecurrenceActionDialog
+
+    def _moved(base: "Event", start: datetime, end: datetime, **extra) -> "Event":
+        return dataclasses.replace(
+            base,
+            dtstart=start,
+            dtend=end,
+            sequence=(base.sequence or 0) + 1,
+            local_dirty=True,
+            **({"tz": tz} if tz else {}),
+            **extra,
+        )
+
+    if not (event.rrule or event.recurrence_id is not None):
+        store.queue_update(_moved(event, new_dtstart, new_dtend), event.etag)
+        return True
+
+    rad = RecurrenceActionDialog(parent, action="edit")
+    if not rad.exec() or rad.choice is None:
+        return False
+    choice = RecurrenceScope(rad.choice)
+    rid = event.recurrence_id if event.recurrence_id is not None else instance_dtstart
+
+    if choice == RecurrenceScope.OCCURRENCE:
+        if rid is None:
+            QMessageBox.warning(
+                parent, "Move failed", "Could not determine occurrence date."
+            )
+            return False
+        store.queue_update_instance(
+            uid=event.uid,
+            calendar_id=event.calendar_id,
+            recurrence_id_dt=rid,
+            edited=_moved(event, new_dtstart, new_dtend, rrule=None),
+        )
+        return True
+
+    if choice == RecurrenceScope.FOLLOWING:
+        if rid is None:
+            QMessageBox.warning(
+                parent, "Move failed", "Could not determine split date."
+            )
+            return False
+        store.queue_split_series(
+            uid=event.uid,
+            calendar_id=event.calendar_id,
+            split_at_dt=rid,
+            edited_event_for_tail=_moved(event, new_dtstart, new_dtend),
+        )
+        return True
+
+    # Entire series: shift the master by the amount dragged. Stamping the
+    # dragged occurrence's absolute date onto the master would drag the whole
+    # series' start date to whichever occurrence happened to be on screen.
+    master = event
+    if event.recurrence_id is not None:
+        m = store.get_event(event.uid, event.calendar_id)
+        if m:
+            master = m
+    origin = instance_dtstart or event.dtstart
+    if master.dtstart is None or origin is None:
+        store.queue_update(_moved(master, new_dtstart, new_dtend), master.etag)
+        return True
+    shift = new_dtstart - origin
+    duration = new_dtend - new_dtstart
+    shifted_start = master.dtstart + shift
+    store.queue_update(
+        _moved(master, shifted_start, shifted_start + duration), master.etag
+    )
+    return True
+
+
 def _dispatch_delete(
     parent: QWidget,
     store: "EventStore",
@@ -398,7 +509,7 @@ def _dispatch_delete(
     instance_dtstart: datetime | None,
     choice: str,
 ) -> None:
-    if choice == "occurrence":
+    if choice == RecurrenceScope.OCCURRENCE:
         if instance_dtstart is None and event.recurrence_id is None:
             QMessageBox.warning(
                 parent, "Delete failed", "Could not determine occurrence date."
@@ -412,7 +523,7 @@ def _dispatch_delete(
             calendar_id=event.calendar_id,
             recurrence_id_dt=rid,  # type: ignore[reportArgumentType]
         )
-    elif choice == "following":
+    elif choice == RecurrenceScope.FOLLOWING:
         if instance_dtstart is None and event.recurrence_id is None:
             QMessageBox.warning(
                 parent, "Delete failed", "Could not determine split date."

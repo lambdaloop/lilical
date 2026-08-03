@@ -555,6 +555,116 @@ def test_delete_instance_of_edited_occurrence_leaves_no_instance(engine) -> None
     ), "edited occurrence was re-emitted by the rebuild"
 
 
+def test_split_series_moves_post_cutoff_exdates_to_tail(engine) -> None:
+    """A deleted occurrence after the cut must not come back when the series splits.
+
+    Exclusions left on the truncated master are unreachable by its shortened
+    RRULE, so the occurrence silently reappears on the tail.
+    """
+    store = EventStore(engine)
+    master = _event(rrule="FREQ=DAILY;COUNT=10", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    before_cut = datetime(2026, 5, 14, 9, 0, tzinfo=timezone.utc)
+    after_cut = datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc)
+    store.queue_delete_instance("event-1", "cal-1", before_cut)
+    store.queue_delete_instance("event-1", "cal-1", after_cut)
+
+    split_at = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
+    tail_uid = store.queue_split_series(
+        "event-1",
+        "cal-1",
+        split_at,
+        _event(uid="ignored", dtstart=split_at, rrule="FREQ=DAILY;COUNT=5"),
+    )
+
+    head = store.get_event("event-1", "cal-1")
+    tail = store.get_event(tail_uid, "cal-1")
+    assert any(abs((d - before_cut).total_seconds()) < 60 for d in head.exdates)
+    assert not any(abs((d - after_cut).total_seconds()) < 60 for d in head.exdates)
+    assert any(abs((d - after_cut).total_seconds()) < 60 for d in tail.exdates)
+    assert not _has_instance_at(engine, after_cut, uid=tail_uid)
+
+
+def test_split_series_reparents_post_cutoff_overrides(engine) -> None:
+    """An edited occurrence after the cut must follow the tail, not orphan.
+
+    The expander appends overrides unconditionally, so one left on the
+    truncated master renders as a ghost detached from any series.
+    """
+    store = EventStore(engine)
+    master = _event(rrule="FREQ=DAILY;COUNT=10", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    after_cut = datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc)
+    store.queue_update_instance(
+        "event-1",
+        "cal-1",
+        after_cut,
+        _event(rrule=None, exdates=(), rdates=(), summary="moved one"),
+    )
+
+    split_at = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
+    tail_uid = store.queue_split_series(
+        "event-1",
+        "cal-1",
+        split_at,
+        _event(uid="ignored", dtstart=split_at, rrule="FREQ=DAILY;COUNT=5"),
+    )
+
+    with Session(engine) as s:
+        head_overrides = (
+            s.query(EventRow)
+            .filter(EventRow.uid == "event-1", EventRow.recurrence_id != "")
+            .count()
+        )
+        tail_overrides = (
+            s.query(EventRow)
+            .filter(EventRow.uid == tail_uid, EventRow.recurrence_id != "")
+            .all()
+        )
+    assert head_overrides == 0, "override orphaned on the truncated master"
+    assert len(tail_overrides) == 1
+    assert tail_overrides[0].summary == "moved one"
+
+
+def test_truncate_series_classifies_overrides_by_instant(engine) -> None:
+    """Overrides must be cut by instant, not by lexicographic ISO comparison.
+
+    '2026-05-19T11:00:00+02:00' sorts after '2026-05-20T09:00:00+00:00' as a
+    string while being the earlier instant, so a string compare kept the wrong
+    ones.
+    """
+    store = EventStore(engine)
+    master = _event(rrule="FREQ=DAILY;COUNT=10", exdates=(), rdates=())
+    store.apply_remote_changes(
+        "cal-1", [EventChange(kind="upsert", event=master, uid="event-1")], ""
+    )
+    # Same instants, spelled with a +02:00 offset as a provider might.
+    before = datetime(2026, 5, 15, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    after = datetime(2026, 5, 20, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    for rid in (before, after):
+        store.queue_update_instance(
+            "event-1", "cal-1", rid, _event(rrule=None, exdates=(), rdates=())
+        )
+
+    store.queue_truncate_series(
+        "event-1", "cal-1", datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
+    )
+
+    with Session(engine) as s:
+        remaining = [
+            datetime.fromisoformat(r.recurrence_id)
+            for r in s.query(EventRow)
+            .filter(EventRow.uid == "event-1", EventRow.recurrence_id != "")
+            .all()
+        ]
+    assert len(remaining) == 1, f"wrong overrides kept: {remaining}"
+    assert remaining[0] == before
+
+
 def test_remote_delete_removes_materialized_instances(engine) -> None:
     """A remote delete must clear event_instances too, or chips linger as ghosts."""
     from lilical.models.event import EventInstanceRow

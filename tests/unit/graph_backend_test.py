@@ -2234,6 +2234,41 @@ async def test_synthesize_exdates_skips_moved_exception() -> None:
 
 
 @pytest.mark.asyncio
+async def test_synthesize_exdates_skips_moved_exception_string_original_start() -> None:
+    """Same, with the shape the live API actually returns.
+
+    /instances sends originalStart as a bare Edm.DateTimeOffset string, not a
+    {dateTime, timeZone} object. The dict-shaped test above passes either way,
+    so it never covered the real payload.
+    """
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    base = (now + timedelta(days=14)).replace(hour=11, minute=0, second=0)
+    occ = [base + timedelta(weeks=k) for k in range(5)]
+    moved_slot = occ[1]
+    moved_to = moved_slot + timedelta(hours=3)
+    items = [
+        {"type": "occurrence", "start": _graph_dt(d)} for d in occ if d != moved_slot
+    ]
+    items.append(
+        {
+            "type": "exception",
+            "start": _graph_dt(moved_to),
+            # The live shape: a string, not a dict.
+            "originalStart": moved_slot.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"),
+        }
+    )
+
+    master = _weekly_master(base, 5)
+    backend = GraphBackend(account_id="acc-1", token_cache_json=None)
+    _attach_mock(backend, _instances_batch_handler({"MASTER-1": items}))
+
+    await backend._synthesize_cancelled_exdates([master])
+    change = _graph_event_to_change(master, "cal-1")
+    assert change is not None and change.event is not None
+    assert change.event.exdates == (), "moved exception mistaken for a cancellation"
+
+
+@pytest.mark.asyncio
 async def test_synthesize_exdates_empty_instances_no_wipe() -> None:
     """An empty/missing /instances response must never blanket-EXDATE a series."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
