@@ -229,10 +229,25 @@ async def run(account_name: str, *, all_day: bool, keep: bool) -> int:
             ev = store.get_event(uid, cal_id)
             if ev is not None:
                 guard.check(ev)
-                store.queue_delete(uid, cal_id)
-                with __import__("contextlib").suppress(Exception):
-                    await sync._tick(account, backend)
-                print("   deleted")
+                # Delete straight through the backend rather than queue_delete +
+                # a tick: a stale etag makes the server answer 412, and the sync
+                # engine drops a conflicting op silently — which would strand the
+                # test event on a real calendar.
+                with Session(engine) as s:
+                    provider_cal = s.query(Calendar).filter_by(id=cal_id).one()
+                    provider_cal_id = provider_cal.provider_id
+                if ev.provider_event_id:
+                    try:
+                        await backend.delete_event(
+                            provider_cal_id, ev.provider_event_id, None
+                        )
+                        print("   deleted from server")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"   {_FAIL} server delete: {type(e).__name__}: {e}")
+                        print(f"   REMOVE {summary} BY HAND")
+                        failures += 1
+                store.remove_event(uid, cal_id)
+                print("   removed locally")
 
     print()
     if failures:
